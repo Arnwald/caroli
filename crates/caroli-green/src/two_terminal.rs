@@ -1,7 +1,7 @@
 //! Two-terminal devices: recursive Green's function and Caroli transmission.
 
 use crate::modes::{LeadModes, sigma_left, sigma_right};
-use crate::{GreenError, broadening, decimation, inverse, resolvent_matrix, solve_right, trace};
+use crate::{GreenError, broadening, decimation, inverse, resolvent_matrix, trace};
 use caroli_lattice::Region;
 use caroli_model::{CMat, Model, c64};
 
@@ -48,6 +48,9 @@ pub struct TwoTerminal {
     pub couplings: Vec<CMat>,
     pub left: Lead,
     pub right: Lead,
+    /// Sites of each slice (orbital layout of `slices[n]`), when built from a model; empty for
+    /// systems assembled by hand.
+    pub regions: Vec<Region>,
 }
 
 impl TwoTerminal {
@@ -62,7 +65,48 @@ impl TwoTerminal {
         let last = &slices[slices.len() - 1];
         let left = Lead { h00: lead.hamiltonian(first), h01: lead.coupling(first, &first.translated(step)) };
         let right = Lead { h00: lead.hamiltonian(last), h01: lead.coupling(last, &last.translated(step)) };
-        Self { slices: diag, couplings: off, left, right }
+        Self { slices: diag, couplings: off, left, right, regions: slices }
+    }
+
+    /// Shifts the electrostatic potential of the left and right leads (bias): adds `v·1` to
+    /// their cell Hamiltonians.
+    pub fn with_lead_potentials(mut self, left: f64, right: f64) -> Self {
+        for (lead, v) in [(&mut self.left, left), (&mut self.right, right)] {
+            for i in 0..lead.h00.nrows() {
+                lead.h00[(i, i)] += c64::new(v, 0.0);
+            }
+        }
+        self
+    }
+
+    /// Recursive sweeps from both ends at one energy (see [`Sweeps`]).
+    pub fn sweeps(&self, energy: f64, method: SelfEnergyMethod) -> Result<Sweeps, GreenError> {
+        let (sigma_l, sigma_r) = self.self_energies(energy, method)?;
+        let z = c64::new(energy, device_eta(method));
+        let n = self.slices.len();
+        let mut left = Vec::with_capacity(n);
+        for k in 0..n {
+            let mut a = resolvent_matrix(z, &self.slices[k]);
+            if k == 0 {
+                a -= &sigma_l;
+            } else {
+                let v = &self.couplings[k - 1];
+                a -= v.adjoint() * &left[k - 1] * v;
+            }
+            left.push(inverse(&a));
+        }
+        let mut right = vec![CMat::zeros(0, 0); n];
+        for k in (0..n).rev() {
+            let mut a = resolvent_matrix(z, &self.slices[k]);
+            if k == n - 1 {
+                a -= &sigma_r;
+            } else {
+                let v = &self.couplings[k];
+                a -= v * &right[k + 1] * v.adjoint();
+            }
+            right[k] = inverse(&a);
+        }
+        Ok(Sweeps { z, sigma_l, sigma_r, left, right })
     }
 
     /// Lead self-energies `(Σ_L, Σ_R)` on the first and last slices.
@@ -104,11 +148,7 @@ impl TwoTerminal {
     /// Lead self-energies and the Green's function `G_1N` between the first and last slices.
     pub fn solve(&self, energy: f64, method: SelfEnergyMethod) -> Result<EndToEnd, GreenError> {
         let (sigma_l, sigma_r) = self.self_energies(energy, method)?;
-        let eta = match method {
-            SelfEnergyMethod::Modes | SelfEnergyMethod::ModesBroadened { .. } => 0.0,
-            SelfEnergyMethod::Decimation { eta } => eta,
-        };
-        let z = c64::new(energy, eta);
+        let z = c64::new(energy, device_eta(method));
         let n = self.slices.len();
         // Left-connected Green's functions g_n = [z − H_nn − V_{n−1}† g_{n−1} V_{n−1} − Σ]⁻¹
         // and the first row G_1n = G_1,n−1 V_{n−1} g_n.
@@ -125,9 +165,73 @@ impl TwoTerminal {
                 a -= &sigma_r;
             }
             g = inverse(&a);
-            g1n = solve_right(&(&g1n * v), &a);
+            g1n = &g1n * v * &g;
         }
         Ok(EndToEnd { sigma_l, sigma_r, g1n })
+    }
+}
+
+/// Imaginary part of the energy used inside the device.
+fn device_eta(method: SelfEnergyMethod) -> f64 {
+    match method {
+        SelfEnergyMethod::Modes | SelfEnergyMethod::ModesBroadened { .. } => 0.0,
+        SelfEnergyMethod::Decimation { eta } => eta,
+    }
+}
+
+/// Recursive sweeps of a two-terminal device at one energy `z`:
+/// `left[n]` is the Green's function of slices `0..=n` with the left lead only, `right[n]` that
+/// of slices `n..N` with the right lead only. Everything else follows:
+/// `G_nn = [z − H_nn − Σ^<-side_n − Σ^>-side_n]⁻¹`, `G_n0 = right[n] V_{n−1}† G_{n−1,0}` and
+/// `G_{n,N−1} = left[n] V_n G_{n+1,N−1}`.
+#[derive(Clone, Debug)]
+pub struct Sweeps {
+    pub z: c64,
+    pub sigma_l: CMat,
+    pub sigma_r: CMat,
+    pub left: Vec<CMat>,
+    pub right: Vec<CMat>,
+}
+
+impl Sweeps {
+    /// Full diagonal block `G_nn`.
+    pub fn diagonal(&self, sys: &TwoTerminal, n: usize) -> CMat {
+        let last = self.left.len() - 1;
+        let mut a = resolvent_matrix(self.z, &sys.slices[n]);
+        if n == 0 {
+            a -= &self.sigma_l;
+        } else {
+            let v = &sys.couplings[n - 1];
+            a -= v.adjoint() * &self.left[n - 1] * v;
+        }
+        if n == last {
+            a -= &self.sigma_r;
+        } else {
+            let v = &sys.couplings[n];
+            a -= v * &self.right[n + 1] * v.adjoint();
+        }
+        inverse(&a)
+    }
+
+    /// Column `G_n0` for every slice `n` (propagation from the left lead).
+    pub fn first_column(&self, sys: &TwoTerminal) -> Vec<CMat> {
+        let mut col = vec![self.diagonal(sys, 0)];
+        for n in 1..self.left.len() {
+            let next = &self.right[n] * sys.couplings[n - 1].adjoint() * &col[n - 1];
+            col.push(next);
+        }
+        col
+    }
+
+    /// Column `G_{n,N−1}` for every slice `n` (propagation from the right lead).
+    pub fn last_column(&self, sys: &TwoTerminal) -> Vec<CMat> {
+        let last = self.left.len() - 1;
+        let mut col = vec![CMat::zeros(0, 0); last + 1];
+        col[last] = self.diagonal(sys, last);
+        for n in (0..last).rev() {
+            col[n] = &self.left[n] * &sys.couplings[n] * &col[n + 1];
+        }
+        col
     }
 }
 
@@ -162,7 +266,36 @@ mod tests {
             couplings: vec![one(-1.0); n - 1],
             left: Lead { h00: one(0.0), h01: one(-1.0) },
             right: Lead { h00: one(0.0), h01: one(-1.0) },
+            regions: Vec::new(),
         }
+    }
+
+    /// The sweeps agree with the direct inversion of the whole device matrix.
+    #[test]
+    fn sweeps_match_full_inversion() {
+        let mut sys = chain(6);
+        sys.slices[2] = one(0.4);
+        sys.slices[4] = one(-0.3);
+        let e = 0.37;
+        let sw = sys.sweeps(e, SelfEnergyMethod::Modes).unwrap();
+        let n = 6;
+        let mut a = CMat::from_fn(n, n, |i, j| match i.abs_diff(j) {
+            0 => c64::new(e, 0.0) - sys.slices[i][(0, 0)],
+            1 => c64::new(1.0, 0.0),
+            _ => c64::new(0.0, 0.0),
+        });
+        a[(0, 0)] -= sw.sigma_l[(0, 0)];
+        a[(n - 1, n - 1)] -= sw.sigma_r[(0, 0)];
+        let g = inverse(&a);
+        let first = sw.first_column(&sys);
+        let last = sw.last_column(&sys);
+        for k in 0..n {
+            assert!((sw.diagonal(&sys, k)[(0, 0)] - g[(k, k)]).norm() < 1e-12);
+            assert!((first[k][(0, 0)] - g[(k, 0)]).norm() < 1e-12);
+            assert!((last[k][(0, 0)] - g[(k, n - 1)]).norm() < 1e-12);
+        }
+        let direct = sys.solve(e, SelfEnergyMethod::Modes).unwrap();
+        assert!((direct.g1n[(0, 0)] - g[(0, n - 1)]).norm() < 1e-12);
     }
 
     /// Clean chain with hopping −1: T = 1 inside the band |E| < 2, 0 outside, at every energy,

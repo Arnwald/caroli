@@ -12,3 +12,4 @@ caroli-lattice.workspace = true
 caroli-model.workspace = true
 caroli-green.workspace = true
 caroli-disorder.workspace = true
+caroli-keldysh.workspace = true

@@ -65,6 +65,7 @@ version = "0.1.0"
 dependencies = [
  "caroli-disorder",
  "caroli-green",
+ "caroli-keldysh",
  "caroli-lattice",
  "caroli-model",
 ]
@@ -88,6 +89,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "caroli-keldysh"
+version = "0.1.0"
+dependencies = [
+ "caroli-green",
+ "caroli-lattice",
+ "caroli-model",
+]
+
+[[package]]
 name = "caroli-lattice"
 version = "0.1.0"
 
@@ -105,6 +115,7 @@ version = "0.1.0"
 dependencies = [
  "caroli-disorder",
  "caroli-green",
+ "caroli-keldysh",
  "caroli-lattice",
  "caroli-model",
  "faer",

@@ -1,0 +1,13 @@
+[package]
+name = "caroli-keldysh"
+description = "Non-equilibrium steady state of two-terminal devices for caroli: lesser Green's function, bond currents, occupations."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+caroli-lattice.workspace = true
+caroli-model.workspace = true
+caroli-green.workspace = true
