@@ -351,6 +351,10 @@ impl ScbaAnalytic {
     /// `v_⊥ = (2/3)(1 − mz)(1 + 2 mz)` with 2/3 in single precision. Two stages (mixing 0.15 to
     /// 1e-4, then 0.8 to 1e-6). Returns `(M↑, μ↑, M↓, μ↓)` maps (real parts), J fastest.
     pub fn run(&self) -> [Vec<f64>; 4] {
+        self.grid(false)
+    }
+
+    fn grid(&self, corrected: bool) -> [Vec<f64>; 4] {
         let Self { m, n, points, j_range, ef, .. } = *self;
         let grid = caroli_born::k_grid(m, n);
         let k = self.k_terms(&grid);
@@ -364,7 +368,7 @@ impl ScbaAnalytic {
             let ji = iu as f64 * (j_range.1 - j_range.0) / (points - 1) as f64 + j_range.0;
             for ie in 0..points {
                 let e = ie as f64 * (ef.1 - ef.0) / (points - 1) as f64 + ef.0;
-                let r = self.solve_point(&k, ji, e);
+                let r = self.solve_point(&k, ji, e, corrected);
                 for (o, v) in out.iter_mut().zip(r) {
                     o[iu + points * ie] = v;
                 }
@@ -375,7 +379,20 @@ impl ScbaAnalytic {
 
     /// `(M↑, μ↑, M↓, μ↓)` at one `(J_I, E_F)` (the program's iteration for one grid point).
     pub fn point(&self, ji: f64, e: f64) -> [f64; 4] {
-        self.solve_point(&self.k_terms(&caroli_born::k_grid(self.m, self.n)), ji, e)
+        self.solve_point(&self.k_terms(&caroli_born::k_grid(self.m, self.n)), ji, e, false)
+    }
+
+    /// The same program with its two errors corrected, everything else unchanged (equations,
+    /// start from the mean field, two-stage mixing): the mass self-energy with the sign of the
+    /// general SCBA, and the z weight from the second cumulant, `(1 − conc) mz² + (1 − mz)²/3`
+    /// (and 2/3 in double precision). Equivalent to `caroli_born` with `magnetic` vertices.
+    pub fn point_corrected(&self, ji: f64, e: f64) -> [f64; 4] {
+        self.solve_point(&self.k_terms(&caroli_born::k_grid(self.m, self.n)), ji, e, true)
+    }
+
+    /// Corrected maps (see [`Self::point_corrected`]), laid out as [`Self::run`].
+    pub fn run_corrected(&self) -> [Vec<f64>; 4] {
+        self.grid(true)
     }
 
     /// `(k_c, k_s)` on the k grid.
@@ -385,11 +402,22 @@ impl ScbaAnalytic {
             .collect()
     }
 
-    fn solve_point(&self, k: &[(f64, f64)], ji: f64, e: f64) -> [f64; 4] {
+    fn solve_point(&self, k: &[(f64, f64)], ji: f64, e: f64, corrected: bool) -> [f64; 4] {
         let Self { m, n, conc, mz, anti, eta, .. } = *self;
         let (mass, b, d) = (-0.137, -0.376406, -0.280933);
-        let vz = (1.0 - conc * conc) * mz * mz + (1.0 - mz) * (1.0 - mz) / 3.0;
-        let vperp = (2.0f32 / 3.0f32) as f64 * (1.0 - mz) * (1.0 + 2.0 * mz);
+        let (vz, vperp, mass_sign) = if corrected {
+            (
+                (1.0 - conc) * mz * mz + (1.0 - mz) * (1.0 - mz) / 3.0,
+                2.0 / 3.0 * (1.0 - mz) * (1.0 + 2.0 * mz),
+                1.0,
+            )
+        } else {
+            (
+                (1.0 - conc * conc) * mz * mz + (1.0 - mz) * (1.0 - mz) / 3.0,
+                (2.0f32 / 3.0f32) as f64 * (1.0 - mz) * (1.0 + 2.0 * mz),
+                -1.0,
+            )
+        };
         let anti = anti as f64;
         let norm = conc * ji * ji / (n * m) as f64;
         let z = c64::new(e, eta);
@@ -415,8 +443,12 @@ impl ScbaAnalytic {
                     dmuu += vzu * eu + vpd * ed;
                     dmud += vzd * ed + vpu * eu;
                 }
-                let (mut_, mdt, muut, mudt) =
-                    (mu0 - dmu * norm, md0 - dmd * norm, muu0 - dmuu * norm, mud0 - dmud * norm);
+                let (mut_, mdt, muut, mudt) = (
+                    mu0 + dmu * norm * mass_sign,
+                    md0 + dmd * norm * mass_sign,
+                    muu0 - dmuu * norm,
+                    mud0 - dmud * norm,
+                );
                 let ch = |t: c64, x: c64| ((t - x).norm() - prec * t.norm()).abs();
                 diff = p * (ch(mut_, mu) + ch(mdt, md) + ch(muut, muu) + ch(mudt, mud));
                 let mixp = |t: c64, x: c64| t * p + x * (1.0 - p);

@@ -8,11 +8,16 @@
 //! the same lesser blocks give both versions, compared as the figure draws them (site vectors
 //! `(j_x, j_y)` summed over the orbitals).
 //!
+//! The figures come from the `-nximp-2015` variants: `conc·Nx_imp·Ny` impurities (3276 here),
+//! placed as the canonical code does.
+//!
 //! `cargo run --release -p caroli-validation --example lcur_impact`
 
+use caroli_disorder::rng::Xoshiro256;
+use caroli_disorder::{MagneticImpurities, Moments};
 use caroli_green::SelfEnergyMethod;
 use caroli_keldysh::{Lesser, fermi};
-use caroli_validation::thesis::{LocalCurrents, thesis_local_currents};
+use caroli_validation::thesis::{LocalCurrents, impurity_region, thesis_local_currents};
 
 /// (figure, couplage, J_I = U0, E_F, seed), from the runs' `param_0N.dat`.
 const RUNS: [(&str, i32, f64, f64, i32); 6] = [
@@ -26,8 +31,10 @@ const RUNS: [(&str, i32, f64, f64, i32); 6] = [
 
 fn main() {
     let (nx, ny, d) = (400usize, 64usize, 4usize);
+    println!("Arrows turned by more than 30°, among the sites with |j| above 10 %, 1 % and 0.1 % of the");
+    println!("maximum (the figure draws arrows down to 0.1 %):");
     println!(
-        "run                     |Δj_x|/max|j_x|   ‖Δj_y‖/‖j_y‖   arrows turned > 30° (of sites with |j| > 10 % max)"
+        "run                     |Δj_x|/max|j_x|  ‖Δj_y‖/‖j_y‖   > 10 %              > 1 %               > 0.1 %"
     );
     for &(name, couplage, u0, e_f, seed) in &RUNS {
         let p = LocalCurrents {
@@ -47,7 +54,14 @@ fn main() {
             eta: 1e-5,
             seed,
         };
-        let imp = p.impurities();
+        let n_imp = (p.conc * (p.nx_imp * p.ny) as f64) as usize;
+        let x0 = 1 + ((p.nx - p.nx_imp) / 2) as i64;
+        let imp = MagneticImpurities::generate(
+            &mut Xoshiro256::gfortran(seed),
+            &impurity_region(x0, p.nx_imp, p.ny),
+            n_imp,
+            Moments::Polarized { mz: p.mz },
+        );
         let sys = p.device(&imp);
         let deltae = (p.emax - p.emin) / (p.ne - 1) as f64;
         // Site maps [ix][iy] of the thesis formula and of the correct currents.
@@ -104,18 +118,19 @@ fn main() {
         let norm = |v: &[f64]| v.iter().map(|x| x * x).sum::<f64>().sqrt();
         let dy = norm(&ty.iter().zip(&cy).map(|(a, b)| a - b).collect::<Vec<_>>()) / norm(&cy);
         let mag: Vec<f64> = cx.iter().zip(&cy).map(|(x, y)| x.hypot(*y)).collect();
-        let big = mag.iter().fold(0f64, |m, v| m.max(*v)) * 0.1;
-        let (mut sig, mut turned) = (0, 0);
-        for k in 0..nx * ny {
-            if mag[k] > big {
-                sig += 1;
-                let cos = (tx[k] * cx[k] + ty[k] * cy[k]) / (tx[k].hypot(ty[k]) * mag[k]);
-                turned += (cos < 30f64.to_radians().cos()) as usize;
+        let max = mag.iter().fold(0f64, |m, v| m.max(*v));
+        let mut cols = String::new();
+        for share in [0.1, 0.01, 0.001] {
+            let (mut sig, mut turned) = (0, 0);
+            for k in 0..nx * ny {
+                if mag[k] > share * max {
+                    sig += 1;
+                    let cos = (tx[k] * cx[k] + ty[k] * cy[k]) / (tx[k].hypot(ty[k]) * mag[k]);
+                    turned += (cos < 30f64.to_radians().cos()) as usize;
+                }
             }
+            cols += &format!("  {turned:5}/{sig:5} {:5.1} %", 100.0 * turned as f64 / sig.max(1) as f64);
         }
-        println!(
-            "{name:24}  {dx:13.1e}   {dy:12.3}   {turned:5} / {sig:5} ({:.1} %)",
-            100.0 * turned as f64 / sig.max(1) as f64
-        );
+        println!("{name:24}  {dx:13.1e}  {dy:12.3} {cols}");
     }
 }

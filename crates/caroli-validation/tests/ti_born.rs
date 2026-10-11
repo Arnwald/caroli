@@ -88,3 +88,45 @@ fn magnetic_analytic_same_g() {
 fn magnetic_analytic_opposite_g() {
     analytic("ti-scba-analytic-opposite-g", 1);
 }
+
+/// The corrected reduced SCBA (`ScbaAnalytic::point_corrected`) is the general matrix SCBA of
+/// `caroli_born` with the second-cumulant vertices (same-g and opposite-g, M_z < 1 so that the
+/// spin-flip vertices matter).
+#[test]
+fn corrected_reduction_is_the_matrix_scba() {
+    use caroli_born::{Scba, magnetic};
+    use caroli_model::presets::{GFactors, bhz_spin};
+    use caroli_model::{CMat, c64};
+    use caroli_validation::thesis::bhz_hk;
+    let (conc, mz) = (0.2, 0.8);
+    let hk = bhz_hk(BhzParams::default(), 64, 16);
+    for anti in [0, 1] {
+        let reduced = ScbaAnalytic {
+            m: 64,
+            n: 16,
+            conc,
+            mz,
+            anti,
+            points: 2,
+            j_range: (0.0, 1.0),
+            ef: (-0.1, 0.1),
+            eta: 1e-2,
+        };
+        let s = bhz_spin(if anti == 1 { GFactors::Opposite } else { GFactors::Same });
+        for (j, e) in [(0.3, 0.05), (0.9, -0.1)] {
+            let r = reduced.point_corrected(j, e);
+            let (mf, vertices) = magnetic(conc, j, mz, mz * mz + (1.0 - mz).powi(2) / 3.0, &s);
+            let scba = Scba { hk: hk.clone(), mean_field: mf.clone(), vertices };
+            let sol = scba.solve_anderson(c64::new(e, 1e-2), &CMat::zeros(4, 4), 8, 1e-12, 400);
+            let t = &mf + &sol.sigma;
+            let block = |b: usize| {
+                let (a, d) = (t[(b, b)], t[(b + 1, b + 1)]);
+                [-0.137 + ((a - d) * 0.5).re, -((a + d) * 0.5).re]
+            };
+            let m = [block(0)[0], block(0)[1], block(2)[0], block(2)[1]];
+            let d = r.iter().zip(&m).map(|(x, y)| (x - y).abs()).fold(0.0, f64::max);
+            println!("anti {anti}, J {j}, E {e}: |reduced − matrix| = {d:.1e}");
+            assert!(d < 1e-5, "anti {anti}, J {j}, E {e}: {r:?} vs {m:?}");
+        }
+    }
+}

@@ -3,8 +3,9 @@
 //!
 //! For each panel:
 //! 1. checks that the thesis replica (`ScbaAnalytic`) gives the published data;
-//! 2. solves the corrected SCBA (general matrix SCBA with the second-cumulant vertices,
-//!    `caroli_born`) on the same grid;
+//! 2. solves the corrected SCBA on the same grid: the thesis program with its two errors fixed
+//!    and everything else unchanged (`ScbaAnalytic::point_corrected`), cross-checked against
+//!    the general matrix SCBA (`caroli_born`, second-cumulant vertices) on a subsample;
 //! 3. classifies each `(J_I, E_F)` by the conductance the renormalised bands predict (three
 //!    readings, see [`RULES`]);
 //! 4. where the thesis has exact numerical conductance maps (disorder-averaged transmission of
@@ -133,9 +134,14 @@ fn numerical_map(dir: &Path) -> Option<(Vec<f64>, Vec<f64>, Vec<f64>)> {
 }
 
 fn main() {
-    let archive = std::env::args().nth(1).map(PathBuf::from).unwrap_or_else(|| {
+    // Arguments: [archive] [panels, e.g. 1,2] (the comparison with the maps runs when all
+    // panels do).
+    let args: Vec<String> = std::env::args().skip(1).collect();
+    let archive = args.first().map(PathBuf::from).unwrap_or_else(|| {
         PathBuf::from(std::env::var("HOME").expect("HOME")).join("Projects/electronic-transport")
     });
+    let selected: Vec<usize> =
+        args.get(1).map_or((0..8).collect(), |a| a.split(',').map(|x| x.parse().expect("panel")).collect());
     let born_dir = archive.join("anomalous/Born Approx/run");
     let out_dir = caroli_validation::repo_root().join("target/born_lines");
     std::fs::create_dir_all(&out_dir).expect("output directory");
@@ -152,7 +158,7 @@ fn main() {
         "panel  conc  Mz   g  | replica vs published | points whose Born G changes | G=1 points thesis → corrected"
     );
     let mut corrected_grids = Vec::new();
-    for (p, &(conc, mz, anti)) in PANELS.iter().enumerate() {
+    for (p, &(conc, mz, anti)) in PANELS.iter().enumerate().filter(|(p, _)| selected.contains(p)) {
         let read = |name: &str| {
             caroli_validation::fortran::as_f64(
                 &read_records(born_dir.join(format!("{name}_{p:02}.dat"))).unwrap()[0],
@@ -171,11 +177,22 @@ fn main() {
                     .fold(0.0f64, |a, x| a.max(x.abs()))
             })
             .reduce(|| 0.0, f64::max);
-        // 2. Corrected SCBA on the same grid.
+        // 2. Corrected SCBA on the same grid: the thesis program with its two errors fixed, same
+        //    iteration; the general matrix SCBA as a cross-check on every 9th point.
         let grid: Vec<([f64; 4], usize)> = (0..64 * 64)
             .into_par_iter()
-            .map(|k| corrected(&hk, conc, mz, anti, js[k % 64], es[k / 64]))
+            .map(|k| (thesis.point_corrected(js[k % 64], es[k / 64]), 0))
             .collect();
+        let checks: Vec<f64> = (0..64 * 64)
+            .step_by(9)
+            .collect::<Vec<_>>()
+            .into_par_iter()
+            .map(|k| {
+                let (m, _) = corrected(&hk, conc, mz, anti, js[k % 64], es[k / 64]);
+                m.iter().zip(&grid[k].0).map(|(a, b)| (a - b).abs()).fold(0.0, f64::max)
+            })
+            .collect();
+        let agree = checks.iter().filter(|d| **d < 1e-5).count();
         // 3. Classification.
         let (mut changed, mut g1_thesis, mut g1_corr) = (0, 0, 0);
         let mut csv = String::from(
@@ -207,13 +224,17 @@ fn main() {
             );
         }
         std::fs::write(out_dir.join(format!("panel_{p:02}.csv")), csv).unwrap();
-        let iters = grid.iter().map(|g| g.1).max().unwrap();
         println!(
-            "  {p:02}   {conc}  {mz}  {}  |      {check:9.1e}       |   {changed:4} / 4096 ({:4.1} %)     |   {g1_thesis} → {g1_corr}   (≤ {iters} Anderson steps)",
+            "  {p:02}   {conc}  {mz}  {}  |      {check:9.1e}       |   {changed:4} / 4096 ({:4.1} %)     |   {g1_thesis} → {g1_corr}   (matrix SCBA within 1e-5 at {agree}/{} points)",
             if anti == 1 { 'A' } else { 'F' },
-            100.0 * changed as f64 / 4096.0
+            100.0 * changed as f64 / 4096.0,
+            checks.len()
         );
         corrected_grids.push(grid);
+    }
+    if selected.len() < 8 {
+        println!("\nCSV files in {}", out_dir.display());
+        return;
     }
 
     println!("\nAgainst the exact numerical conductance maps: share of the quantized points");
@@ -232,7 +253,7 @@ fn main() {
             .into_par_iter()
             .map(|k| {
                 let (j, e) = (jn[k % nj], en[k / nj]);
-                (thesis.point(j, e), corrected(&hk, conc, mz, anti, j, e).0)
+                (thesis.point(j, e), thesis.point_corrected(j, e))
             })
             .collect();
         let mut quantized = 0;
