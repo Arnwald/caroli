@@ -63,11 +63,21 @@ checksum = "1fd0f2584146f6f2ef48085050886acf353beff7305ebd1ae69500e27c67f64b"
 name = "caroli"
 version = "0.1.0"
 dependencies = [
+ "caroli-born",
  "caroli-disorder",
  "caroli-green",
  "caroli-keldysh",
  "caroli-lattice",
  "caroli-model",
+]
+
+[[package]]
+name = "caroli-born"
+version = "0.1.0"
+dependencies = [
+ "caroli-lattice",
+ "caroli-model",
+ "faer",
 ]
 
 [[package]]
@@ -113,6 +123,7 @@ dependencies = [
 name = "caroli-validation"
 version = "0.1.0"
 dependencies = [
+ "caroli-born",
  "caroli-disorder",
  "caroli-green",
  "caroli-keldysh",

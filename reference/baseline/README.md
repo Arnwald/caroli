@@ -105,5 +105,5 @@ the files exactly as the program wrote them.
 
 - Bounds checking confirmed or uncovered the out-of-bounds accesses listed above. They are now
   recorded in the thesis READMEs.
-- The conductance codes truncate the broadening to its real part, `real(IM*(Σ − Σ†))`. This explains the non-integer clean-wire conductance (1.988–2.012 in `ti-cond2t-clean`, ≈ 1.99 in the thesis-era G(E) data). With magnetic impurities the error reaches 0.2 e²/h.
+- The conductance codes truncate the broadening to its real part, `real(IM*(Σ − Σ†))`. This explains the non-integer clean-wire conductance (1.988–2.012 in `ti-cond2t-clean`, ≈ 1.99 in the thesis-era G(E) data). With magnetic impurities in a 10-site-wide ribbon the error reaches 0.2 e²/h. It is negligible (< 1e-3) at the 64-site width of the thesis production runs (`crates/caroli-validation/examples/gamma_impact.rs`).
 - caroli reproduces every `ti-cond2t-*` golden value to 1e-13 when it uses this truncated formula, the same impurity configurations (gfortran-compatible random stream) and lead self-energies at E + iη. That validates the whole chain exactly.

@@ -18,6 +18,7 @@ toml = "1"
 sha1_smol = "1"
 caroli-disorder.workspace = true
 caroli-keldysh.workspace = true
+caroli-born.workspace = true
 
 [dev-dependencies]
 faer.workspace = true

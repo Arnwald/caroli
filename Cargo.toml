@@ -15,6 +15,7 @@ caroli-model = { path = "crates/caroli-model" }
 caroli-green = { path = "crates/caroli-green" }
 caroli-disorder = { path = "crates/caroli-disorder" }
 caroli-keldysh = { path = "crates/caroli-keldysh" }
+caroli-born = { path = "crates/caroli-born" }
 faer = "0.24"
 num-complex = "0.4"
 thiserror = "2"

@@ -13,6 +13,8 @@ crates/
                       Anderson disorder, classical magnetic impurities
   caroli-keldysh      non-equilibrium steady state: lesser Green's function by lead injection,
                       bond currents, interface currents, occupations
+  caroli-born         disorder-averaged Green's functions: self-consistent Born approximation
+                      (mean field + cumulant vertices; Anderson and magnetic impurities)
   caroli              facade: re-exports and prelude
   caroli-validation   (not published) comparisons with the thesis golden outputs
 ```
@@ -57,7 +59,9 @@ The dependencies only go downward: lattice ← model ← green ← caroli.
 | ribbon bands with exchange J_s | `ti-ribbon-bands` | equal to 1e-10 |
 | clean ribbon conductance | `ti-cond2t-clean` | caroli gives exact integers; the thesis is off by ≤ 1 % (Re Γ truncation) |
 | conductance with magnetic impurities (same-g along z, isotropic, opposite-g) | `ti-cond2t-same-g`, `-isotropic`, `-opposite-g` | thesis formula (Re Γ, Σ at E + iη) reproduced to 1e-13 with the same impurity configurations; the exact transmission differs by up to 0.22 e²/h |
+| g2g1 conductance maps (400×64) | thesis data, 50 realisations | caroli's averages agree within statistical error; Re Γ truncation negligible at this width (`examples/gamma_impact.rs`) |
 | Keldysh bond currents and occupied densities (same-g, opposite-g, Anderson) | `ti-lcur-same-g`, `-opposite-g`, `-anderson` | impurity positions identical; thesis currents reproduced to 1e-17 and densities to 1e-14 (thesis conventions: element-wise products, slots) |
+| SCBA: Anderson, magnetic matrix (same-g, opposite-g), magnetic reduced (same-g, opposite-g) | `ti-scba-*` | reproduced to 1e-15 with the thesis iteration schedules |
 | QSH plateau, modes vs decimation, T_LR = T_RL, current conservation = Landauer | — | internal consistency |
 
 Golden cases with disorder use the same impurity configurations as the thesis.
@@ -79,7 +83,9 @@ Golden cases with disorder use the same impurity configurations as the thesis.
 4. Multi-terminal transport (4 leads, transmissions T_ij), validated on `ti-cond4t-anderson`.
 5. ✅ Keldysh (`caroli-keldysh`): G^< by lead injection, bond currents, occupied LDOS, bias
    windows. Validated on `ti-lcur-*` (exact).
-6. Self-consistent Born approximation, validated on `ti-scba-*` (deterministic).
+6. ✅ Self-consistent Born approximation (`caroli-born`), validated on `ti-scba-*` (exact).
+   The reduced (analytic) thesis SCBA differs from the general one by the sign of the mass
+   self-energy (see `reference/thesis/ti/born/scba-magnetic-analytic/README.md`).
 7. Spectral tools: KPM DOS/LDOS (Chebyshev, Jackson kernel, stochastic trace); graphene and TI
    presets.
 8. Time evolution (finite differences): split-operator, Chebyshev propagator; graphene current and

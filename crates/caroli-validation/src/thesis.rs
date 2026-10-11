@@ -192,3 +192,224 @@ pub fn thesis_local_currents(
     lcur.iter_mut().for_each(|x| *x *= deltae);
     (lcur, ldos_all)
 }
+
+/// BHZ Bloch Hamiltonians on the thesis k grid (`k_FBZ(M, N)`).
+pub fn bhz_hk(params: caroli_model::presets::BhzParams, m: usize, n: usize) -> Vec<CMat> {
+    use caroli_lattice::Region;
+    let model = caroli_model::presets::bhz(params);
+    let cell = Region::cuboid(model.lattice(), [1, 1, 0]);
+    caroli_born::k_grid(m, n)
+        .into_iter()
+        .map(|[kx, ky]| model.bloch_hamiltonian(&cell, &[[1, 0, 0], [0, 1, 0]], &[kx, ky]))
+        .collect()
+}
+
+fn diag_shift(m: &CMat, v: c64) -> CMat {
+    CMat::from_fn(m.nrows(), m.ncols(), |i, j| if i == j { m[(i, j)] + v } else { m[(i, j)] })
+}
+
+/// `scba-anderson` (`born.ini`).
+#[derive(Clone, Copy, Debug)]
+pub struct ScbaAnderson {
+    pub params: caroli_model::presets::BhzParams,
+    pub m: usize,
+    pub n: usize,
+    pub u0: (f64, f64),
+    pub ef: (f64, f64),
+    pub eta: f64,
+    pub points: usize,
+}
+
+impl ScbaAnderson {
+    /// `born.f90`: Σ carried from one E_F to the next with −iη added each time, mixing 0.5, stop
+    /// at max|ΔΣ| ≤ 1e-4 or 400 steps. Returns `(mass + Re Σ55, E_F − Re Σ0, U0 axis, E_F
+    /// axis)`, the maps column-major with U0 fastest.
+    pub fn run(&self) -> (Vec<f64>, Vec<f64>, Vec<f64>, Vec<f64>) {
+        let Self { params, m, n, u0, ef, eta, points } = *self;
+        let hk = bhz_hk(params, m, n);
+        let us: Vec<f64> = (0..points)
+            .map(|i| (i as f64 * (u0.1.ln() - u0.0.ln()) / (points - 1) as f64 + u0.0.ln()).exp())
+            .collect();
+        let es: Vec<f64> =
+            (0..points).map(|i| i as f64 * (ef.1 - ef.0) / (points - 1) as f64 + ef.0).collect();
+        let (mut mass, mut mu) = (vec![0.0; points * points], vec![0.0; points * points]);
+        for (iu, &u) in us.iter().enumerate() {
+            let (mf, vertices) = caroli_born::anderson(u, 4);
+            let scba = caroli_born::Scba { hk: hk.clone(), mean_field: mf, vertices };
+            let mut sigma = CMat::zeros(4, 4);
+            for (ie, &e) in es.iter().enumerate() {
+                sigma = diag_shift(&sigma, c64::new(0.0, -eta));
+                let (mut diff, mut kk) = (1.0, 0);
+                while diff > 1e-4 && kk < 400 {
+                    let next = scba.update(c64::new(e, 0.0), &sigma);
+                    diff = caroli_born::max_abs_diff(&next, &sigma);
+                    sigma = caroli_born::mix(&next, &sigma, 0.5);
+                    kk += 1;
+                }
+                let s55 = (sigma[(0, 0)] - sigma[(1, 1)] + sigma[(2, 2)] - sigma[(3, 3)]) / 4.0;
+                let s0 = (sigma[(0, 0)] + sigma[(1, 1)] + sigma[(2, 2)] + sigma[(3, 3)]) / 4.0;
+                mass[iu + points * ie] = params.mass + s55.re;
+                mu[iu + points * ie] = e - s0.re;
+            }
+        }
+        (mass, mu, us, es)
+    }
+}
+
+/// Largest `max_ij(|a_ij − b_ij| − prec |a_ij|)` (the thesis convergence measure).
+fn relative_change(next: &CMat, sigma: &CMat, prec: f64) -> f64 {
+    let mut m = f64::NEG_INFINITY;
+    for j in 0..4 {
+        for i in 0..4 {
+            m = m.max((next[(i, j)] - sigma[(i, j)]).norm() - prec * next[(i, j)].norm());
+        }
+    }
+    m
+}
+
+/// `scba-magnetic-matrix` (`born.ini`).
+#[derive(Clone, Copy, Debug)]
+pub struct ScbaMatrix {
+    pub params: caroli_model::presets::BhzParams,
+    pub m: usize,
+    pub n: usize,
+    pub conc: f64,
+    pub j_range: (f64, f64),
+    pub ef: (f64, f64),
+    pub eta: f64,
+    pub points: usize,
+    pub gegh: i32,
+}
+
+impl ScbaMatrix {
+    /// `born.f90`: impurities along z with vertex Γ12 (`gegh ≥ 0`) or Γ12p (`gegh < 0`), mean
+    /// field `conc J Γ` in the Green's function; two stages (mixing 0.05 to a relative change
+    /// 0.1, then 1.0 to 1e-5), mean field added to Σ at the end and Σ carried to the next E_F.
+    /// Returns `(mass_u, mu_u, mass_d, mu_d)` maps, J fastest.
+    pub fn run(&self) -> [Vec<f64>; 4] {
+        let Self { params, m, n, conc, j_range, ef, eta, points, gegh } = *self;
+        let hk = bhz_hk(params, m, n);
+        let gamma = if gegh < 0 { caroli_model::gamma::gamma12p() } else { caroli_model::gamma::gamma12() };
+        let scale = |a: &CMat, s: f64| CMat::from_fn(4, 4, |i, j| c64::new(s, 0.0) * a[(i, j)]);
+        let mut out = [
+            vec![0.0; points * points],
+            vec![0.0; points * points],
+            vec![0.0; points * points],
+            vec![0.0; points * points],
+        ];
+        for iu in 0..points {
+            let ji = iu as f64 * (j_range.1 - j_range.0) / (points - 1) as f64 + j_range.0;
+            let scba = caroli_born::Scba {
+                hk: hk.clone(),
+                mean_field: scale(&gamma, conc * ji),
+                vertices: vec![(conc * ji * ji, gamma.clone())],
+            };
+            let mut sigma = CMat::zeros(4, 4);
+            for ie in 0..points {
+                let e = ie as f64 * (ef.1 - ef.0) / (points - 1) as f64 + ef.0;
+                sigma = diag_shift(&sigma, c64::new(0.0, -eta));
+                let mut diff = 1.0;
+                for (p, prec) in [(0.05, 0.1), (1.0, 1e-5)] {
+                    let mut kk = 0;
+                    while diff > prec && kk < 400 {
+                        let next = scba.update(c64::new(e, 0.0), &sigma);
+                        diff = relative_change(&next, &sigma, prec);
+                        sigma = caroli_born::mix(&next, &sigma, p);
+                        kk += 1;
+                    }
+                }
+                sigma += scale(&gamma, conc * ji);
+                let k = iu + points * ie;
+                out[0][k] = params.mass + ((sigma[(0, 0)] - sigma[(1, 1)]) / 2.0).re;
+                out[1][k] = e - ((sigma[(0, 0)] + sigma[(1, 1)]) / 2.0).re;
+                out[2][k] = params.mass + ((sigma[(2, 2)] - sigma[(3, 3)]) / 2.0).re;
+                out[3][k] = e - ((sigma[(2, 2)] + sigma[(3, 3)]) / 2.0).re;
+            }
+        }
+        out
+    }
+}
+
+/// `scba-magnetic-analytic` (`born.ini`; mass, B and D are hard-coded in the program).
+#[derive(Clone, Copy, Debug)]
+pub struct ScbaAnalytic {
+    pub m: usize,
+    pub n: usize,
+    pub conc: f64,
+    pub mz: f64,
+    pub anti: i32,
+    pub points: usize,
+    pub j_range: (f64, f64),
+    pub ef: (f64, f64),
+    pub eta: f64,
+}
+
+impl ScbaAnalytic {
+    /// `self_born.f90`: the SCBA reduced to four complex scalars `(M↑, M↓, μ↑, μ↓)` for the BHZ
+    /// blocks (λ = C = 0, mass −0.137), moments in a cone of polarisation `mz`, at `E_F + iη`.
+    /// Weights as in the thesis: `v_z = (1 − conc²) mz² + (1 − mz)²/3`,
+    /// `v_⊥ = (2/3)(1 − mz)(1 + 2 mz)` with 2/3 in single precision. Two stages (mixing 0.15 to
+    /// 1e-4, then 0.8 to 1e-6). Returns `(M↑, μ↑, M↓, μ↓)` maps (real parts), J fastest.
+    pub fn run(&self) -> [Vec<f64>; 4] {
+        let Self { m, n, conc, mz, anti, points, j_range, ef, eta } = *self;
+        let (mass, b, d) = (-0.137, -0.376406, -0.280933);
+        let grid = caroli_born::k_grid(m, n);
+        let kc: Vec<f64> = grid.iter().map(|k| 4.0 - 2.0 * k[0].cos() - 2.0 * k[1].cos()).collect();
+        let ks: Vec<f64> = grid.iter().map(|k| k[0].sin().powi(2) + k[1].sin().powi(2)).collect();
+        let vz = (1.0 - conc * conc) * mz * mz + (1.0 - mz) * (1.0 - mz) / 3.0;
+        let vperp = (2.0f32 / 3.0f32) as f64 * (1.0 - mz) * (1.0 + 2.0 * mz);
+        let anti = anti as f64;
+        let mut out = [
+            vec![0.0; points * points],
+            vec![0.0; points * points],
+            vec![0.0; points * points],
+            vec![0.0; points * points],
+        ];
+        for iu in 0..points {
+            let ji = iu as f64 * (j_range.1 - j_range.0) / (points - 1) as f64 + j_range.0;
+            let norm = conc * ji * ji / (n * m) as f64;
+            for ie in 0..points {
+                let e = ie as f64 * (ef.1 - ef.0) / (points - 1) as f64 + ef.0;
+                let z = c64::new(e, eta);
+                let mu0 = c64::new(mass + anti * ji * conc * mz, 0.0);
+                let md0 = c64::new(mass - anti * ji * conc * mz, 0.0);
+                let muu0 = c64::new(-(1.0 - anti) * ji * conc * mz, 0.0);
+                let mud0 = c64::new((1.0 - anti) * ji * conc * mz, 0.0);
+                let (mut mu, mut md, mut muu, mut mud) = (mu0, md0, muu0, mud0);
+                for (p, prec) in [(0.15, 1e-4), (0.8, 1e-6)] {
+                    let (mut diff, mut kk) = (1.0, 0);
+                    while diff > prec && kk < 500 {
+                        let (mut dmu, mut dmd, mut dmuu, mut dmud) =
+                            (c64::new(0.0, 0.0), c64::new(0.0, 0.0), c64::new(0.0, 0.0), c64::new(0.0, 0.0));
+                        for (c, s) in kc.iter().zip(&ks) {
+                            let eu = z + muu + d * c;
+                            let ed = z + mud + d * c;
+                            let (mu_k, md_k) = (mu - b * c, md - b * c);
+                            let detu = eu * eu - mu_k * mu_k - s;
+                            let detd = ed * ed - md_k * md_k - s;
+                            let (vzu, vzd, vpu, vpd) = (vz / detu, vz / detd, vperp / detu, vperp / detd);
+                            dmu += vzu * mu_k + vpd * md_k;
+                            dmd += vzd * md_k + vpu * mu_k;
+                            dmuu += vzu * eu + vpd * ed;
+                            dmud += vzd * ed + vpu * eu;
+                        }
+                        let (mut_, mdt, muut, mudt) =
+                            (mu0 - dmu * norm, md0 - dmd * norm, muu0 - dmuu * norm, mud0 - dmud * norm);
+                        let ch = |t: c64, x: c64| ((t - x).norm() - prec * t.norm()).abs();
+                        diff = p * (ch(mut_, mu) + ch(mdt, md) + ch(muut, muu) + ch(mudt, mud));
+                        let mixp = |t: c64, x: c64| t * p + x * (1.0 - p);
+                        (mu, md, muu, mud) =
+                            (mixp(mut_, mu), mixp(mdt, md), mixp(muut, muu), mixp(mudt, mud));
+                        kk += 1;
+                    }
+                }
+                let k = iu + points * ie;
+                out[0][k] = mu.re;
+                out[1][k] = muu.re;
+                out[2][k] = md.re;
+                out[3][k] = mud.re;
+            }
+        }
+        out
+    }
+}
