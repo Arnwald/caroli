@@ -9,7 +9,7 @@ pub mod decimation;
 pub mod modes;
 mod two_terminal;
 
-pub use two_terminal::{Lead, SelfEnergyMethod, TwoTerminal};
+pub use two_terminal::{EndToEnd, Lead, SelfEnergyMethod, TwoTerminal};
 
 use caroli_model::{CMat, c64};
 use faer::linalg::solvers::{DenseSolveCore, Solve};
@@ -51,6 +51,6 @@ pub fn broadening(sigma: &CMat) -> CMat {
 }
 
 /// Trace of a square matrix.
-pub(crate) fn trace(m: &CMat) -> c64 {
+pub fn trace(m: &CMat) -> c64 {
     (0..m.nrows()).map(|i| m[(i, i)]).sum()
 }

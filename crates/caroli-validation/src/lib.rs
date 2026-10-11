@@ -28,3 +28,4 @@ pub fn golden_f64(case: &str, file: &str) -> Vec<Vec<f64>> {
         .map(|r| as_f64(r))
         .collect()
 }
+pub mod thesis;

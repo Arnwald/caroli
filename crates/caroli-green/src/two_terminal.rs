@@ -18,6 +18,11 @@ impl Lead {
     pub fn modes(&self, energy: f64) -> Result<LeadModes, GreenError> {
         LeadModes::new(&self.h00, &self.h01, energy)
     }
+
+    /// Modes of the lead at a complex energy (see [`LeadModes::at`]).
+    pub fn modes_at(&self, z: c64) -> Result<LeadModes, GreenError> {
+        LeadModes::at(&self.h00, &self.h01, z)
+    }
 }
 
 /// How lead self-energies are computed.
@@ -25,6 +30,9 @@ impl Lead {
 pub enum SelfEnergyMethod {
     /// Mode matching (exact at real energy).
     Modes,
+    /// Mode matching at `E + iη` for the leads only, the device staying at real energy (the
+    /// thesis codes: generalised Schur decomposition at `E + iη`).
+    ModesBroadened { eta: f64 },
     /// Decimation at energy `E + iη`.
     Decimation { eta: f64 },
 }
@@ -65,6 +73,12 @@ impl TwoTerminal {
                 let mr = self.right.modes(energy)?;
                 Ok((sigma_left(&self.left.h01, &ml), sigma_right(&self.right.h01, &mr)))
             }
+            SelfEnergyMethod::ModesBroadened { eta } => {
+                let z = c64::new(energy, eta);
+                let ml = self.left.modes_at(z)?;
+                let mr = self.right.modes_at(z)?;
+                Ok((sigma_left(&self.left.h01, &ml), sigma_right(&self.right.h01, &mr)))
+            }
             SelfEnergyMethod::Decimation { eta } => {
                 let z = c64::new(energy, eta);
                 let away_left = self.left.h01.adjoint().to_owned();
@@ -84,9 +98,14 @@ impl TwoTerminal {
 
     /// Transmission with a chosen self-energy method.
     pub fn transmission_with(&self, energy: f64, method: SelfEnergyMethod) -> Result<f64, GreenError> {
+        Ok(self.solve(energy, method)?.transmission())
+    }
+
+    /// Lead self-energies and the Green's function `G_1N` between the first and last slices.
+    pub fn solve(&self, energy: f64, method: SelfEnergyMethod) -> Result<EndToEnd, GreenError> {
         let (sigma_l, sigma_r) = self.self_energies(energy, method)?;
         let eta = match method {
-            SelfEnergyMethod::Modes => 0.0,
+            SelfEnergyMethod::Modes | SelfEnergyMethod::ModesBroadened { .. } => 0.0,
             SelfEnergyMethod::Decimation { eta } => eta,
         };
         let z = c64::new(energy, eta);
@@ -108,8 +127,24 @@ impl TwoTerminal {
             g = inverse(&a);
             g1n = solve_right(&(&g1n * v), &a);
         }
-        let t = broadening(&sigma_l) * &g1n * broadening(&sigma_r) * g1n.adjoint();
-        Ok(trace(&t).re)
+        Ok(EndToEnd { sigma_l, sigma_r, g1n })
+    }
+}
+
+/// Result of [`TwoTerminal::solve`]: lead self-energies on the first and last slices and the
+/// retarded Green's function between them.
+#[derive(Clone, Debug)]
+pub struct EndToEnd {
+    pub sigma_l: CMat,
+    pub sigma_r: CMat,
+    pub g1n: CMat,
+}
+
+impl EndToEnd {
+    /// Caroli transmission `Tr[Γ_L G_1N Γ_R G_1N†]`.
+    pub fn transmission(&self) -> f64 {
+        let t = broadening(&self.sigma_l) * &self.g1n * broadening(&self.sigma_r) * self.g1n.adjoint();
+        trace(&t).re
     }
 }
 

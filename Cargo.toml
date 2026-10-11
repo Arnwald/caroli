@@ -13,6 +13,7 @@ repository = "https://github.com/Arnwald/caroli"
 caroli-lattice = { path = "crates/caroli-lattice" }
 caroli-model = { path = "crates/caroli-model" }
 caroli-green = { path = "crates/caroli-green" }
+caroli-disorder = { path = "crates/caroli-disorder" }
 faer = "0.24"
 num-complex = "0.4"
 thiserror = "2"

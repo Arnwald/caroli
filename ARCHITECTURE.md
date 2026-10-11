@@ -9,6 +9,8 @@ crates/
                       dense / Bloch Hamiltonians, transport blocks; BHZ Dirac matrices and presets
   caroli-green        steady state: lead modes and self-energies, recursive Green's function,
                       Caroli transmission
+  caroli-disorder     reproducible random streams (xoshiro256**, gfortran-compatible seeding),
+                      Anderson disorder, classical magnetic impurities
   caroli              facade: re-exports and prelude
   caroli-validation   (not published) comparisons with the thesis golden outputs
 ```
@@ -51,22 +53,26 @@ The dependencies only go downward: lattice ← model ← green ← caroli.
 |---|---|---|
 | 6×6 flake spectrum | `ti-diag` | equal to 1e-10 |
 | ribbon bands with exchange J_s | `ti-ribbon-bands` | equal to 1e-10 |
-| clean ribbon conductance | `ti-cond2t-clean` | caroli gives exact integers; within 0.025 of the thesis, whose clean-wire G deviates by up to ~1 % |
-| QSH plateau, modes vs decimation | — | internal consistency |
+| clean ribbon conductance | `ti-cond2t-clean` | caroli gives exact integers; the thesis is off by ≤ 1 % (Re Γ truncation) |
+| conductance with magnetic impurities (same-g along z, isotropic, opposite-g) | `ti-cond2t-same-g`, `-isotropic`, `-opposite-g` | thesis formula (Re Γ, Σ at E + iη) reproduced to 1e-13 with the same impurity configurations; the exact transmission differs by up to 0.22 e²/h |
+| QSH plateau, modes vs decimation, T_LR = T_RL | — | internal consistency |
 
-Golden cases with disorder need the same impurity configuration. Two routes are possible:
-- use the configurations written by the thesis programs (`imp_XX.dat`, local-current codes);
-- reproduce gfortran's generator (xoshiro256\*\* with `random_seed(put=…)` scrambling) in a test
-  helper.
+Golden cases with disorder use the same impurity configurations as the thesis.
+`caroli_disorder::rng::Xoshiro256::gfortran` reproduces gfortran's `random_seed(put=…)` and
+`random_number` bit for bit, and the disorder generators follow the thesis draw order.
+`caroli_validation::thesis` rebuilds each thesis setup.
+
+**Thesis bug found this way:** all conductance codes use `real(IM*(Σ − Σ†))` for the broadening
+(see `reference/thesis/README.md`).
 
 ## Roadmap
 
 1. ✅ Baseline: thesis codes built, 26 golden cases.
 2. ✅ Lattice, model (BHZ), Green's functions (modes, RGF, Caroli transmission), validated on
    spectra and clean conductance.
-3. Disorder (`caroli-disorder`): Anderson; classical magnetic impurities (isotropic, cone θ0,
-   polarisation M_z) with same-g / opposite-g coupling; reproducible random streams. Validate on
-   `ti-cond2t-*`.
+3. ✅ Disorder (`caroli-disorder`): Anderson; classical magnetic impurities (isotropic, cone θ0,
+   polarisation M_z) with same-g / opposite-g coupling; reproducible random streams. Validated on
+   `ti-cond2t-*` (exact).
 4. Multi-terminal transport (4 leads, transmissions T_ij), validated on `ti-cond4t-anderson`.
 5. Keldysh (`caroli-keldysh`): G^< by lead injection, bond currents, occupied LDOS, bias
    windows. Validate on `ti-lcur-*` with the impurity files `imp_00.dat`.

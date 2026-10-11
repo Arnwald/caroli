@@ -45,6 +45,13 @@ const SHIFT: c64 = c64::new(0.2732, 0.1879);
 impl LeadModes {
     /// Solves for the modes of the lead `(h0, h1)` at energy `energy`.
     pub fn new(h0: &CMat, h1: &CMat, energy: f64) -> Result<Self, GreenError> {
+        Self::at(h0, h1, c64::new(energy, 0.0))
+    }
+
+    /// Modes at a complex energy `z`. With `Im z > 0` no mode propagates (`|λ| ≠ 1`): the split
+    /// is by `|λ|` alone, as in a Schur decomposition ordered by `|λ| < 1`.
+    pub fn at(h0: &CMat, h1: &CMat, z: c64) -> Result<Self, GreenError> {
+        let energy = z;
         let n = h0.nrows();
         let zero = c64::new(0.0, 0.0);
         let one = c64::new(1.0, 0.0);
@@ -67,7 +74,7 @@ impl LeadModes {
             (false, true) => -h1[(j, i - n)].conj(),
             (false, false) => {
                 let (r, c) = (i - n, j - n);
-                (if r == c { c64::new(energy, 0.0) } else { zero }) - h0[(r, c)] - SHIFT * h1[(r, c)]
+                (if r == c { energy } else { zero }) - h0[(r, c)] - SHIFT * h1[(r, c)]
             }
         });
         let b = CMat::from_fn(2 * n, 2 * n, |i, j| match (i < n, j < n) {

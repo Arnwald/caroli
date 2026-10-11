@@ -16,6 +16,7 @@ regex = "1"
 serde = { version = "1", features = ["derive"] }
 toml = "1"
 sha1_smol = "1"
+caroli-disorder.workspace = true
 
 [dev-dependencies]
 faer.workspace = true

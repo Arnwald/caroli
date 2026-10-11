@@ -64,11 +64,17 @@ pub enum GFactors {
     Opposite,
 }
 
+/// Spin matrices `(S_x, S_y, S_z)` coupled to a classical moment in the BHZ basis:
+/// `(s_x, s_y, s_z)` for same-g, `(s_x τ_z, s_y τ_z, s_z τ_z)` for opposite-g.
+pub fn bhz_spin(coupling: GFactors) -> [CMat; 3] {
+    match coupling {
+        GFactors::Same => [gamma23(), gamma31(), gamma12()],
+        GFactors::Opposite => [gamma23p(), gamma31p(), gamma12p()],
+    }
+}
+
 /// Exchange matrix `J (n_x S_x + n_y S_y + n_z S_z)` in the BHZ basis for a moment `n`.
 pub fn bhz_exchange(coupling: GFactors, j: f64, n: [f64; 3]) -> CMat {
-    let (sx, sy, sz) = match coupling {
-        GFactors::Same => (gamma23(), gamma31(), gamma12()),
-        GFactors::Opposite => (gamma23p(), gamma31p(), gamma12p()),
-    };
+    let [sx, sy, sz] = bhz_spin(coupling);
     combine(&[(c64::new(j * n[0], 0.0), &sx), (c64::new(j * n[1], 0.0), &sy), (c64::new(j * n[2], 0.0), &sz)])
 }

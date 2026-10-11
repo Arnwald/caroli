@@ -105,6 +105,5 @@ the files exactly as the program wrote them.
 
 - Bounds checking confirmed or uncovered the out-of-bounds accesses listed above. They are now
   recorded in the thesis READMEs.
-- The clean-wire conductance is not an exact integer: 1.988–2.012 in `ti-cond2t-clean`, and ≈ 1.99
-  in the thesis-era G(E) data. A perfectly matched clean wire should give an integer, so this is
-  the first thing to check with the caroli Green's function solver.
+- The conductance codes truncate the broadening to its real part, `real(IM*(Σ − Σ†))`. This explains the non-integer clean-wire conductance (1.988–2.012 in `ti-cond2t-clean`, ≈ 1.99 in the thesis-era G(E) data). With magnetic impurities the error reaches 0.2 e²/h.
+- caroli reproduces every `ti-cond2t-*` golden value to 1e-13 when it uses this truncated formula, the same impurity configurations (gfortran-compatible random stream) and lead self-energies at E + iη. That validates the whole chain exactly.
