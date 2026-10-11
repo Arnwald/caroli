@@ -254,23 +254,16 @@ impl Images {
                 break;
             }
             // Euclid on the rows top.. in this column.
-            loop {
-                let Some(p) = (top..m).filter(|&i| rows[i][col] != 0).min_by_key(|&i| rows[i][col].abs())
-                else {
-                    break;
-                };
+            while let Some(p) = (top..m).filter(|&i| rows[i][col] != 0).min_by_key(|&i| rows[i][col].abs()) {
                 rows.swap(top, p);
                 w.swap(top, p);
+                let (pivot_row, pivot_w) = (rows[top], w[top].clone());
                 let mut done = true;
                 for i in top + 1..m {
-                    let f = rows[i][col] / rows[top][col];
+                    let f = rows[i][col] / pivot_row[col];
                     if f != 0 {
-                        for c in 0..3 {
-                            rows[i][c] -= f * rows[top][c];
-                        }
-                        for c in 0..m {
-                            w[i][c] -= f * w[top][c];
-                        }
+                        rows[i].iter_mut().zip(&pivot_row).for_each(|(x, y)| *x -= f * y);
+                        w[i].iter_mut().zip(&pivot_w).for_each(|(x, y)| *x -= f * y);
                     }
                     done &= rows[i][col] == 0;
                 }
