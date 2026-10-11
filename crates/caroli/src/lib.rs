@@ -17,6 +17,7 @@
 pub use caroli_born as born;
 pub use caroli_disorder as disorder;
 pub use caroli_dynamics as dynamics;
+pub use caroli_gpu as gpu;
 pub use caroli_green as green;
 pub use caroli_keldysh as keldysh;
 pub use caroli_kpm as kpm;
@@ -32,5 +33,5 @@ pub mod prelude {
     pub use caroli_keldysh::{Lesser, fermi};
     pub use caroli_lattice::{Lattice, Region, Site};
     pub use caroli_model::presets::{BhzParams, GFactors, bhz, bhz_exchange, bhz_spin};
-    pub use caroli_model::{CMat, Model, c64};
+    pub use caroli_model::{CMat, Model, SparseMatrix, c64};
 }

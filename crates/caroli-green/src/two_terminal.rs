@@ -79,10 +79,16 @@ impl TwoTerminal {
         self
     }
 
-    /// Transmissions at many energies, in parallel.
+    /// Transmissions at many energies, in parallel, by independent blocks.
     pub fn transmissions(&self, energies: &[f64], method: SelfEnergyMethod) -> Vec<Result<f64, GreenError>> {
         use rayon::prelude::*;
-        energies.par_iter().map(|&e| self.transmission_with(e, method)).collect()
+        let blocks = self.blocks();
+        let parts: Vec<Self> = if blocks.len() > 1 {
+            blocks.iter().map(|b| self.restricted(b)).collect()
+        } else {
+            vec![self.clone()]
+        };
+        energies.par_iter().map(|&e| parts.iter().map(|p| p.transmission_with(e, method)).sum()).collect()
     }
 
     /// Recursive sweeps from both ends at one energy (see [`Sweeps`]).
@@ -149,6 +155,70 @@ impl TwoTerminal {
     /// Transmission with a chosen self-energy method.
     pub fn transmission_with(&self, energy: f64, method: SelfEnergyMethod) -> Result<f64, GreenError> {
         Ok(self.solve(energy, method)?.transmission())
+    }
+
+    /// Orbitals of the cross-section that no slice, coupling or lead matrix connects, as
+    /// independent sets (e.g. the two spin blocks of BHZ with spin-conserving disorder). One set
+    /// if the slices differ in size.
+    pub fn blocks(&self) -> Vec<Vec<usize>> {
+        let w = self.left.h00.nrows();
+        let same = self.slices.iter().all(|h| h.nrows() == w) && self.right.h00.nrows() == w;
+        if !same {
+            return vec![(0..w).collect()];
+        }
+        let mut parent: Vec<usize> = (0..w).collect();
+        fn find(p: &mut [usize], mut i: usize) -> usize {
+            while p[i] != i {
+                p[i] = p[p[i]];
+                i = p[i];
+            }
+            i
+        }
+        let mats = self.slices.iter().chain(&self.couplings).chain([
+            &self.left.h00,
+            &self.left.h01,
+            &self.right.h00,
+            &self.right.h01,
+        ]);
+        for m in mats {
+            for j in 0..m.ncols() {
+                for i in 0..m.nrows() {
+                    if m[(i, j)] != c64::new(0.0, 0.0) {
+                        let (a, b) = (find(&mut parent, i), find(&mut parent, j));
+                        parent[a.max(b)] = a.min(b);
+                    }
+                }
+            }
+        }
+        let mut sets: std::collections::BTreeMap<usize, Vec<usize>> = Default::default();
+        for i in 0..w {
+            let r = find(&mut parent, i);
+            sets.entry(r).or_default().push(i);
+        }
+        sets.into_values().collect()
+    }
+
+    /// The system restricted to `orbitals` of every slice (one of [`Self::blocks`]).
+    pub fn restricted(&self, orbitals: &[usize]) -> Self {
+        let pick =
+            |m: &CMat| CMat::from_fn(orbitals.len(), orbitals.len(), |i, j| m[(orbitals[i], orbitals[j])]);
+        Self {
+            slices: self.slices.iter().map(pick).collect(),
+            couplings: self.couplings.iter().map(pick).collect(),
+            left: Lead { h00: pick(&self.left.h00), h01: pick(&self.left.h01) },
+            right: Lead { h00: pick(&self.right.h00), h01: pick(&self.right.h01) },
+            regions: Vec::new(),
+        }
+    }
+
+    /// Transmission summed over the independent [`Self::blocks`], each solved on its own: for
+    /// `b` equal blocks the recursion costs `b²` times less.
+    pub fn transmission_by_blocks(&self, energy: f64, method: SelfEnergyMethod) -> Result<f64, GreenError> {
+        let blocks = self.blocks();
+        if blocks.len() == 1 {
+            return self.transmission_with(energy, method);
+        }
+        blocks.iter().map(|b| self.restricted(b).transmission_with(energy, method)).sum()
     }
 
     /// Lead self-energies and the Green's function `G_1N` between the first and last slices.
@@ -273,6 +343,28 @@ mod tests {
             left: Lead { h00: one(0.0), h01: one(-1.0) },
             right: Lead { h00: one(0.0), h01: one(-1.0) },
             regions: Vec::new(),
+        }
+    }
+
+    /// BHZ ribbon with on-site disorder: two spin blocks, same transmission as the full system.
+    #[test]
+    fn blocks_of_bhz_with_spin_conserving_disorder() {
+        use caroli_model::presets::{BhzParams, bhz};
+        let clean = bhz(BhzParams::default());
+        let pot = |s: &caroli_lattice::Site| {
+            let v = ((s.cell[0] * 7 + s.cell[1] * 3) % 5) as f64 * 0.1 - 0.2;
+            Some(CMat::from_fn(4, 4, |i, j| if i == j { c64::new(v, 0.0) } else { c64::new(0.0, 0.0) }))
+        };
+        let device = bhz(BhzParams::default()).with_onsite_term(pot);
+        let region = Region::cuboid(clean.lattice(), [6, 5, 0]);
+        let sys = TwoTerminal::from_model(&device, &clean, &region, 0);
+        let blocks = sys.blocks();
+        assert_eq!(blocks.len(), 2);
+        assert_eq!(blocks[0].len(), 10);
+        for e in [-0.3, 0.05, 0.4] {
+            let full = sys.transmission(e).unwrap();
+            let split = sys.transmission_by_blocks(e, SelfEnergyMethod::Modes).unwrap();
+            assert!((full - split).abs() < 1e-10, "E {e}: {full} vs {split}");
         }
     }
 

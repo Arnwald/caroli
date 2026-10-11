@@ -75,6 +75,7 @@ dependencies = [
  "caroli-born",
  "caroli-disorder",
  "caroli-dynamics",
+ "caroli-gpu",
  "caroli-green",
  "caroli-keldysh",
  "caroli-kpm",

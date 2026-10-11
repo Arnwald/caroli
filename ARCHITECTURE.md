@@ -6,7 +6,8 @@
 crates/
   caroli-lattice      Bravais lattices with a basis (1D/2D/3D), finite regions, slices
   caroli-model        tight-binding models: on-site and hopping matrices, site-dependent terms,
-                      dense / Bloch Hamiltonians, transport blocks; BHZ Dirac matrices and presets
+                      dense / sparse (CSR) / Bloch Hamiltonians, transport blocks; BHZ Dirac
+                      matrices and presets
   caroli-green        steady state: lead modes and self-energies, recursive Green's function,
                       Caroli transmission
   caroli-disorder     reproducible random streams (xoshiro256**, gfortran-compatible seeding),
@@ -18,7 +19,10 @@ crates/
   caroli-torus        Hamiltonians on periodic 2D supercells: k-space part through FFTs (rustfft),
                       local terms in real space
   caroli-kpm          kernel polynomial method: Chebyshev moments, Jackson kernel, densities
-  caroli-dynamics     time evolution: split-operator propagation on tori
+  caroli-dynamics     time evolution: split-operator on tori, Chebyshev propagation, fourth-order
+                      commutator-free Magnus integrator
+  caroli-gpu          Chebyshev kernels (KPM, propagation) on Metal (f32, double-single) and
+                      CUDA (f64)
   caroli              facade: re-exports and prelude
   caroli-validation   (not published) comparisons with the thesis golden outputs
 ```
@@ -104,11 +108,15 @@ Golden cases with disorder use the same impurity configurations as the thesis.
 8. ✅ Time evolution: split-operator on tori (`caroli-dynamics`); graphene current, pair
    creation, wave-packet width and density validated (exact).
 9. Interface: declarative system and simulation files with a CLI; Python bindings to consider.
-10. Acceleration:
-    - CPU parallelism (rayon) over energies and samples first.
-    - Then GPU kernels for sparse mat-vec (KPM, time evolution) and batched dense solves.
-    - Apple GPUs have no f64, so Metal kernels must be f32 (or emulated double-single), which
-      suits KPM and time evolution better than transmissions.
-    - CUDA allows f64.
+10. ✅ Acceleration:
+    - CPU: rayon over energies (`TwoTerminal::transmissions`), k sums, random vectors, FFT rows,
+      sparse products; transport split into independent blocks (`TwoTerminal::blocks`).
+    - Faster methods: KPM doubling relations and block products, Anderson-accelerated SCBA,
+      Chebyshev propagation, fourth-order commutator-free Magnus integrator.
+    - GPU (`caroli-gpu`): Chebyshev kernels (KPM moments, propagation) on CSR matrices.
+      - Metal: f32, and double-single (~1e-14) for f64-like accuracy. Tested on an M5: KPM on
+        a 1M-orbital torus is 4× (f32) or 2× (double-single) faster than 10 CPU cores.
+      - CUDA: f64 through NVRTC, feature `cuda`. Not yet run on NVIDIA hardware.
+    - Not on the GPU: dense transport solves (RGF), and FFT-based torus operators.
 11. Examples: the two thesis studies (TI with magnetic impurities: G maps, local currents, Born
     phase diagram; graphene under a field: current, pair creation, DOS).

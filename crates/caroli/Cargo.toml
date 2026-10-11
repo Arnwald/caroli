@@ -7,6 +7,10 @@ rust-version.workspace = true
 license.workspace = true
 repository.workspace = true
 
+[features]
+# CUDA backend of caroli-gpu (f64, needs an NVIDIA driver at run time).
+cuda = ["caroli-gpu/cuda"]
+
 [dependencies]
 caroli-lattice.workspace = true
 caroli-model.workspace = true
@@ -17,3 +21,4 @@ caroli-born.workspace = true
 caroli-kpm.workspace = true
 caroli-dynamics.workspace = true
 caroli-torus.workspace = true
+caroli-gpu.workspace = true
