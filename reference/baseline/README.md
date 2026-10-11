@@ -5,15 +5,18 @@ outputs it records are the regression baseline for caroli. The thesis sources ar
 they are; a few minimal fixes are applied at build time to a copy (see [Build-time patches](#build-time-patches)).
 
 ```bash
-python3 reference/baseline/baseline.py deps            # shims + LAPACK95 -> target/reference/
-python3 reference/baseline/baseline.py build           # 18 programs -> target/reference/bin/
-python3 reference/baseline/baseline.py run             # run every case, compare with golden/
-python3 reference/baseline/baseline.py run --update    # re-record golden/ (after a deliberate change)
-python3 reference/baseline/baseline.py build --check   # -O0 + bounds checking -> bin-check/
-python3 reference/baseline/baseline.py run --check     # same cases with the checking build
-python3 reference/baseline/baseline.py show FILE       # records of a Fortran output file
-python3 reference/baseline/baseline.py list            # programs and cases
+alias baseline='cargo run --release -p caroli-validation --bin baseline --'
+baseline deps                 # shims + LAPACK95 -> target/reference/
+baseline build                # 18 programs -> target/reference/bin/
+baseline run                  # run every case, compare with golden/
+baseline run --update         # re-record golden/ (after a deliberate change)
+baseline build --check        # -O0 + bounds checking -> bin-check/
+baseline run --check          # same cases with the checking build
+baseline show FILE            # records of a Fortran output file
+baseline list                 # programs and cases
 ```
+
+The tool is the `baseline` binary of `crates/caroli-validation` (`src/bin/baseline/`).
 
 Status (2026-10-11):
 - 26/26 cases pass.
@@ -30,7 +33,7 @@ Status (2026-10-11):
 | LAPACK + BLAS | Accelerate on macOS, `-llapack -lblas` elsewhere; `LAPACK_LIBS` to override |
 | LAPACK95 sources (netlib) | not in the repository: `LAPACK95_SRC`, default `~/Projects/electronic-transport/TI/Fortran/librairies/LAPACK95/SRC` (on another machine: netlib `lapack95.tgz`). Only the double and double-complex routines are built. |
 | MPI | not needed: `shims/` provides a serial stand-in |
-| Python ≥ 3.11 | standard library only |
+| Rust (cargo) | builds and runs the `baseline` tool |
 
 Everything is built into `target/reference/` (git-ignored).
 
@@ -44,7 +47,7 @@ Everything is built into `target/reference/` (git-ignored).
 
 ## Build-time patches
 
-`PATCHES` in `baseline.py` applies these regular-expression fixes to a copy of the sources in
+`PATCHES` in `crates/caroli-validation/src/bin/baseline/compile.rs` applies these regular-expression fixes to a copy of the sources in
 `target/reference/src/<program>/`. `target/reference/build/<program>/patches.txt` lists what was
 applied to each program.
 

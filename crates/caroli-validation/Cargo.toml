@@ -12,6 +12,10 @@ publish = false
 caroli-lattice.workspace = true
 caroli-model.workspace = true
 caroli-green.workspace = true
+regex = "1"
+serde = { version = "1", features = ["derive"] }
+toml = "1"
+sha1_smol = "1"
 
 [dev-dependencies]
 faer.workspace = true

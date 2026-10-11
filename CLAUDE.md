@@ -16,15 +16,17 @@ Read `README.md` for the scope.
 - `reference/thesis/` is a **frozen reference**: do not edit the sources there. Record bugs and
   findings in its READMEs. It is the regression baseline for the Rust rewrite.
 - `reference/baseline/` compiles the thesis programs (gfortran, serial MPI shim, LAPACK95, FFTW)
-  and checks 26 small cases against `golden/`. Run `python3 reference/baseline/baseline.py run`
+  and checks 26 small cases against `golden/`. Run `cargo run --release -p caroli-validation --bin baseline -- run`
   after rebuilding (`deps`, then `build`). Never re-record goldens (`--update`) without saying why.
 - The thesis data (5.3 GB of results) are NOT in the repo. They live on the author's machine in
-  `~/Projects/electronic-transport/`, and `reference/thesis/tools/coverage.py` can only check
+  `~/Projects/electronic-transport/`, and `cargo run --release -p caroli-validation --bin baseline -- coverage` can only check
   coverage there.
 
 ## Conventions
 
 - Everything in English: code, docs, comments, commit messages.
+- No Python: tooling is Rust. Python is only allowed for example scripts that plot paper figures.
+- Commit and push each validated step directly to `main`.
 - Magnetic exchange coupling: use **same-g** / **opposite-g** (g_E = ±g_H). The thesis
   "ferro"/"antiferro" labels stay only where they name original files or folders.
 - The repository is private until the toolbox is ready and the rights to the reference code are
