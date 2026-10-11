@@ -1,0 +1,2 @@
+program = "dos-kpm-magnetic"
+description = "Single rank (serial MPI stub): only rank 0's share is computed. KPM DOS, 16x16 torus, z-polarised impurities, same-g: only the spin-up column is filled (rank 1 computes spin down)."

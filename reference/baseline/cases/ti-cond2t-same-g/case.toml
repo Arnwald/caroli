@@ -1,0 +1,2 @@
+program = "conductance-2t"
+description = "Magnetic impurities along z, same-g coupling (g_E = g_H), J_s in [0.5, 1.5], conc 0.3."

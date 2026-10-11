@@ -1,0 +1,27 @@
+//! caroli — a toolbox for electronic transport in materials.
+//!
+//! Build a tight-binding system ([`lattice`], [`model`]), cut it into slices between leads and
+//! compute steady-state transport with Green's functions ([`green`]).
+//!
+//! ```
+//! use caroli::prelude::*;
+//!
+//! // Clean BHZ ribbon (HgTe quantum well), 16 × 10 sites: two helical edge channels in the gap.
+//! let model = bhz(BhzParams::default());
+//! let region = Region::cuboid(model.lattice(), [16, 10, 0]);
+//! let device = TwoTerminal::from_model(&model, &model, &region, 0);
+//! let t = device.transmission(0.0).unwrap();
+//! assert!((t - 2.0).abs() < 1e-8);
+//! ```
+
+pub use caroli_green as green;
+pub use caroli_lattice as lattice;
+pub use caroli_model as model;
+
+/// The types needed for most calculations.
+pub mod prelude {
+    pub use caroli_green::{Lead, SelfEnergyMethod, TwoTerminal};
+    pub use caroli_lattice::{Lattice, Region, Site};
+    pub use caroli_model::presets::{BhzParams, GFactors, bhz, bhz_exchange};
+    pub use caroli_model::{CMat, Model, c64};
+}

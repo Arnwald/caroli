@@ -1,0 +1,2 @@
+program = "ribbon-bands"
+description = "E(k_y) of a 16-site ribbon with uniform exchange J_s = 0.17 (mean-field magnetisation)."

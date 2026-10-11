@@ -1,0 +1,2 @@
+program = "scba-magnetic-matrix"
+description = "Matrix SCBA, z-polarised magnetic impurities, same-g coupling (gegh = 1)."

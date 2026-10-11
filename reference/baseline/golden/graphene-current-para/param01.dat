@@ -1,0 +1,15 @@
+&PARAM
+ N=16         ,
+ VIMP= 0.50000000000000000     ,
+ IMP_CONC= 0.10000000000000001     ,
+ ELECMAX=  2.0000000000000000E-002,
+ NELEC=2          ,
+ T_TOTAL=  2.0000000000000000     ,
+ SAMPLES=2          ,
+ DT= 0.10000000000000001     ,
+ NDIAG=1          ,
+ N_THREADS=1          ,
+ CHOICE_SPIN=0          ,
+ /
+N_imp =       25
+  Samples :            2

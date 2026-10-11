@@ -1,0 +1,10 @@
+[package]
+name = "caroli-lattice"
+description = "Lattices, finite regions and transport slices for caroli."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]

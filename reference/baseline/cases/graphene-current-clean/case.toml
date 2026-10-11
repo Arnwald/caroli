@@ -1,0 +1,2 @@
+program = "graphene-current"
+description = "Clean graphene 16x16 under E = 0.01, 0.02: current j(t) and pair creation n(t) (split-operator)."

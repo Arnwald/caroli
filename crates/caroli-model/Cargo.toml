@@ -1,0 +1,12 @@
+[package]
+name = "caroli-model"
+description = "Tight-binding models, BHZ Dirac matrices and presets for caroli."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+caroli-lattice.workspace = true
+faer.workspace = true

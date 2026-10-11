@@ -1,0 +1,2 @@
+program = "conductance-2t-opposite-g"
+description = "Same as ti-cond2t-same-g with opposite-g coupling (g_E = -g_H, paper-antiferro variant)."

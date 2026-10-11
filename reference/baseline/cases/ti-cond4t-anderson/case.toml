@@ -1,0 +1,2 @@
+program = "conductance-4t"
+description = "8x8 square with four leads, Anderson disorder (log grid of U0): transmissions T13 (sigma_xx) and T24 (sigma_xy)."

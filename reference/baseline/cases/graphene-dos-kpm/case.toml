@@ -1,0 +1,2 @@
+program = "graphene-dos-kpm"
+description = "Single rank (serial MPI stub): only rank 0's share is computed. KPM DOS of graphene 8x8 with AF impurities, V_exc = 1: only the spin-up column is filled."

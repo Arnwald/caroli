@@ -1,0 +1,17 @@
+[package]
+name = "caroli-validation"
+description = "Validation of caroli against the thesis reference codes (golden outputs)."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+publish = false
+
+[dependencies]
+caroli-lattice.workspace = true
+caroli-model.workspace = true
+caroli-green.workspace = true
+
+[dev-dependencies]
+faer.workspace = true

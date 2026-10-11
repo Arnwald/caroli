@@ -1,0 +1,23 @@
+[workspace]
+resolver = "3"
+members = ["crates/*"]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.85"
+license = "MIT"
+repository = "https://github.com/Arnwald/caroli"
+
+[workspace.dependencies]
+caroli-lattice = { path = "crates/caroli-lattice" }
+caroli-model = { path = "crates/caroli-model" }
+caroli-green = { path = "crates/caroli-green" }
+faer = "0.24"
+num-complex = "0.4"
+thiserror = "2"
+approx = "0.5"
+
+# Numerical dependencies (faer) are unusable unoptimised: optimise them even in dev/test builds.
+[profile.dev.package."*"]
+opt-level = 3

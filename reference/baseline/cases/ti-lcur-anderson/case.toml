@@ -1,0 +1,2 @@
+program = "local-currents-2t"
+description = "Same with Anderson disorder (couplage = 0, conc = 1). Nx_imp = 0.8 Nx: the code places conc*0.8*Nx*Ny impurities on Nx_imp*Ny sites."

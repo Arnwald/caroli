@@ -8,9 +8,20 @@ Named after the Caroli formula for the transmission, `T = Tr[Γ_L G Γ_R G†]`,
 Caroli–Combescot–Nozières–Saint-James paper (1971), the first non-equilibrium (Keldysh)
 calculation of a tunnelling current.
 
-> Status: design phase. No toolbox code yet. The repository currently holds the Fortran/Python
-> reference codes of the author's PhD thesis (`reference/thesis/`), which the toolbox will
-> reproduce as its two worked examples.
+> Status: early development. The first crates build tight-binding systems and compute
+> two-terminal transmissions with Green's functions. They are validated against the Fortran
+> codes of the author's PhD thesis (`reference/`), which the toolbox will reproduce as its two
+> worked examples. See [ARCHITECTURE.md](ARCHITECTURE.md) for the design and the roadmap.
+
+```rust
+use caroli::prelude::*;
+
+// Clean BHZ ribbon (HgTe quantum well), 16 × 10 sites: two helical edge channels in the gap.
+let model = bhz(BhzParams::default());
+let region = Region::cuboid(model.lattice(), [16, 10, 0]);
+let device = TwoTerminal::from_model(&model, &model, &region, 0);
+assert!((device.transmission(0.0)? - 2.0).abs() < 1e-8);
+```
 
 ## Scope
 
@@ -45,6 +56,9 @@ calculation of a tunnelling current.
 ## Layout
 
 ```
-reference/thesis/   frozen copy of the thesis codes (Fortran 90 + MPI, Python 2), documented;
-                    see reference/thesis/README.md
+crates/              Rust workspace (cargo test --workspace); see ARCHITECTURE.md
+reference/thesis/    frozen copy of the thesis codes (Fortran 90 + MPI, Python 2), documented;
+                     see reference/thesis/README.md
+reference/baseline/  builds the thesis codes and records golden outputs of 26 small cases,
+                     the regression baseline for caroli; see reference/baseline/README.md
 ```

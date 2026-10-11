@@ -1,0 +1,2 @@
+program = "dos-spin-lesser-ti"
+description = "2013 recursive code: spin-resolved DOS from G< of a clean 8x8 sample between two leads (energies hard-coded in [-2, 6])."

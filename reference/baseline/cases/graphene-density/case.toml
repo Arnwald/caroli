@@ -1,0 +1,2 @@
+program = "graphene-density"
+description = "Electron and hole sublattice densities at every step, AF impurities (imp_conc in percent)."

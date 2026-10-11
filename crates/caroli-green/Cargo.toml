@@ -1,0 +1,14 @@
+[package]
+name = "caroli-green"
+description = "Steady-state transport with Green's functions: lead modes, self-energies, recursive Green's function, Caroli transmission."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+caroli-lattice.workspace = true
+caroli-model.workspace = true
+faer.workspace = true
+thiserror.workspace = true

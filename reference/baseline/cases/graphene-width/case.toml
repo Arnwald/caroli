@@ -1,0 +1,2 @@
+program = "graphene-width"
+description = "Wave-packet spreading w(t), paramagnetic impurities (imp_conc in percent)."

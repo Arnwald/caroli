@@ -1,0 +1,2 @@
+program = "local-currents-2t"
+description = "Bond currents and occupied LDOS, magnetic impurities polarised along z, same-g coupling."

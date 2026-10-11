@@ -1,0 +1,2 @@
+program = "ribbon-bands-fourier-y"
+description = "2013 ancestor: E(k_y) of a 16-site ribbon with inter-block spin-orbit lambda = -0.1. Needs Nx = Ny (h0y takes the (Nx, Ny) shape of ky but is indexed over Ny x Ny)."

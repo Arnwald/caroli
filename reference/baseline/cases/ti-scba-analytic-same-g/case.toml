@@ -1,0 +1,2 @@
+program = "scba-magnetic-analytic"
+description = "Reduced (4 scalars) SCBA, magnetisation cone Mz = 0.8, same-g coupling (anti = 0)."

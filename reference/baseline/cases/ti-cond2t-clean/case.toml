@@ -1,0 +1,2 @@
+program = "conductance-2t"
+description = "Clean BHZ ribbon 16x10, G(E) for E in [-0.3, 0.3]: G = 2 (helical edge states) inside the bulk gap."

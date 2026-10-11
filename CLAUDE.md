@@ -6,12 +6,18 @@ Read `README.md` for the scope.
 
 ## Status
 
-- Design phase: no Rust code yet.
+- Early development: `crates/` holds caroli-lattice, caroli-model (BHZ preset), caroli-green
+  (lead modes, RGF, Caroli transmission), the `caroli` facade and caroli-validation (tests
+  against the thesis golden outputs). `ARCHITECTURE.md` has the design choices and the roadmap;
+  keep it up to date. `cargo test --workspace` must stay green, and so must `cargo clippy`.
 - `reference/thesis/` holds the author's PhD thesis codes (Fortran 90 + MPI, Python 2), deduplicated
   and documented. Start with `reference/thesis/README.md`; each program has its own README
   (physics, inputs, outputs, versions, known bugs, modernisation notes).
 - `reference/thesis/` is a **frozen reference**: do not edit the sources there. Record bugs and
   findings in its READMEs. It is the regression baseline for the Rust rewrite.
+- `reference/baseline/` compiles the thesis programs (gfortran, serial MPI shim, LAPACK95, FFTW)
+  and checks 26 small cases against `golden/`. Run `python3 reference/baseline/baseline.py run`
+  after rebuilding (`deps`, then `build`). Never re-record goldens (`--update`) without saying why.
 - The thesis data (5.3 GB of results) are NOT in the repo. They live on the author's machine in
   `~/Projects/electronic-transport/`, and `reference/thesis/tools/coverage.py` can only check
   coverage there.

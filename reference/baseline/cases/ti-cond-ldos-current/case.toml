@@ -1,0 +1,2 @@
+program = "conductance-ldos-current"
+description = "Anderson-disordered ribbon 12x8: G(E), LDOS and bond currents over a small bias window."

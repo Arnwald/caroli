@@ -1,0 +1,2 @@
+program = "ti-diag-ti"
+description = "Exact diagonalisation of a clean 6x6 BHZ flake (144 states)."
