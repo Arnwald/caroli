@@ -21,6 +21,12 @@ pub mod metal;
 #[cfg(target_os = "macos")]
 pub use metal::{MetalDevice, MetalOperator};
 
+#[cfg(feature = "cuda")]
+pub mod cuda;
+
+#[cfg(feature = "cuda")]
+pub use cuda::{CudaDevice, CudaOperator};
+
 /// Floating-point format of a Metal computation.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Precision {
