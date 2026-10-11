@@ -23,6 +23,7 @@ Status (2026-10-11):
 - Results are deterministic from run to run.
 - The `-O2` build and the `-O0 -fcheck=bounds` build agree within the case tolerances (rtol 1e-8).
 - Every case runs in under a second.
+- caroli reproduces all 26 cases (`cargo test -p caroli-validation --release`, see the table in `ARCHITECTURE.md`).
 
 ## Requirements
 

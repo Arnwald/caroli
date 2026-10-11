@@ -93,3 +93,39 @@ fn opposite_g() {
 fn anderson() {
     check("ti-lcur-anderson", 0);
 }
+
+/// `ti-cond-ldos-current`: the 2014 manuscript code (Anderson-disordered 12×8 ribbon, small
+/// bias window): conductance, LDOS and orbital-resolved bond currents.
+#[test]
+fn conductance_ldos_current_2014() {
+    use caroli_validation::thesis::CondLdosCurrent2014;
+    let p = CondLdosCurrent2014 {
+        nx: 12,
+        ny: 8,
+        ne: 3,
+        ev_l: 0.001,
+        ev_r: -0.001,
+        mass: -0.13,
+        emin: -0.05,
+        emax: 0.05,
+        u0: 1.0,
+        eta: 1e-3,
+        seed: 12347,
+    };
+    let out = p.run();
+    let g = |f: &str| golden_f64("ti-cond-ldos-current", f).remove(0);
+    let maxd = |a: &[f64], b: &[f64]| {
+        assert_eq!(a.len(), b.len());
+        a.iter().zip(b).map(|(x, y)| (x - y).abs()).fold(0.0, f64::max)
+    };
+    let scale = |v: &[f64]| v.iter().fold(0f64, |m, x| m.max(x.abs()));
+    let (ge, gc, gd, gl) = (g("axes_00.dat"), g("cond_00.dat"), g("dos_00.dat"), g("cur_00.dat"));
+    let de = maxd(&out.energies, &ge);
+    let dc = maxd(&out.conductance, &gc) / scale(&gc);
+    let dd = maxd(&out.ldos, &gd) / scale(&gd);
+    let dl = maxd(&out.lcur, &gl) / scale(&gl);
+    println!(
+        "cond-ldos-current: |ΔE| ≤ {de:.1e}, relative |Δ G| ≤ {dc:.1e}, |Δ LDOS| ≤ {dd:.1e}, |Δ Lcur| ≤ {dl:.1e}"
+    );
+    assert!(de < 1e-15 && dc < 1e-10 && dd < 1e-10 && dl < 1e-10);
+}

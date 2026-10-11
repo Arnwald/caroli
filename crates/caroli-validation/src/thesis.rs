@@ -1234,3 +1234,191 @@ impl GrapheneDensity {
         DensityRun { current: cur_tab, pairs: np_tab, density_a: da, density_b: db }
     }
 }
+
+/// The 2013 `dos-spin-lesser` program (first recursive code), as it actually computes.
+///
+/// - Its `green_lesser` never forms G^<: the Fermi functions and Σ^< are computed but unused.
+/// - The returned matrix is the last one of a recursion that counts the left self-energy
+///   twice on slice 0 and restarts at slice `m` from an uninverted matrix.
+/// - The "up"/"down" sums group the slice indices `y + Ny·a` by their value mod 4, i.e. by
+///   position across the ribbon, not by spin (equal in a clean mirror-symmetric sample).
+///
+/// The 2013 Γ matrices (Γ44 = −τ_y) with the `+i/2 Γ33` of its `t_x` amount to the BHZ model
+/// with `A → −A` (the transverse-field terms vanish at `Ez = 0`).
+#[derive(Clone, Copy, Debug)]
+pub struct DosSpinLesser2013 {
+    pub nx: usize,
+    pub ny: usize,
+    pub ne: usize,
+    pub params: caroli_model::presets::BhzParams,
+}
+
+impl DosSpinLesser2013 {
+    /// `(energies, dos_u, dos_d)` on the program's hard-coded window [−2, 6].
+    pub fn run(&self) -> (Vec<f64>, Vec<f64>, Vec<f64>) {
+        use caroli_green::{SelfEnergyMethod, TwoTerminal};
+        use faer::linalg::solvers::DenseSolveCore;
+        let eta = 1e-10;
+        let model = caroli_model::presets::bhz(caroli_model::presets::BhzParams { a: -1.0, ..self.params });
+        let region = caroli_lattice::Region::cuboid(model.lattice(), [self.nx, self.ny, 0]);
+        let sys = TwoTerminal::from_model(&model, &model, &region, 0);
+        let (h, t) = (&sys.slices[0], &sys.couplings[0]);
+        let n = h.nrows();
+        let inv = |m: CMat| -> CMat { m.partial_piv_lu().inverse() };
+        let resolvent = |z: c64, sigma: &CMat| {
+            CMat::from_fn(n, n, |i, j| if i == j { z } else { c64::new(0.0, 0.0) }) - h - sigma
+        };
+        let de = 8.0 / (self.ne - 1) as f64;
+        let energies: Vec<f64> = (0..self.ne).map(|i| de * i as f64 - 2.0).collect();
+        let (mut up, mut down) = (vec![0.0; self.ne], vec![0.0; self.ne]);
+        for (ie, &e) in energies.iter().enumerate() {
+            let (sl, sr) = sys.self_energies(e, SelfEnergyMethod::ModesBroadened { eta }).unwrap();
+            let z = c64::new(e, eta);
+            let g0l = inv(resolvent(c64::new(e, 0.0), &sl));
+            for m in 1..=self.nx {
+                let mut a = g0l.clone();
+                for ix in 0..=m {
+                    let s = t.adjoint() * &a * t;
+                    a = inv(if ix == 0 { resolvent(z, &(s + &sl)) } else { resolvent(z, &s) });
+                }
+                let mut c = resolvent(z, &(t.adjoint() * &a * t));
+                for ix in m..=self.nx + 1 {
+                    let s = t.adjoint() * &c * t;
+                    c = inv(if ix == self.nx + 1 { resolvent(z, &(s + &sr)) } else { resolvent(z, &s) });
+                }
+                // caroli slice index 4y + a ↔ Fortran index y + Ny·a.
+                for k in 0..n {
+                    let f = k / 4 + self.ny * (k % 4);
+                    let target = if f % 4 < 2 { &mut up[ie] } else { &mut down[ie] };
+                    *target -= c[(k, k)].im;
+                }
+            }
+        }
+        (energies, up, down)
+    }
+}
+
+/// Parameters of the 2014 `conductance-ldos-current` program (`Manuscrit/codes/ti`): BHZ
+/// ribbon between two leads at potentials `ev_l`, `ev_r` (linear drop across the sample),
+/// Anderson disorder `[−u0/2, u0/2]` on slices `2nx/10 ..= nx − 2nx/10`, `ne` energies.
+///
+/// Its hoppings are `t_x = DΓ0 + BΓ55 + (i/2)Γ33` and `t_y = DΓ0 + BΓ55 + (i/2)Γ44`: the sign of
+/// the A term along x is opposite to the BHZ preset (the two are related by the spin flip s_x).
+#[derive(Clone, Copy, Debug)]
+pub struct CondLdosCurrent2014 {
+    pub nx: usize,
+    pub ny: usize,
+    pub ne: usize,
+    pub ev_l: f64,
+    pub ev_r: f64,
+    pub mass: f64,
+    pub emin: f64,
+    pub emax: f64,
+    pub u0: f64,
+    pub eta: f64,
+    pub seed: i32,
+}
+
+/// Output of [`CondLdosCurrent2014::run`], column-major as the Fortran arrays.
+pub struct CondLdosRun {
+    pub energies: Vec<f64>,
+    /// `T(E)·(f_R − f_L)` (the program's `cond_e` when `ev_r ≠ ev_l`).
+    pub conductance: Vec<f64>,
+    /// `Ldos(Ny, 4, Nx, Ne) = −Im G^r_aa`.
+    pub ldos: Vec<f64>,
+    /// `Lcur(Ny, 4, Nx, 4, 2)`, summed over energies times `−Δe/2π`.
+    pub lcur: Vec<f64>,
+}
+
+impl CondLdosCurrent2014 {
+    fn model(&self) -> caroli_model::Model {
+        use caroli_model::gamma::{gamma0, gamma33, gamma44, gamma55};
+        use caroli_model::presets::BhzParams;
+        let p = BhzParams { mass: self.mass, ..BhzParams::default() };
+        let (r, i) = (|x: f64| c64::new(x, 0.0), |x: f64| c64::new(0.0, x));
+        let onsite =
+            caroli_model::combine(&[(r(p.c - 4.0 * p.d), &gamma0()), (r(p.mass - 4.0 * p.b), &gamma55())]);
+        let tx = caroli_model::combine(&[(r(p.d), &gamma0()), (r(p.b), &gamma55()), (i(0.5), &gamma33())]);
+        let ty = caroli_model::combine(&[(r(p.d), &gamma0()), (r(p.b), &gamma55()), (i(0.5), &gamma44())]);
+        caroli_model::Model::new(caroli_lattice::Lattice::square(1.0, 4))
+            .onsite(0, onsite)
+            .hopping(0, 0, [1, 0, 0], tx)
+            .hopping(0, 0, [0, 1, 0], ty)
+    }
+
+    /// Lead slice, `nx` sample slices (bias drop and disorder), lead slice.
+    pub fn device(&self) -> caroli_green::TwoTerminal {
+        let (nx, ny, ev_l, ev_r) = (self.nx, self.ny, self.ev_l, self.ev_r);
+        let mut rng = Xoshiro256::gfortran(self.seed);
+        let u: Vec<f64> = rng.uniforms(ny * nx).iter().map(|x| self.u0 * x - self.u0 * 0.5).collect();
+        let (lo, hi) = (2 * nx / 10, nx - 2 * nx / 10);
+        let onsite = move |site: &Site| {
+            let (x, y) = (site.cell[0], site.cell[1] as usize);
+            let mut v = ev_l + x as f64 * (ev_r - ev_l) / (nx + 1) as f64;
+            if x >= lo as i64 && x <= hi as i64 {
+                v += u[y + ny * (x as usize - 1)];
+            }
+            Some(CMat::from_fn(4, 4, |a, b| if a == b { c64::new(v, 0.0) } else { c64::new(0.0, 0.0) }))
+        };
+        let region = caroli_lattice::Region::cuboid(self.model().lattice(), [nx + 2, ny, 0]);
+        // `self_contact` builds `h00 − (E + iη) − ev`: the leads sit at −ev while the boundary
+        // slices carry +ev.
+        caroli_green::TwoTerminal::from_model(
+            &self.model().with_onsite_term(onsite),
+            &self.model(),
+            &region,
+            0,
+        )
+        .with_lead_potentials(-ev_l, -ev_r)
+    }
+
+    pub fn run(&self) -> CondLdosRun {
+        use caroli_green::SelfEnergyMethod;
+        use caroli_keldysh::{Lesser, fermi};
+        let (nx, ny, d) = (self.nx, self.ny, 4);
+        let sys = self.device();
+        let method = SelfEnergyMethod::ModesBroadened { eta: self.eta };
+        let de = (self.emax - self.emin) / (self.ne - 1) as f64;
+        let energies: Vec<f64> = (0..self.ne).map(|i| de * i as f64 + self.emin).collect();
+        let (mut conductance, mut ldos) = (Vec::new(), Vec::new());
+        let mut lcur = vec![0.0; ny * d * nx * d * 2];
+        let li =
+            |iy: usize, a: usize, ix: usize, b: usize, c: usize| iy + ny * (a + d * (ix + nx * (b + d * c)));
+        let temp = 5e-3;
+        for &e in &energies {
+            let (fl, fr) = (fermi(e, self.ev_l, temp), fermi(e, self.ev_r, temp));
+            let l = Lesser::compute(&sys, e, method, fl, fr).unwrap();
+            let bias = self.ev_r - self.ev_l != 0.0;
+            conductance.push(if bias { l.transmission * (fr - fl) } else { l.transmission });
+            let sw = sys.sweeps(e, method).unwrap();
+            for m in 1..=nx {
+                let g = sw.diagonal(&sys, m);
+                let (gx, gy) = (l.next(m), l.diag(m));
+                let (tx, h) = (&sys.couplings[m], &sys.slices[m]);
+                for a in 0..d {
+                    for iy in 0..ny {
+                        ldos.push(0.0);
+                        let k = ldos.len() - 1;
+                        debug_assert_eq!(k, iy + ny * (a + d * ((m - 1) + nx * (conductance.len() - 1))));
+                        ldos[k] = -g[(iy * d + a, iy * d + a)].im;
+                    }
+                }
+                for iy in 0..ny {
+                    for a in 0..d {
+                        for b in 0..d {
+                            let t_dag = tx[(iy * d + b, iy * d + a)].conj();
+                            let jx = 2.0 * (t_dag * gx[(iy * d + a, iy * d + b)]).re;
+                            lcur[li(iy, a, m - 1, b, 0)] -= jx * de / (2.0 * std::f64::consts::PI);
+                            if iy + 1 < ny {
+                                let hy = h[((iy + 1) * d + b, iy * d + a)];
+                                let jy = 2.0 * (hy * gy[(iy * d + a, (iy + 1) * d + b)]).re;
+                                lcur[li(iy, a, m - 1, b, 1)] -= jy * de / (2.0 * std::f64::consts::PI);
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        CondLdosRun { energies, conductance, ldos, lcur }
+    }
+}

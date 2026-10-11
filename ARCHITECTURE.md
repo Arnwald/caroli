@@ -70,6 +70,9 @@ The dependencies only go downward: lattice ← model ← green ← caroli.
 | KPM densities of states (TI same-g, opposite-g; graphene AF) | `ti-dos-kpm-*`, `graphene-dos-kpm` | reproduced to 1e-15 (same random vectors and impurities) |
 | graphene under a field: current and pair creation (clean, AF, para) | `graphene-current-*` | reproduced to 1e-16 (replica keeps gfortran's −0 imaginary parts, which fix the gauge of the initial band state) |
 | graphene wave packet: width w(t), sublattice density maps | `graphene-width`, `graphene-density` | reproduced to 1e-16 (width) and 1e-19 (densities) |
+| 2013 ribbon bands, Fourier in y (λ = −0.1) | `ti-ribbon-bands-fourier-y` | equal to 2e-14; the 2013 Γ14 is anti-Hermitian and `heev` reads its upper triangle (edge states move by ≤ 1.5e-3) |
+| 2013 recursive "spin DOS" | `ti-dos-spin-lesser` | replayed to 7e-11; the program never forms G^< and its up/down sums are a split by position |
+| 2014 manuscript code: G, LDOS, bond currents with Anderson disorder | `ti-cond-ldos-current` | reproduced to 1e-14 (its leads sit at −ev while the boundary slices carry +ev) |
 | QSH plateau, modes vs decimation, T_LR = T_RL, current conservation = Landauer | — | internal consistency |
 
 Golden cases with disorder use the same impurity configurations as the thesis.
