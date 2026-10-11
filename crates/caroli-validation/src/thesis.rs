@@ -673,3 +673,194 @@ impl Kpm {
         self.run(kinetic, local, &e_k, de, &mut rng)
     }
 }
+
+/// Parameters of graphene `current-pair-creation` (`g_s.ini`, baseline-patched fixed seed).
+#[derive(Clone, Copy, Debug)]
+pub struct GrapheneCurrent {
+    pub n: usize,
+    pub vimp: f64,
+    pub imp_conc: f64,
+    pub elec_max: f64,
+    pub nelec: usize,
+    pub t_total: f64,
+    pub samples: usize,
+    pub dt: f64,
+    pub ndiag: usize,
+    /// 0: paramagnetic (isotropic); otherwise AF (A: +z, B: −z).
+    pub choice_spin: i32,
+}
+
+impl GrapheneCurrent {
+    /// k grid of `k_FBZ(N, N/2, N√3/2)`: FFT order with steps `4π/N` and `4π/(√3 N)`.
+    fn k(&self, idx: usize) -> (f64, f64) {
+        let n = self.n;
+        let s3 = 3f64.sqrt();
+        let kv = |i: usize, k0: f64| (if i < n / 2 { i as f64 } else { i as f64 - n as f64 }) * k0;
+        let k0x = 2.0 * std::f64::consts::PI / (n as f64 * 0.5);
+        let k0y = 2.0 * std::f64::consts::PI / (n as f64 * s3 * 0.5);
+        (kv(idx % n, k0x), kv(idx / n, k0y))
+    }
+
+    /// `h(k, t) = −e^{i(ky − E t)/√3} − 2 cos(kx/2) e^{−i(ky − E t)/(2√3)}`.
+    ///
+    /// Where `h` is real, gfortran's complex arithmetic leaves an imaginary part −0 (so
+    /// `atan2` gives −π); the replica does the same, because that gauge choice of the initial
+    /// band state matters once disorder mixes the k points.
+    fn h(&self, idx: usize, elec: f64, t: f64) -> c64 {
+        let s3 = 3f64.sqrt();
+        let (kx, ky) = self.k(idx);
+        let i = c64::new(0.0, 1.0);
+        let h = -(i * (ky - elec * t) / s3).exp()
+            - 2.0 * (0.5 * kx).cos() * (-i * (ky - elec * t) * 0.5 / s3).exp();
+        if h.im == 0.0 { c64::new(h.re, -0.0) } else { h }
+    }
+
+    /// Current and pair creation, one `(curr, np)` series of `NT/NDIAG + 1` values per field.
+    pub fn run(&self) -> Vec<(Vec<f64>, Vec<f64>)> {
+        let (n, nn) = (self.n, self.n * self.n);
+        let nt = (self.t_total / self.dt) as usize;
+        let ntdiag = nt / self.ndiag;
+        let n_imp = (self.imp_conc * nn as f64) as usize;
+        let s3 = 3f64.sqrt();
+        let i = c64::new(0.0, 1.0);
+        let fft = caroli_torus::Fft2::new(n);
+        let to_k = |psi: &mut [c64]| psi.chunks_exact_mut(nn).for_each(|c| fft.forward(c));
+        let to_x = |psi: &mut [c64]| {
+            psi.chunks_exact_mut(nn).for_each(|c| {
+                fft.backward(c);
+                c.iter_mut().for_each(|z| *z /= nn as f64);
+            })
+        };
+        let mut out = Vec::new();
+        for ee in 1..=self.nelec {
+            let elec = ee as f64 * (self.elec_max / self.nelec as f64);
+            let mut rng = Xoshiro256::gfortran(1237);
+            let (mut cur_tab, mut np_tab) = (vec![0.0; ntdiag + 1], vec![0.0; ntdiag + 1]);
+            // Band state ±(e^{iφ/2}, e^{−iφ/2}) on the spin-up components.
+            let band = |t: f64, sign: f64| -> Vec<c64> {
+                let mut s = vec![c64::new(0.0, 0.0); 4 * nn];
+                for k in 0..nn {
+                    let phi = self.h(k, elec, t).arg();
+                    s[k] = sign * (i * 0.5 * phi).exp();
+                    s[k + nn] = (-i * 0.5 * phi).exp();
+                }
+                s
+            };
+            let current = |psi_k: &[c64], psi_0: &[c64], t: f64| -> (f64, f64) {
+                if t == 0.0 {
+                    return (0.0, 0.0);
+                }
+                let (mut cur, mut np) = (0.0, 0.0);
+                for k in 0..nn {
+                    let (kx, ky) = self.k(k);
+                    let dh = -i * (i * (ky - elec * t) / s3).exp() / s3
+                        + i * (0.5 * kx).cos() * (-i * (ky - elec * t) * 0.5 / s3).exp() / s3;
+                    cur += (psi_k[k].conj() * dh * psi_k[k + nn]
+                        + psi_k[k + 2 * nn].conj() * dh * psi_k[k + 3 * nn])
+                        .re;
+                    let p: c64 = (0..4).map(|c| psi_k[k + c * nn].conj() * psi_0[k + c * nn]).sum();
+                    np += p.norm_sqr();
+                }
+                (-4.0 * cur, 2.0 * np)
+            };
+            for _ in 0..self.samples {
+                let mut psi_k = band(0.0, -1.0);
+                let norm = psi_k.iter().map(|z| z.norm_sqr()).sum::<f64>().sqrt();
+                psi_k.iter_mut().for_each(|z| *z /= norm);
+                let mut uv: Vec<(usize, CMat)> = Vec::new();
+                let mut psi_x = Vec::new();
+                if self.vimp != 0.0 {
+                    let cand: Vec<Site> =
+                        (0..nn).map(|k| Site { cell: [(k % n) as i64, (k / n) as i64, 0], sub: 0 }).collect();
+                    let sites: Vec<usize> = caroli_disorder::choose_sites(&mut rng, &cand, 2 * n_imp)
+                        .iter()
+                        .map(|s| s.cell[0] as usize + n * s.cell[1] as usize)
+                        .collect();
+                    let u: Vec<f64> = rng.uniforms(2 * n_imp).into_iter().map(|u| 2.0 * u - 1.0).collect();
+                    let ph: Vec<f64> =
+                        rng.uniforms(2 * n_imp).into_iter().map(|p| 2.0 * std::f64::consts::PI * p).collect();
+                    let (c, s) = ((0.5 * self.dt * self.vimp).cos(), (0.5 * self.dt * self.vimp).sin());
+                    for (k, &site) in sites.iter().enumerate() {
+                        let iso = self.choice_spin == 0;
+                        let (nx, ny, mut nz) = if iso {
+                            (
+                                (1.0 - u[k] * u[k]).sqrt() * ph[k].cos(),
+                                (1.0 - u[k] * u[k]).sqrt() * ph[k].sin(),
+                                u[k],
+                            )
+                        } else {
+                            (0.0, 0.0, 1.0)
+                        };
+                        let (a, b) = if k < n_imp { (0, 2) } else { (1, 3) };
+                        if k >= n_imp && !iso {
+                            nz = -1.0;
+                        }
+                        let mut m =
+                            CMat::from_fn(
+                                4,
+                                4,
+                                |p, q| if p == q { c64::new(1.0, 0.0) } else { c64::new(0.0, 0.0) },
+                            );
+                        m[(a, a)] = c - i * nz * s;
+                        m[(a, b)] = (-i * nx - ny) * s;
+                        m[(b, a)] = (-i * nx + ny) * s;
+                        m[(b, b)] = c + i * nz * s;
+                        uv.push((site, m));
+                    }
+                    psi_x = psi_k.clone();
+                    to_x(&mut psi_x);
+                }
+                let mut is = 1;
+                for it in 1..=nt {
+                    let t = it as f64 * self.dt;
+                    if self.vimp != 0.0 {
+                        caroli_dynamics::apply_local(&mut psi_x, nn, 4, &uv);
+                        psi_k = psi_x.clone();
+                        to_k(&mut psi_k);
+                    }
+                    let uh: Vec<CMat> = (0..nn)
+                        .map(|k| {
+                            let phi = self.h(k, elec, t).arg();
+                            let eps = ((self.h(k, elec, t) + self.h(k, elec, t + self.dt)) * 0.5).norm();
+                            let (cs, sn) = ((self.dt * eps).cos(), (self.dt * eps).sin());
+                            let mut m = CMat::zeros(4, 4);
+                            for o in [0, 2] {
+                                m[(o, o)] = c64::new(cs, 0.0);
+                                m[(o, o + 1)] = -i * (i * phi).exp() * sn;
+                                m[(o + 1, o)] = -i * (-i * phi).exp() * sn;
+                                m[(o + 1, o + 1)] = c64::new(cs, 0.0);
+                            }
+                            m
+                        })
+                        .collect();
+                    caroli_dynamics::apply_k(&mut psi_k, 4, &uh);
+                    if self.vimp != 0.0 {
+                        psi_x = psi_k.clone();
+                        to_x(&mut psi_x);
+                        caroli_dynamics::apply_local(&mut psi_x, nn, 4, &uv);
+                    }
+                    if it % self.ndiag == 0 {
+                        if self.vimp != 0.0 {
+                            psi_k = psi_x.clone();
+                            to_k(&mut psi_k);
+                        }
+                        let psi_0 = band(t, 1.0);
+                        let (cur, np) = current(&psi_k, &psi_0, t);
+                        cur_tab[is] += cur;
+                        np_tab[is] += np;
+                        is += 1;
+                    }
+                }
+                if self.vimp == 0.0 {
+                    break;
+                }
+            }
+            if self.vimp != 0.0 {
+                cur_tab.iter_mut().for_each(|x| *x /= self.samples as f64);
+                np_tab.iter_mut().for_each(|x| *x /= self.samples as f64);
+            }
+            out.push((cur_tab, np_tab));
+        }
+        out
+    }
+}

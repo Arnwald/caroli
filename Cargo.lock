@@ -65,6 +65,7 @@ version = "0.1.0"
 dependencies = [
  "caroli-born",
  "caroli-disorder",
+ "caroli-dynamics",
  "caroli-green",
  "caroli-keldysh",
  "caroli-kpm",
@@ -88,6 +89,15 @@ version = "0.1.0"
 dependencies = [
  "caroli-lattice",
  "caroli-model",
+]
+
+[[package]]
+name = "caroli-dynamics"
+version = "0.1.0"
+dependencies = [
+ "caroli-model",
+ "caroli-torus",
+ "faer",
 ]
 
 [[package]]
@@ -145,6 +155,7 @@ version = "0.1.0"
 dependencies = [
  "caroli-born",
  "caroli-disorder",
+ "caroli-dynamics",
  "caroli-green",
  "caroli-keldysh",
  "caroli-kpm",

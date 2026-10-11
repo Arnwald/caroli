@@ -1,0 +1,13 @@
+[package]
+name = "caroli-dynamics"
+description = "Time evolution for caroli: split-operator propagation on periodic supercells."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+caroli-model.workspace = true
+caroli-torus.workspace = true
+faer.workspace = true

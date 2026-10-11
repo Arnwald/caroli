@@ -15,4 +15,5 @@ caroli-disorder.workspace = true
 caroli-keldysh.workspace = true
 caroli-born.workspace = true
 caroli-kpm.workspace = true
+caroli-dynamics.workspace = true
 caroli-torus.workspace = true

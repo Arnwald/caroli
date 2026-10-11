@@ -18,6 +18,7 @@ crates/
   caroli-torus        Hamiltonians on periodic 2D supercells: k-space part through FFTs (rustfft),
                       local terms in real space
   caroli-kpm          kernel polynomial method: Chebyshev moments, Jackson kernel, densities
+  caroli-dynamics     time evolution: split-operator propagation on tori
   caroli              facade: re-exports and prelude
   caroli-validation   (not published) comparisons with the thesis golden outputs
 ```
@@ -67,6 +68,7 @@ The dependencies only go downward: lattice ← model ← green ← caroli.
 | SCBA: Anderson, magnetic matrix (same-g, opposite-g), magnetic reduced (same-g, opposite-g) | `ti-scba-*` | reproduced to 1e-15 with the thesis iteration schedules |
 | four-terminal cross with Anderson disorder (spin-up BHZ block) | `ti-cond4t-anderson` | thesis formula reproduced to 3e-5 (the thesis puts E + iη on one slice) with a general multi-terminal solver |
 | KPM densities of states (TI same-g, opposite-g; graphene AF) | `ti-dos-kpm-*`, `graphene-dos-kpm` | reproduced to 1e-15 (same random vectors and impurities) |
+| graphene under a field: current and pair creation (clean, AF, para) | `graphene-current-*` | reproduced to 1e-16 (replica keeps gfortran's −0 imaginary parts, which fix the gauge of the initial band state) |
 | QSH plateau, modes vs decimation, T_LR = T_RL, current conservation = Landauer | — | internal consistency |
 
 Golden cases with disorder use the same impurity configurations as the thesis.
@@ -95,8 +97,8 @@ Golden cases with disorder use the same impurity configurations as the thesis.
    self-energy (see `reference/thesis/ti/born/scba-magnetic-analytic/README.md`).
 7. ✅ Spectral tools: KPM (Chebyshev moments, Jackson kernel, stochastic trace) on tori
    (`caroli-torus`); validated on the TI and graphene KPM codes (exact).
-8. Time evolution (finite differences): split-operator, Chebyshev propagator; graphene current and
-   pair creation (`graphene-current-clean` is deterministic).
+8. ✅ Time evolution: split-operator on tori (`caroli-dynamics`); graphene current and pair
+   creation validated (exact). Still to port: wave-packet width and density programs.
 9. Interface: declarative system and simulation files with a CLI; Python bindings to consider.
 10. Acceleration:
     - CPU parallelism (rayon) over energies and samples first.

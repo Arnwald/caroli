@@ -22,6 +22,7 @@ caroli-born.workspace = true
 faer = "0.24"
 caroli-torus.workspace = true
 caroli-kpm.workspace = true
+caroli-dynamics.workspace = true
 
 [dev-dependencies]
 faer.workspace = true
