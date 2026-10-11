@@ -4,12 +4,15 @@
 //! - [`decimation`]: Lopez Sancho – Rubio surface Green's function (needs `η`; cross-check).
 //! - [`TwoTerminal`]: a device cut into slices between two leads; the recursive Green's
 //!   function gives the Caroli transmission `T = Tr[Γ_L G_1N Γ_R G_1N†]`.
+//! - [`MultiTerminal`]: any geometry with any number of leads, solved directly.
 
 pub mod decimation;
 pub mod modes;
+pub mod multi;
 mod two_terminal;
 
-pub use two_terminal::{EndToEnd, Lead, SelfEnergyMethod, TwoTerminal};
+pub use multi::{AttachedLead, Interface, MultiSolution, MultiTerminal};
+pub use two_terminal::{EndToEnd, Lead, SelfEnergyMethod, Sweeps, TwoTerminal};
 
 use caroli_model::{CMat, c64};
 use faer::linalg::solvers::{DenseSolveCore, Solve};

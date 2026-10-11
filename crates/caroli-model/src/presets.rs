@@ -78,3 +78,58 @@ pub fn bhz_exchange(coupling: GFactors, j: f64, n: [f64; 3]) -> CMat {
     let [sx, sy, sz] = bhz_spin(coupling);
     combine(&[(c64::new(j * n[0], 0.0), &sx), (c64::new(j * n[1], 0.0), &sy), (c64::new(j * n[2], 0.0), &sz)])
 }
+
+/// One spin block of the BHZ model.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Spin {
+    Up,
+    Down,
+}
+
+/// One spin block of the BHZ model (2 orbitals `(E1, H1)`), the upper-left (`Up`) or lower-right
+/// (`Down`) 2×2 block of [`bhz`] without the inter-block coupling λ:
+///
+/// - on-site: `(C − 4D) + (M − 4B) τ_z`
+/// - hopping `+x`: `D + B τ_z ∓ (i/2) A τ_x` (− for spin up)
+/// - hopping `+y`: `D + B τ_z + (i/2) A τ_y`
+///
+/// The thesis four-terminal code (`dim = 2`) works with the spin-up block.
+pub fn bhz_block(p: BhzParams, spin: Spin) -> Model {
+    let full = bhz(BhzParams { lambda: 0.0, ..p });
+    let o = if spin == Spin::Up { 0 } else { 2 };
+    let sub = |m: &CMat| CMat::from_fn(2, 2, |i, j| m[(o + i, o + j)]);
+    let site = caroli_lattice::Site { cell: [0, 0, 0], sub: 0 };
+    let onsite = sub(&full.onsite_matrix(&site));
+    let (tx, ty) = (sub(&full.hoppings()[0].matrix), sub(&full.hoppings()[1].matrix));
+    Model::new(Lattice::square(1.0, 2)).onsite(0, onsite).hopping(0, 0, [1, 0, 0], tx).hopping(
+        0,
+        0,
+        [0, 1, 0],
+        ty,
+    )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use caroli_lattice::Region;
+    use faer::Side;
+
+    /// Without inter-block coupling, the BHZ spectrum is the union of the two spin blocks.
+    #[test]
+    fn blocks_make_up_the_full_model() {
+        let p = BhzParams::default();
+        let full = bhz(p);
+        let region = Region::cuboid(full.lattice(), [4, 3, 0]);
+        let mut e4 = full.hamiltonian(&region).self_adjoint_eigenvalues(Side::Lower).unwrap();
+        let mut e2 = Vec::new();
+        for spin in [Spin::Up, Spin::Down] {
+            let m = bhz_block(p, spin);
+            let r = Region::cuboid(m.lattice(), [4, 3, 0]);
+            e2.extend(m.hamiltonian(&r).self_adjoint_eigenvalues(Side::Lower).unwrap());
+        }
+        e2.sort_by(f64::total_cmp);
+        e4.sort_by(f64::total_cmp);
+        assert!(e2.iter().zip(&e4).all(|(a, b)| (a - b).abs() < 1e-12));
+    }
+}

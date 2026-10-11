@@ -62,6 +62,7 @@ The dependencies only go downward: lattice ← model ← green ← caroli.
 | g2g1 conductance maps (400×64) | thesis data, 50 realisations | caroli's averages agree within statistical error; Re Γ truncation negligible at this width (`examples/gamma_impact.rs`) |
 | Keldysh bond currents and occupied densities (same-g, opposite-g, Anderson) | `ti-lcur-same-g`, `-opposite-g`, `-anderson` | impurity positions identical; thesis currents reproduced to 1e-17 and densities to 1e-14 (thesis conventions: element-wise products, slots) |
 | SCBA: Anderson, magnetic matrix (same-g, opposite-g), magnetic reduced (same-g, opposite-g) | `ti-scba-*` | reproduced to 1e-15 with the thesis iteration schedules |
+| four-terminal cross with Anderson disorder (spin-up BHZ block) | `ti-cond4t-anderson` | thesis formula reproduced to 3e-5 (the thesis puts E + iη on one slice) with a general multi-terminal solver |
 | QSH plateau, modes vs decimation, T_LR = T_RL, current conservation = Landauer | — | internal consistency |
 
 Golden cases with disorder use the same impurity configurations as the thesis.
@@ -80,7 +81,9 @@ Golden cases with disorder use the same impurity configurations as the thesis.
 3. ✅ Disorder (`caroli-disorder`): Anderson; classical magnetic impurities (isotropic, cone θ0,
    polarisation M_z) with same-g / opposite-g coupling; reproducible random streams. Validated on
    `ti-cond2t-*` (exact).
-4. Multi-terminal transport (4 leads, transmissions T_ij), validated on `ti-cond4t-anderson`.
+4. ✅ Multi-terminal transport (`caroli_green::MultiTerminal`: any geometry, any number of leads,
+   direct solve), validated on `ti-cond4t-anderson`. A ring recursion for large multi-terminal
+   devices is still to do.
 5. ✅ Keldysh (`caroli-keldysh`): G^< by lead injection, bond currents, occupied LDOS, bias
    windows. Validated on `ti-lcur-*` (exact).
 6. ✅ Self-consistent Born approximation (`caroli-born`), validated on `ti-scba-*` (exact).

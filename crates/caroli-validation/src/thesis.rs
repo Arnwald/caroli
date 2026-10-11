@@ -413,3 +413,79 @@ impl ScbaAnalytic {
         out
     }
 }
+
+/// Parameters of `conductance-4t` (`ti.ini`): an `nx × ny` square with four arms of length
+/// `ntp` (one per edge, as wide as the edge) ending in semi-infinite leads, Anderson disorder on
+/// the square only. The code works with the spin-up BHZ block (`dim = 2`, see
+/// [`caroli_model::presets::bhz_block`]); its σ_xx and σ_xy are transmissions of that block.
+#[derive(Clone, Copy, Debug)]
+pub struct FourTerminal {
+    pub nx: usize,
+    pub ny: usize,
+    pub ntp: usize,
+    pub seed: i32,
+}
+
+impl FourTerminal {
+    /// Device sites (square and arms) and the four lead interfaces in the thesis order
+    /// (1: x = 1 − ntp, 2: y = ny + ntp, 3: x = nx + ntp, 4: y = 1 − ntp), thesis coordinates
+    /// (1-based square).
+    pub fn geometry(&self) -> (caroli_lattice::Region, Vec<caroli_green::Interface>) {
+        use caroli_lattice::{Lattice, Region};
+        let (nx, ny, ntp) = (self.nx as i64, self.ny as i64, self.ntp as i64);
+        let lat = Lattice::square(1.0, 2);
+        let site = |x: i64, y: i64| Site { cell: [x, y, 0], sub: 0 };
+        let mut sites = Vec::new();
+        for x in 1 - ntp..=nx + ntp {
+            for y in 1 - ntp..=ny + ntp {
+                let in_square = (1..=nx).contains(&x) && (1..=ny).contains(&y);
+                let in_x_arm = (1..=ny).contains(&y);
+                let in_y_arm = (1..=nx).contains(&x);
+                if in_square || in_x_arm || in_y_arm {
+                    sites.push(site(x, y));
+                }
+            }
+        }
+        let region = Region::from_sites(&lat, sites);
+        let column = |x: i64| Region::from_sites(&lat, (1..=ny).map(|y| site(x, y)).collect());
+        let row = |y: i64| Region::from_sites(&lat, (1..=nx).map(|x| site(x, y)).collect());
+        let interfaces = vec![
+            caroli_green::Interface { slice: column(1 - ntp), outward: [-1, 0, 0] },
+            caroli_green::Interface { slice: row(ny + ntp), outward: [0, 1, 0] },
+            caroli_green::Interface { slice: column(nx + ntp), outward: [1, 0, 0] },
+            caroli_green::Interface { slice: row(1 - ntp), outward: [0, -1, 0] },
+        ];
+        (region, interfaces)
+    }
+
+    /// `anderson`: `random_set(graine)`, `random_number(U(Nx, Ny))` (x fastest),
+    /// `U0·u − U0/2` on both orbitals of the square sites (the code uses one spin block,
+    /// `dim = 2`).
+    pub fn anderson(&self, u0: f64) -> caroli_disorder::OnSiteMap {
+        let mut rng = Xoshiro256::gfortran(self.seed);
+        let mut map = caroli_disorder::OnSiteMap::default();
+        for y in 1..=self.ny as i64 {
+            for x in 1..=self.nx as i64 {
+                let v = u0 * rng.uniform() - u0 * 0.5;
+                map.add(
+                    Site { cell: [x, y, 0], sub: 0 },
+                    CMat::from_fn(2, 2, |a, b| if a == b { c64::new(v, 0.0) } else { c64::new(0.0, 0.0) }),
+                );
+            }
+        }
+        map
+    }
+}
+
+/// The thesis multi-terminal transmission `Tr[Re Γ_p G_pq Re Γ_q G_pq†]`.
+pub fn thesis_transmission_pq(
+    sys: &caroli_green::MultiTerminal,
+    sol: &caroli_green::MultiSolution,
+    p: usize,
+    q: usize,
+) -> f64 {
+    let g = sol.block(sys, p, q);
+    let gp = real_part(&caroli_green::broadening(&sol.sigmas[p]));
+    let gq = real_part(&caroli_green::broadening(&sol.sigmas[q]));
+    caroli_green::trace(&(gp * &g * gq * g.adjoint())).re
+}
