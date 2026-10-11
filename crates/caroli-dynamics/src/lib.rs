@@ -76,25 +76,37 @@ impl Chebyshev {
         Self { coefficients }
     }
 
-    /// One step: `ψ ← Σ_n c_n T_n(H̃) ψ` with `apply(x, y)` setting `y = H̃ x`.
+    /// One step: `ψ ← Σ_n c_n T_n(H̃) ψ` with `apply(x, y)` setting `y = H̃ x`. `ψ` may hold a
+    /// block of wave functions if `apply` acts on the block (e.g. `SparseMatrix::apply_block`).
     pub fn step(&self, apply: impl Fn(&[c64], &mut [c64]), psi: &mut [c64]) {
+        use rayon::prelude::*;
+        const CHUNK: usize = 1 << 14;
         let c = &self.coefficients;
         let n = psi.len();
         let mut t0 = psi.to_vec();
         let mut t1 = vec![c64::new(0.0, 0.0); n];
         apply(&t0, &mut t1);
-        for i in 0..n {
-            psi[i] = c[0] * t0[i] + c[1] * t1[i];
-        }
+        psi.par_chunks_mut(CHUNK).zip(t0.par_chunks(CHUNK)).zip(t1.par_chunks(CHUNK)).for_each(
+            |((p, a), b)| {
+                for ((p, a), b) in p.iter_mut().zip(a).zip(b) {
+                    *p = c[0] * a + c[1] * b;
+                }
+            },
+        );
         let mut t2 = vec![c64::new(0.0, 0.0); n];
         for &ck in &c[2..] {
             apply(&t1, &mut t2);
-            for i in 0..n {
-                let next = 2.0 * t2[i] - t0[i];
-                psi[i] += ck * next;
-                t0[i] = t1[i];
-                t1[i] = next;
-            }
+            psi.par_chunks_mut(CHUNK).zip(t2.par_chunks_mut(CHUNK)).zip(t0.par_chunks(CHUNK)).for_each(
+                |((p, next), prev)| {
+                    for ((p, x), q) in p.iter_mut().zip(next.iter_mut()).zip(prev) {
+                        *x = 2.0 * *x - q;
+                        *p += ck * *x;
+                    }
+                },
+            );
+            // (T_{n−1}, T_n) ← (T_n, T_{n+1}).
+            std::mem::swap(&mut t0, &mut t1);
+            std::mem::swap(&mut t1, &mut t2);
         }
     }
 }

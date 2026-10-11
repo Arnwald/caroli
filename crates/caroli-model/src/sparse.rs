@@ -69,6 +69,26 @@ impl SparseMatrix {
         }
     }
 
+    /// `Y = A X` for a block of `m` vectors stored interleaved (`x[row·m + v]`): the matrix is
+    /// read once for the whole block.
+    pub fn apply_block(&self, x: &[c64], y: &mut [c64], m: usize) {
+        assert_eq!((x.len(), y.len()), (self.n * m, self.n * m));
+        let row = |(r, out): (usize, &mut [c64])| {
+            out.iter_mut().for_each(|o| *o = c64::new(0.0, 0.0));
+            for k in self.row_ptr[r]..self.row_ptr[r + 1] {
+                let (c, v) = (self.cols[k] as usize, self.vals[k]);
+                for (o, xv) in out.iter_mut().zip(&x[c * m..(c + 1) * m]) {
+                    *o += v * xv;
+                }
+            }
+        };
+        if self.n >= PARALLEL_ROWS {
+            y.par_chunks_exact_mut(m).enumerate().with_min_len(4096).for_each(row);
+        } else {
+            y.chunks_exact_mut(m).enumerate().for_each(row);
+        }
+    }
+
     pub fn to_dense(&self) -> CMat {
         let mut m = CMat::zeros(self.n, self.n);
         for r in 0..self.n {
@@ -125,6 +145,16 @@ mod tests {
         for (r, yr) in y.iter().enumerate() {
             let d: super::c64 = (0..bloch.n).map(|c| dense[(r, c)] * x[c]).sum();
             assert!((yr - d).norm() < 1e-12);
+        }
+        // Block product: two interleaved vectors.
+        let x2: Vec<_> = (0..2 * bloch.n).map(|i| super::c64::new((0.1 * i as f64).cos(), 1.0)).collect();
+        let mut y2 = vec![super::c64::new(0.0, 0.0); 2 * bloch.n];
+        bloch.apply_block(&x2, &mut y2, 2);
+        for v in 0..2 {
+            let xv: Vec<_> = x2.iter().skip(v).step_by(2).copied().collect();
+            let mut yv = vec![super::c64::new(0.0, 0.0); bloch.n];
+            bloch.apply(&xv, &mut yv);
+            assert!(yv.iter().zip(y2.iter().skip(v).step_by(2)).all(|(a, b)| (a - b).norm() < 1e-13));
         }
         // Gershgorin bounds contain the spectrum.
         let (lo, hi) = bloch.spectral_bounds();

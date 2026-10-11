@@ -1,0 +1,27 @@
+[package]
+name = "caroli-gpu"
+description = "GPU backends for caroli: Chebyshev kernels (KPM moments, time propagation) on Metal and CUDA."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[features]
+# CUDA backend (f64), compiled at run time with NVRTC; needs an NVIDIA driver to run.
+cuda = []
+
+[dependencies]
+caroli-model.workspace = true
+thiserror.workspace = true
+
+[target.'cfg(target_os = "macos")'.dependencies]
+objc2 = "0.6.4"
+objc2-foundation = "0.3.2"
+objc2-metal = "0.3.2"
+
+[dev-dependencies]
+caroli-lattice.workspace = true
+caroli-kpm.workspace = true
+caroli-dynamics.workspace = true
+caroli-disorder.workspace = true

@@ -11,6 +11,7 @@ repository.workspace = true
 caroli-model.workspace = true
 caroli-torus.workspace = true
 faer.workspace = true
+rayon.workspace = true
 
 [dev-dependencies]
 caroli-lattice.workspace = true

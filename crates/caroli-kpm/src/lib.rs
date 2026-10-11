@@ -54,20 +54,75 @@ pub fn random_phases(rng: &mut Xoshiro256, n: usize) -> Vec<c64> {
     (0..n).map(|_| c64::from_polar(1.0, 2.0 * std::f64::consts::PI * rng.uniform())).collect()
 }
 
-/// [`moments`] averaged over several start vectors (stochastic trace), the vectors in
-/// parallel. The result does not depend on the number of threads.
-pub fn stochastic_moments(
-    apply: impl Fn(&[c64], &mut [c64]) + Sync,
-    starts: &[Vec<c64>],
-    kernel: &[f64],
-) -> Vec<c64> {
-    let all: Vec<Vec<c64>> = starts.par_iter().map(|s| moments(&apply, s, kernel)).collect();
-    let mut mu = vec![c64::new(0.0, 0.0); kernel.len()];
-    for m in &all {
-        mu.iter_mut().zip(m).for_each(|(a, b)| *a += b);
+/// Interleaves vectors of equal length into one block: `x[row·m + v] = vectors[v][row]`.
+pub fn interleave(vectors: &[Vec<c64>]) -> Vec<c64> {
+    let (m, n) = (vectors.len(), vectors.first().map_or(0, Vec::len));
+    assert!(vectors.iter().all(|v| v.len() == n), "vectors of different lengths");
+    (0..n * m).map(|i| vectors[i % m][i / m]).collect()
+}
+
+/// Inverse of [`interleave`] for a block of `m` vectors.
+pub fn deinterleave(x: &[c64], m: usize) -> Vec<Vec<c64>> {
+    (0..m).map(|v| x.iter().skip(v).step_by(m).copied().collect()).collect()
+}
+
+/// Entries per parallel task for the elementwise work and the sums.
+const CHUNK: usize = 1 << 14;
+
+/// Stochastic moments `μ_n = kernel_n · mean_v ⟨r_v| T_n(H̃) |r_v⟩` for a block of start
+/// vectors. `apply(x, y)` sets `y = H̃ x` for the whole block stored interleaved
+/// (`x[row·m + v]`, see [`interleave`]), e.g. `SparseMatrix::apply_block`.
+///
+/// Uses `T_m T_n = (T_{m+n} + T_{|m−n|})/2`, i.e. `μ_{2n} = 2⟨T_n|T_n⟩ − μ_0` and
+/// `μ_{2n+1} = 2⟨T_n|T_{n+1}⟩ − μ_1`: `⌈M/2⌉` products with `H̃` give `M` moments (half of
+/// [`moments`]). The vector work runs in parallel in fixed chunks, so the result does not depend
+/// on the number of threads.
+pub fn block_moments(apply: impl Fn(&[c64], &mut [c64]), starts: &[Vec<c64>], kernel: &[f64]) -> Vec<c64> {
+    let (m, count) = (starts.len(), kernel.len());
+    assert!(m > 0 && count > 0);
+    let mut prev = interleave(starts);
+    let mut cur = vec![c64::new(0.0, 0.0); prev.len()];
+    apply(&prev, &mut cur);
+    let pdot = |a: &[c64], b: &[c64]| -> c64 {
+        a.par_chunks(CHUNK).zip(b.par_chunks(CHUNK)).map(|(x, y)| dot(x, y)).collect::<Vec<_>>().iter().sum()
+    };
+    let steps = count.div_ceil(2);
+    // s1[n] = ⟨T_n|T_n⟩, s2[n] = ⟨T_n|T_{n+1}⟩ (summed over the block).
+    let (mut s1, mut s2) = (vec![pdot(&prev, &prev)], vec![pdot(&prev, &cur)]);
+    let mut next = vec![c64::new(0.0, 0.0); prev.len()];
+    for _ in 1..steps {
+        apply(&cur, &mut next);
+        let parts: Vec<(c64, c64)> = next
+            .par_chunks_mut(CHUNK)
+            .zip(prev.par_chunks(CHUNK))
+            .zip(cur.par_chunks(CHUNK))
+            .map(|((nx, pv), cu)| {
+                let (mut a, mut b) = (c64::new(0.0, 0.0), c64::new(0.0, 0.0));
+                for ((x, p), c) in nx.iter_mut().zip(pv).zip(cu) {
+                    *x = 2.0 * *x - p;
+                    a += c.conj() * c;
+                    b += c.conj() * *x;
+                }
+                (a, b)
+            })
+            .collect();
+        s1.push(parts.iter().map(|p| p.0).sum());
+        s2.push(parts.iter().map(|p| p.1).sum());
+        std::mem::swap(&mut prev, &mut cur);
+        std::mem::swap(&mut cur, &mut next);
     }
-    mu.iter_mut().for_each(|a| *a /= starts.len() as f64);
-    mu
+    let (mu0, mu1) = (s1[0], s2[0]);
+    (0..count)
+        .map(|k| {
+            let raw = match k {
+                0 => mu0,
+                1 => mu1,
+                _ if k % 2 == 0 => 2.0 * s1[k / 2] - mu0,
+                _ => 2.0 * s2[k / 2] - mu1,
+            };
+            raw * (kernel[k] / m as f64)
+        })
+        .collect()
 }
 
 /// `μ_0 + 2 Σ_{n≥1} μ_n T_n(x)` at every `x`.
@@ -130,20 +185,28 @@ mod tests {
         assert!((peak - eps).abs() < 0.01);
     }
 
-    /// The stochastic trace of a diagonal matrix is exact with random phases.
+    /// The stochastic trace of a diagonal matrix is exact with random phases, and the doubling
+    /// relations give the moments of the plain recursion.
     #[test]
-    fn stochastic_trace_of_diagonal() {
+    fn block_moments_of_diagonal() {
         let eps = [0.1, -0.4, 0.75];
         let mut rng = Xoshiro256::seed_from_u64(7);
         let starts: Vec<Vec<c64>> = (0..4).map(|_| random_phases(&mut rng, 3)).collect();
-        let kernel = vec![1.0; 6];
-        let mu = stochastic_moments(
-            |v, out| out.iter_mut().zip(v).zip(&eps).for_each(|((o, x), e)| *o = x * *e),
-            &starts,
-            &kernel,
-        );
+        let kernel = jackson(9);
+        let m = starts.len();
+        let apply_block = |x: &[c64], y: &mut [c64]| {
+            y.iter_mut().zip(x).enumerate().for_each(|(i, (o, v))| *o = v * eps[i / m]);
+        };
+        let mu = block_moments(apply_block, &starts, &kernel);
         let t2: f64 = eps.iter().map(|e| 2.0 * e * e - 1.0).sum();
-        assert!((mu[0].re - 3.0).abs() < 1e-14 && (mu[2].re - t2).abs() < 1e-14);
+        assert!((mu[0].re - 3.0).abs() < 1e-14 && (mu[2].re - kernel[2] * t2).abs() < 1e-14);
+        let apply =
+            |x: &[c64], y: &mut [c64]| y.iter_mut().zip(x).zip(&eps).for_each(|((o, v), e)| *o = v * *e);
+        for (k, mk) in mu.iter().enumerate() {
+            let plain: c64 = starts.iter().map(|s| moments(apply, s, &kernel)[k]).sum::<c64>() / m as f64;
+            assert!((mk - plain).norm() < 1e-14, "moment {k}");
+        }
+        assert_eq!(deinterleave(&interleave(&starts), m), starts);
     }
 
     #[test]
