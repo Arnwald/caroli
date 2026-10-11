@@ -161,7 +161,7 @@ impl Model {
                     if !applies {
                         continue;
                     }
-                    if let Some((j, n)) = images.locate(region, &shifted(site, hop.offset, sign, sub)) {
+                    if let Some((j, n)) = images.locate(&shifted(site, hop.offset, sign, sub)) {
                         let phase: f64 = n.iter().zip(phases).map(|(n, k)| *n as f64 * k).sum();
                         let (s, cs) = phase.sin_cos();
                         h.block(region.offset(i), region.offset(j), &hop.matrix, c64::new(cs, s), adjoint);
@@ -226,120 +226,100 @@ fn shifted(site: &Site, offset: Cell, sign: i64, sub: usize) -> Site {
     }
 }
 
-/// Reduction of sites into a region modulo a lattice of periods.
+/// Exact reduction of sites into a region modulo the lattice of the periods.
+///
+/// The periods (rows) are brought to row-echelon (Hermite) form `H = W P` by unimodular integer
+/// row operations. Reducing a cell along the pivots of `H` gives a canonical representative, so
+/// every site of the region is filed under its class, and a hopping partner is found by its
+/// class with the exact number of periods it lies away.
 struct Images {
-    periods: Vec<Cell>,
-    /// Pseudo-inverse of the period matrix (rows: periods), to estimate the image of a site.
-    pinv: Vec<[f64; 3]>,
-    /// Mean cell of the region.
-    centre: [f64; 3],
+    /// Echelon rows and their pivot columns.
+    rows: Vec<[i64; 3]>,
+    pivots: Vec<usize>,
+    /// `H = W P`.
+    w: Vec<Vec<i64>>,
+    /// Class `(representative cell, sublattice)` → (index in the region, echelon coefficients).
+    classes: std::collections::HashMap<([i64; 3], usize), (usize, Vec<i64>)>,
 }
 
 impl Images {
     fn new(region: &Region, periods: &[Cell]) -> Self {
         let m = periods.len();
-        // Gram matrix G = P Pᵀ (m × m), pinv = G⁻¹ P.
-        let p: Vec<[f64; 3]> = periods.iter().map(|t| [t[0] as f64, t[1] as f64, t[2] as f64]).collect();
-        let mut g = vec![0.0; m * m];
-        for a in 0..m {
-            for b in 0..m {
-                g[a * m + b] = (0..3).map(|c| p[a][c] * p[b][c]).sum();
+        let mut rows: Vec<[i64; 3]> = periods.to_vec();
+        let mut w: Vec<Vec<i64>> = (0..m).map(|i| (0..m).map(|j| (i == j) as i64).collect()).collect();
+        let mut pivots = Vec::new();
+        let mut top = 0;
+        for col in 0..3 {
+            if top == m {
+                break;
             }
-        }
-        let ginv = invert(&g, m).expect("periods must be linearly independent");
-        let pinv = (0..m)
-            .map(|a| {
-                let mut row = [0.0; 3];
-                for (b, pb) in p.iter().enumerate() {
-                    for c in 0..3 {
-                        row[c] += ginv[a * m + b] * pb[c];
+            // Euclid on the rows top.. in this column.
+            loop {
+                let Some(p) = (top..m).filter(|&i| rows[i][col] != 0).min_by_key(|&i| rows[i][col].abs())
+                else {
+                    break;
+                };
+                rows.swap(top, p);
+                w.swap(top, p);
+                let mut done = true;
+                for i in top + 1..m {
+                    let f = rows[i][col] / rows[top][col];
+                    if f != 0 {
+                        for c in 0..3 {
+                            rows[i][c] -= f * rows[top][c];
+                        }
+                        for c in 0..m {
+                            w[i][c] -= f * w[top][c];
+                        }
                     }
+                    done &= rows[i][col] == 0;
                 }
-                row
-            })
-            .collect();
-        let count = region.len().max(1) as f64;
-        let mut centre = [0.0; 3];
-        for s in region.sites() {
-            for (c, x) in centre.iter_mut().zip(s.cell) {
-                *c += x as f64 / count;
+                if done {
+                    break;
+                }
+            }
+            if rows[top][col] != 0 {
+                if rows[top][col] < 0 {
+                    rows[top].iter_mut().for_each(|x| *x = -*x);
+                    w[top].iter_mut().for_each(|x| *x = -*x);
+                }
+                pivots.push(col);
+                top += 1;
             }
         }
-        Self { periods: periods.to_vec(), pinv, centre }
+        assert_eq!(top, m, "periods must be linearly independent");
+        let mut images = Self { rows, pivots, w, classes: Default::default() };
+        for (i, site) in region.sites().iter().enumerate() {
+            let (rep, k) = images.reduce(site.cell);
+            let previous = images.classes.insert((rep, site.sub), (i, k));
+            assert!(previous.is_none(), "the region holds two sites a whole number of periods apart");
+        }
+        images
     }
 
-    /// `(index in the region, period counts n)` with `site = region[index] + Σ n_i T_i`.
-    fn locate(&self, region: &Region, site: &Site) -> Option<(usize, Vec<i64>)> {
-        let m = self.periods.len();
-        if let Some(j) = region.index_of(site) {
-            return Some((j, vec![0; m]));
-        }
-        let guess: Vec<i64> = self
-            .pinv
-            .iter()
-            .map(|row| {
-                (0..3).map(|c| row[c] * (site.cell[c] as f64 - self.centre[c])).sum::<f64>().round() as i64
-            })
-            .collect();
-        // Candidates around the estimate, nearest first.
-        for radius in 0..=2i64 {
-            let side = (2 * radius + 1) as usize;
-            for code in 0..side.pow(m as u32) {
-                let mut n = guess.clone();
-                let (mut c, mut on_shell) = (code, false);
-                for v in n.iter_mut() {
-                    let d = (c % side) as i64 - radius;
-                    c /= side;
-                    on_shell |= d.abs() == radius;
-                    *v += d;
-                }
-                if !on_shell || n.iter().all(|&v| v == 0) {
-                    continue;
-                }
-                let mut cell = site.cell;
-                for (k, t) in n.iter().zip(&self.periods) {
-                    for c in 0..3 {
-                        cell[c] -= k * t[c];
-                    }
-                }
-                if let Some(j) = region.index_of(&Site { cell, sub: site.sub }) {
-                    return Some((j, n));
-                }
+    /// Canonical representative of a cell and its echelon coefficients `k`: `cell = rep + Σ k_i H_i`.
+    fn reduce(&self, cell: [i64; 3]) -> ([i64; 3], Vec<i64>) {
+        let mut x = cell;
+        let mut k = vec![0; self.rows.len()];
+        for (i, (&c, row)) in self.pivots.iter().zip(&self.rows).enumerate() {
+            let q = x[c].div_euclid(row[c]);
+            for a in 0..3 {
+                x[a] -= q * row[a];
             }
+            k[i] = q;
         }
-        None
+        (x, k)
     }
-}
 
-/// Inverse of a small dense matrix (row-major), by Gauss–Jordan with partial pivoting.
-fn invert(a: &[f64], m: usize) -> Option<Vec<f64>> {
-    let mut a = a.to_vec();
-    let mut inv: Vec<f64> = (0..m * m).map(|k| if k % (m + 1) == 0 { 1.0 } else { 0.0 }).collect();
-    for col in 0..m {
-        let piv = (col..m).max_by(|&r, &s| a[r * m + col].abs().total_cmp(&a[s * m + col].abs()))?;
-        if a[piv * m + col].abs() < 1e-12 {
-            return None;
-        }
-        for j in 0..m {
-            a.swap(col * m + j, piv * m + j);
-            inv.swap(col * m + j, piv * m + j);
-        }
-        let d = a[col * m + col];
-        for j in 0..m {
-            a[col * m + j] /= d;
-            inv[col * m + j] /= d;
-        }
-        for r in 0..m {
-            if r != col {
-                let f = a[r * m + col];
-                for j in 0..m {
-                    a[r * m + j] -= f * a[col * m + j];
-                    inv[r * m + j] -= f * inv[col * m + j];
-                }
-            }
-        }
+    /// `(index in the region, period counts n)` with `site = region[index] + Σ n_l T_l`, or `None`
+    /// if the class of the site is not in the region (open directions).
+    fn locate(&self, site: &Site) -> Option<(usize, Vec<i64>)> {
+        let (rep, k) = self.reduce(site.cell);
+        let (j, kq) = self.classes.get(&(rep, site.sub))?;
+        let m = self.rows.len();
+        let n = (0..m).map(|l| (0..m).map(|i| (k[i] - kq[i]) * self.w[i][l]).sum()).collect();
+        Some((*j, n))
     }
-    Some(inv)
 }
 
 /// Destination of Hamiltonian blocks: a dense matrix or a list of sparse entries.

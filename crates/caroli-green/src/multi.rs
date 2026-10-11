@@ -17,26 +17,35 @@ pub struct AttachedLead {
     pub h00: CMat,
     /// Coupling `⟨cell n| H |cell n+1⟩` from a cell to the next one further from the device.
     pub h01: CMat,
-    /// Device orbitals of the interface slice, in the order of the lead-cell orbitals. The
-    /// interface couples to the first lead cell through `h01` (the lead continues the slice).
+    /// Device orbitals coupled to the first lead cell.
     pub orbitals: Vec<usize>,
+    /// Coupling from these orbitals to the first lead cell (`orbitals.len() × cell orbitals`).
+    pub coupling: CMat,
 }
 
 impl AttachedLead {
-    /// Self-energy on the interface orbitals.
-    pub fn self_energy(&self, energy: f64, method: SelfEnergyMethod) -> Result<CMat, GreenError> {
-        match method {
-            SelfEnergyMethod::Modes => {
-                Ok(sigma_right(&self.h01, &LeadModes::new(&self.h00, &self.h01, energy)?))
+    /// Surface Green's function of the lead (its first cell and everything beyond).
+    pub fn surface_green(&self, energy: f64, method: SelfEnergyMethod) -> Result<CMat, GreenError> {
+        let z = match method {
+            SelfEnergyMethod::Modes => c64::new(energy, 0.0),
+            SelfEnergyMethod::ModesBroadened { eta } | SelfEnergyMethod::Decimation { eta } => {
+                c64::new(energy, eta)
             }
-            SelfEnergyMethod::ModesBroadened { eta } => {
-                Ok(sigma_right(&self.h01, &LeadModes::at(&self.h00, &self.h01, c64::new(energy, eta))?))
-            }
-            SelfEnergyMethod::Decimation { eta } => {
-                let g = decimation::surface_green(&self.h00, &self.h01, c64::new(energy, eta))?;
-                Ok(&self.h01 * &g * self.h01.adjoint())
-            }
+        };
+        if let SelfEnergyMethod::Decimation { .. } = method {
+            return decimation::surface_green(&self.h00, &self.h01, z);
         }
+        let rest = sigma_right(&self.h01, &LeadModes::at(&self.h00, &self.h01, z)?);
+        let n = self.h00.nrows();
+        Ok(inverse(&CMat::from_fn(n, n, |i, j| {
+            (if i == j { z } else { c64::new(0.0, 0.0) }) - self.h00[(i, j)] - rest[(i, j)]
+        })))
+    }
+
+    /// Self-energy on the coupled device orbitals, `Σ = V g V†`.
+    pub fn self_energy(&self, energy: f64, method: SelfEnergyMethod) -> Result<CMat, GreenError> {
+        let g = self.surface_green(energy, method)?;
+        Ok(&self.coupling * g * self.coupling.adjoint())
     }
 }
 
@@ -59,27 +68,29 @@ pub struct Interface {
 
 impl MultiTerminal {
     /// Device from `device` on `region`; each lead continues an interface slice outward with the
-    /// clean `lead` model.
+    /// clean `lead` model. The lead couples to every device orbital its first cell reaches (not
+    /// only the interface slice: slanted bonds, several sublattices).
     pub fn from_model(device: &Model, lead: &Model, region: &Region, interfaces: &[Interface]) -> Self {
         let h = device.hamiltonian(region);
         let leads = interfaces
             .iter()
             .map(|itf| {
-                let orbitals = itf
-                    .slice
-                    .sites()
-                    .iter()
-                    .enumerate()
-                    .flat_map(|(k, s)| {
-                        let i = region.index_of(s).expect("interface site outside the device");
-                        let (o, n) = (region.offset(i), region.site_orbitals(i));
-                        debug_assert_eq!(n, itf.slice.site_orbitals(k));
-                        o..o + n
-                    })
+                let shift = |k: i64| -> Cell { [k * itf.outward[0], k * itf.outward[1], k * itf.outward[2]] };
+                let first = itf.slice.translated(shift(1));
+                assert!(
+                    first.sites().iter().all(|s| region.index_of(s).is_none()),
+                    "the first lead cell overlaps the device"
+                );
+                let skip = lead.coupling(&itf.slice, &itf.slice.translated(shift(2)));
+                assert!(skip.norm_max() == 0.0, "a lead hopping reaches beyond the next cell");
+                let v = lead.coupling(region, &first);
+                let orbitals: Vec<usize> = (0..v.nrows())
+                    .filter(|&i| (0..v.ncols()).any(|j| v[(i, j)] != c64::new(0.0, 0.0)))
                     .collect();
                 AttachedLead {
                     h00: lead.hamiltonian(&itf.slice),
-                    h01: lead.coupling(&itf.slice, &itf.slice.translated(itf.outward)),
+                    h01: lead.coupling(&itf.slice, &first),
+                    coupling: CMat::from_fn(orbitals.len(), v.ncols(), |a, j| v[(orbitals[a], j)]),
                     orbitals,
                 }
             })
@@ -139,6 +150,47 @@ mod tests {
     use super::*;
     use crate::TwoTerminal;
     use caroli_lattice::Lattice;
+
+    /// A narrow lead (two rows) on a graphene device: device sites outside the interface slice
+    /// bond to the first lead cell. Moving one lead cell into the device must not change T.
+    #[test]
+    fn narrow_lead_on_graphene() {
+        let lat = Lattice::honeycomb(1.0, 1);
+        let one = |x: f64| CMat::from_fn(1, 1, |_, _| c64::new(x, 0.0));
+        let g = Model::new(lat.clone())
+            .hopping(0, 1, [0, 0, 0], one(-1.0))
+            .hopping(0, 1, [0, -1, 0], one(-1.0))
+            .hopping(0, 1, [1, -1, 0], one(-1.0));
+        let site = |x: i64, y: i64, s: usize| caroli_lattice::Site { cell: [x, y, 0], sub: s };
+        let column = |x: i64, ys: std::ops::Range<i64>| {
+            Region::from_sites(&lat, ys.flat_map(|y| (0..2).map(move |s| site(x, y, s))).collect())
+        };
+        let device = |x0: i64| {
+            let mut sites: Vec<caroli_lattice::Site> =
+                (0..6).flat_map(|x| (0..6).flat_map(move |y| (0..2).map(move |s| site(x, y, s)))).collect();
+            for x in x0..0 {
+                sites.extend((2..4).flat_map(|y| (0..2).map(move |s| site(x, y, s))));
+            }
+            Region::from_sites(&lat, sites)
+        };
+        let t = |x0: i64, e: f64| {
+            let region = device(x0);
+            let sys = MultiTerminal::from_model(
+                &g,
+                &g,
+                &region,
+                &[
+                    Interface { slice: column(x0, 2..4), outward: [-1, 0, 0] },
+                    Interface { slice: column(5, 0..6), outward: [1, 0, 0] },
+                ],
+            );
+            sys.solve(e, SelfEnergyMethod::Modes).unwrap().transmission(&sys, 1, 0)
+        };
+        for e in [-0.7, 0.45, 1.3] {
+            let (a, b) = (t(0, e), t(-1, e));
+            assert!((a - b).abs() < 1e-9, "E {e}: {a} vs {b}");
+        }
+    }
 
     /// A ribbon with two attached leads gives the same transmission as the two-terminal solver,
     /// in both directions.

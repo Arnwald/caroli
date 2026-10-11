@@ -58,6 +58,9 @@ impl TwoTerminal {
     /// both leads continue the first and last slices of the region with the clean `lead`
     /// model (the region's own model may carry disorder).
     pub fn from_model(device: &Model, lead: &Model, region: &Region, axis: usize) -> Self {
+        for hop in lead.hoppings() {
+            assert!(hop.offset[axis].abs() <= 1, "a lead hopping skips a cell along axis {axis}");
+        }
         let (slices, diag, off) = device.slice_blocks(region, axis);
         let mut step = [0i64; 3];
         step[axis] = 1;

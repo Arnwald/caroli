@@ -171,6 +171,58 @@ mod tests {
         assert!((h[(0, 0)].re - exact).abs() < 1e-14, "{} vs {exact}", h[(0, 0)].re);
     }
 
+    /// Two fundamental domains of the same periodic system give the same spectrum: a slanted
+    /// square supercell {(j, j)} against the straight one {(0, j)}, and a graphene armchair cell
+    /// with half of its sites moved by one period; the Hamiltonians stay Hermitian.
+    #[test]
+    fn any_fundamental_domain() {
+        use crate::{CMat, Model, c64};
+        use caroli_lattice::{Lattice, Site};
+        let one = |x: f64| CMat::from_fn(1, 1, |_, _| c64::new(x, 0.0));
+        let spectrum = |h: &CMat| h.self_adjoint_eigenvalues(faer::Side::Lower).unwrap();
+        let close = |a: &[f64], b: &[f64]| a.iter().zip(b).all(|(x, y)| (x - y).abs() < 1e-12);
+        let sq = Model::new(Lattice::square(1.0, 1)).hopping(0, 0, [1, 0, 0], one(-1.0)).hopping(
+            0,
+            0,
+            [0, 1, 0],
+            one(-1.0),
+        );
+        let site = |x: i64, y: i64, sub: usize| Site { cell: [x, y, 0], sub };
+        let straight = Region::from_sites(sq.lattice(), (0..6).map(|j| site(0, j, 0)).collect());
+        let slanted = Region::from_sites(sq.lattice(), (0..6).map(|j| site(j, j, 0)).collect());
+        for k in [0.0, 0.4, 2.1] {
+            let (a, b) = (
+                sq.bloch_hamiltonian(&straight, &[[1, 0, 0]], &[k]),
+                sq.bloch_hamiltonian(&slanted, &[[1, 0, 0]], &[k]),
+            );
+            assert!((&b - b.adjoint()).norm_max() < 1e-15);
+            assert!(close(&spectrum(&a), &spectrum(&b)), "square, k = {k}");
+        }
+        let g = Model::new(Lattice::honeycomb(1.0, 1))
+            .hopping(0, 1, [0, 0, 0], one(-1.0))
+            .hopping(0, 1, [0, -1, 0], one(-1.0))
+            .hopping(0, 1, [1, -1, 0], one(-1.0));
+        let w = 30;
+        let cell: Vec<Site> =
+            (0..w).flat_map(|i| (0..2).flat_map(move |j| (0..2).map(move |s| site(i, j, s)))).collect();
+        let moved: Vec<Site> =
+            cell.iter()
+                .enumerate()
+                .map(|(k, s)| {
+                    if k % 2 == 0 { Site { cell: [s.cell[0] - 1, s.cell[1] + 2, 0], sub: s.sub } } else { *s }
+                })
+                .collect();
+        let (r1, r2) = (Region::from_sites(g.lattice(), cell), Region::from_sites(g.lattice(), moved));
+        for k in [0.0, 0.7] {
+            let (a, b) = (
+                g.bloch_hamiltonian(&r1, &[[-1, 2, 0]], &[k]),
+                g.bloch_hamiltonian(&r2, &[[-1, 2, 0]], &[k]),
+            );
+            assert!((&a - a.adjoint()).norm_max() < 1e-15 && (&b - b.adjoint()).norm_max() < 1e-15);
+            assert!(close(&spectrum(&a), &spectrum(&b)), "graphene, k = {k}");
+        }
+    }
+
     /// The sparse builders give the dense Hamiltonians, open and twisted-periodic.
     #[test]
     fn sparse_matches_dense() {
