@@ -146,18 +146,25 @@ Golden cases with disorder use the same impurity configurations as the thesis.
     |---|---|---|---|
     | 64 | 5.6e-6 / 1.6e-3 / 1.0e-2 | 2.4e-4 | 7.5e-12 / 4.0e-7 / 8.7e-7 |
     | 128 | 1.3e-5 / 5.2e-3 / 2.5e-2 | 1.3e-3 | 1.9e-11 / 8.9e-7 / 8.5e-5 |
+    | 256 (*) | 1.7e-5 / 2.0e-2 / 2.0e-2 | 3.2e-3 | 2.8e-10 / 2.4e-5 / 1.0e-4 |
+
+    (*) Three disorder strengths per case, near the transitions.
 
     - **Where the loss comes from.** The single-precision inversions. Rounding the lead
       self-energies costs less than 1e-7, and a double-precision final trace does not help.
-    - **How it grows.** About ×2.5 per doubling of W, and most in diffusive regions.
+    - **How it grows.** On the plateaus, about ×2.5–5 per doubling of W: at W ≥ 128, `Single`
+      exceeds the 1e-3 used to call a point quantized. It is largest in diffusive regions.
       Transmissions below 1e-38 underflow to zero, so localisation lengths need `Double` or
       `Mixed`.
+    - **`Mixed` also grows with W**, up to 1e-4 at W ≥ 128. A second refinement step, or
+      refining until the residual falls below a threshold, should bring it back near double
+      precision.
     - **Reporting the loss.** Every reduced-precision run should report its own error:
       - the residual norms ‖1 − A X‖ of the inversions, which `Mixed` computes anyway;
       - a random fraction of the points (say 2 %) recomputed in `Double`, with the median and
         maximum |ΔT| returned with the results.
     - **CPU timing.** On the M5 CPU, the f32 sweep takes half the time of the f64 one (4.4 s
-      against 8.7 s at W = 128).
+      against 8.7 s at W = 128, 25.7 s against 48.9 s at W = 256).
     - **Faster double path, to do first.** Two changes:
       - the coupling between slices is diagonal site by site, so two of the three products per
         slice become O(n²);
