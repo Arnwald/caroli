@@ -69,6 +69,7 @@ The dependencies only go downward: lattice ← model ← green ← caroli.
 | four-terminal cross with Anderson disorder (spin-up BHZ block) | `ti-cond4t-anderson` | thesis formula reproduced to 3e-5 (the thesis puts E + iη on one slice) with a general multi-terminal solver |
 | KPM densities of states (TI same-g, opposite-g; graphene AF) | `ti-dos-kpm-*`, `graphene-dos-kpm` | reproduced to 1e-15 (same random vectors and impurities) |
 | graphene under a field: current and pair creation (clean, AF, para) | `graphene-current-*` | reproduced to 1e-16 (replica keeps gfortran's −0 imaginary parts, which fix the gauge of the initial band state) |
+| graphene wave packet: width w(t), sublattice density maps | `graphene-width`, `graphene-density` | reproduced to 1e-16 (width) and 1e-19 (densities) |
 | QSH plateau, modes vs decimation, T_LR = T_RL, current conservation = Landauer | — | internal consistency |
 
 Golden cases with disorder use the same impurity configurations as the thesis.
@@ -97,8 +98,8 @@ Golden cases with disorder use the same impurity configurations as the thesis.
    self-energy (see `reference/thesis/ti/born/scba-magnetic-analytic/README.md`).
 7. ✅ Spectral tools: KPM (Chebyshev moments, Jackson kernel, stochastic trace) on tori
    (`caroli-torus`); validated on the TI and graphene KPM codes (exact).
-8. ✅ Time evolution: split-operator on tori (`caroli-dynamics`); graphene current and pair
-   creation validated (exact). Still to port: wave-packet width and density programs.
+8. ✅ Time evolution: split-operator on tori (`caroli-dynamics`); graphene current, pair
+   creation, wave-packet width and density validated (exact).
 9. Interface: declarative system and simulation files with a CLI; Python bindings to consider.
 10. Acceleration:
     - CPU parallelism (rayon) over energies and samples first.

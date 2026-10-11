@@ -674,6 +674,30 @@ impl Kpm {
     }
 }
 
+/// k point of FFT index `idx` on the thesis graphene grid `k_FBZ(N, N/2, N√3/2)`: steps
+/// `4π/N` and `4π/(√3 N)`.
+pub fn graphene_k(n: usize, idx: usize) -> (f64, f64) {
+    let s3 = 3f64.sqrt();
+    let kv = |i: usize, k0: f64| (if i < n / 2 { i as f64 } else { i as f64 - n as f64 }) * k0;
+    let k0x = 2.0 * std::f64::consts::PI / (n as f64 * 0.5);
+    let k0y = 2.0 * std::f64::consts::PI / (n as f64 * s3 * 0.5);
+    (kv(idx % n, k0x), kv(idx / n, k0y))
+}
+
+/// `h(k, t) = −e^{i(ky − E t)/√3} − 2 cos(kx/2) e^{−i(ky − E t)/(2√3)}` of the thesis graphene codes.
+///
+/// Where `h` is real, gfortran's complex arithmetic leaves an imaginary part −0 (so `atan2`
+/// gives −π); the replica does the same, because that gauge choice of the band states matters
+/// once disorder mixes the k points.
+pub fn graphene_h(n: usize, idx: usize, elec: f64, t: f64) -> c64 {
+    let s3 = 3f64.sqrt();
+    let (kx, ky) = graphene_k(n, idx);
+    let i = c64::new(0.0, 1.0);
+    let h =
+        -(i * (ky - elec * t) / s3).exp() - 2.0 * (0.5 * kx).cos() * (-i * (ky - elec * t) * 0.5 / s3).exp();
+    if h.im == 0.0 { c64::new(h.re, -0.0) } else { h }
+}
+
 /// Parameters of graphene `current-pair-creation` (`g_s.ini`, baseline-patched fixed seed).
 #[derive(Clone, Copy, Debug)]
 pub struct GrapheneCurrent {
@@ -691,28 +715,12 @@ pub struct GrapheneCurrent {
 }
 
 impl GrapheneCurrent {
-    /// k grid of `k_FBZ(N, N/2, N√3/2)`: FFT order with steps `4π/N` and `4π/(√3 N)`.
     fn k(&self, idx: usize) -> (f64, f64) {
-        let n = self.n;
-        let s3 = 3f64.sqrt();
-        let kv = |i: usize, k0: f64| (if i < n / 2 { i as f64 } else { i as f64 - n as f64 }) * k0;
-        let k0x = 2.0 * std::f64::consts::PI / (n as f64 * 0.5);
-        let k0y = 2.0 * std::f64::consts::PI / (n as f64 * s3 * 0.5);
-        (kv(idx % n, k0x), kv(idx / n, k0y))
+        graphene_k(self.n, idx)
     }
 
-    /// `h(k, t) = −e^{i(ky − E t)/√3} − 2 cos(kx/2) e^{−i(ky − E t)/(2√3)}`.
-    ///
-    /// Where `h` is real, gfortran's complex arithmetic leaves an imaginary part −0 (so
-    /// `atan2` gives −π); the replica does the same, because that gauge choice of the initial
-    /// band state matters once disorder mixes the k points.
     fn h(&self, idx: usize, elec: f64, t: f64) -> c64 {
-        let s3 = 3f64.sqrt();
-        let (kx, ky) = self.k(idx);
-        let i = c64::new(0.0, 1.0);
-        let h = -(i * (ky - elec * t) / s3).exp()
-            - 2.0 * (0.5 * kx).cos() * (-i * (ky - elec * t) * 0.5 / s3).exp();
-        if h.im == 0.0 { c64::new(h.re, -0.0) } else { h }
+        graphene_h(self.n, idx, elec, t)
     }
 
     /// Current and pair creation, one `(curr, np)` series of `NT/NDIAG + 1` values per field.
@@ -862,5 +870,367 @@ impl GrapheneCurrent {
             out.push((cur_tab, np_tab));
         }
         out
+    }
+}
+
+/// Graphene impurity half-step blocks `exp(−i Vimp dt/2 n·σ)` of the thesis `potentialevol`:
+/// `2·n_imp` distinct sites (A then B), moments isotropic or AF (A +z, B −z).
+fn graphene_half_steps(
+    rng: &mut Xoshiro256,
+    n: usize,
+    n_imp: usize,
+    vimp: f64,
+    dt: f64,
+    choice_spin: i32,
+) -> Vec<(usize, CMat)> {
+    let i = c64::new(0.0, 1.0);
+    let cand: Vec<Site> =
+        (0..n * n).map(|k| Site { cell: [(k % n) as i64, (k / n) as i64, 0], sub: 0 }).collect();
+    let sites: Vec<usize> = caroli_disorder::choose_sites(rng, &cand, 2 * n_imp)
+        .iter()
+        .map(|s| s.cell[0] as usize + n * s.cell[1] as usize)
+        .collect();
+    let u: Vec<f64> = rng.uniforms(2 * n_imp).into_iter().map(|u| 2.0 * u - 1.0).collect();
+    let ph: Vec<f64> = rng.uniforms(2 * n_imp).into_iter().map(|p| 2.0 * std::f64::consts::PI * p).collect();
+    let (c, s) = ((0.5 * dt * vimp).cos(), (0.5 * dt * vimp).sin());
+    sites
+        .iter()
+        .enumerate()
+        .map(|(k, &site)| {
+            let iso = choice_spin == 0;
+            let (nx, ny, mut nz) = if iso {
+                ((1.0 - u[k] * u[k]).sqrt() * ph[k].cos(), (1.0 - u[k] * u[k]).sqrt() * ph[k].sin(), u[k])
+            } else {
+                (0.0, 0.0, 1.0)
+            };
+            let (a, b) = if k < n_imp { (0, 2) } else { (1, 3) };
+            if k >= n_imp && !iso {
+                nz = -1.0;
+            }
+            let mut m =
+                CMat::from_fn(4, 4, |p, q| if p == q { c64::new(1.0, 0.0) } else { c64::new(0.0, 0.0) });
+            m[(a, a)] = c - i * nz * s;
+            m[(a, b)] = (-i * nx - ny) * s;
+            m[(b, a)] = (-i * nx + ny) * s;
+            m[(b, b)] = c + i * nz * s;
+            (site, m)
+        })
+        .collect()
+}
+
+/// Parameters of graphene `wavepacket-width` (`g_s.ini`; `imp_conc` in percent).
+#[derive(Clone, Copy, Debug)]
+pub struct GrapheneWidth {
+    pub n: usize,
+    pub vimp: f64,
+    pub imp_conc: f64,
+    pub elec: f64,
+    pub t_total: f64,
+    pub samples: usize,
+    pub dt: f64,
+    pub ndiag: usize,
+    pub choice_spin: i32,
+}
+
+impl GrapheneWidth {
+    /// Band → orbital basis at time `t` (thesis `ugauge`), per spin block.
+    fn gauge(&self, band: &[c64], t: f64, inverse: bool) -> Vec<c64> {
+        let nn = self.n * self.n;
+        let i = c64::new(0.0, 1.0);
+        let s2 = 2f64.sqrt();
+        let mut out = vec![c64::new(0.0, 0.0); 4 * nn];
+        for k in 0..nn {
+            let phi = graphene_h(self.n, k, self.elec, t).arg();
+            for o in [0, 2] {
+                let (p, q) = (band[k + o * nn], band[k + (o + 1) * nn]);
+                if inverse {
+                    // ugaugedag: (e^{−iφ} p + q, −e^{−iφ} p + q)/√2
+                    out[k + o * nn] = ((-i * phi).exp() * p + q) / s2;
+                    out[k + (o + 1) * nn] = (-(-i * phi).exp() * p + q) / s2;
+                } else {
+                    // ugauge: (e^{iφ} p − e^{iφ} q, p + q)/√2
+                    out[k + o * nn] = ((i * phi).exp() * p - (i * phi).exp() * q) / s2;
+                    out[k + (o + 1) * nn] = (p + q) / s2;
+                }
+            }
+        }
+        out
+    }
+
+    /// Current, pair creation and wave-packet width, `NT/NDIAG + 1` values each.
+    pub fn run(&self) -> (Vec<f64>, Vec<f64>, Vec<f64>) {
+        let (n, nn) = (self.n, self.n * self.n);
+        let nt = (self.t_total / self.dt) as usize;
+        let ntdiag = nt / self.ndiag;
+        let n_imp = (self.imp_conc * nn as f64 / 100.0) as usize;
+        let (s3, i, elec, dt) = (3f64.sqrt(), c64::new(0.0, 1.0), self.elec, self.dt);
+        let fft = caroli_torus::Fft2::new(n);
+        let to_k = |psi: &mut [c64]| psi.chunks_exact_mut(nn).for_each(|c| fft.forward(c));
+        let to_x = |psi: &mut [c64]| {
+            psi.chunks_exact_mut(nn).for_each(|c| {
+                fft.backward(c);
+                c.iter_mut().for_each(|z| *z /= nn as f64);
+            })
+        };
+        let dh_t = |k: usize, t: f64| {
+            let (kx, ky) = graphene_k(n, k);
+            i * elec * (i * (ky - elec * t) / s3).exp() / s3
+                - i * elec * (0.5 * kx).cos() * (-i * (ky - elec * t) * 0.5 / s3).exp() / s3
+        };
+        let mut rng = Xoshiro256::gfortran(1237);
+        let (mut cur_tab, mut np_tab, mut w_tab) =
+            (vec![0.0; ntdiag + 1], vec![0.0; ntdiag + 1], vec![0.0; ntdiag + 1]);
+        for _ in 0..self.samples {
+            let mut psi_k = vec![c64::new(0.0, 0.0); 4 * nn];
+            psi_k[nn..2 * nn].iter_mut().for_each(|z| *z = c64::new(1.0 / (nn as f64).sqrt(), 0.0));
+            let uv = if self.vimp != 0.0 {
+                graphene_half_steps(&mut rng, n, n_imp, self.vimp, dt, self.choice_spin)
+            } else {
+                Vec::new()
+            };
+            let mut psi_x = self.gauge(&psi_k, 0.0, false);
+            to_x(&mut psi_x);
+            let mut iss = 0;
+            for it in 0..=nt {
+                let t = it as f64 * dt;
+                caroli_dynamics::apply_local(&mut psi_x, nn, 4, &uv);
+                let mut k1 = psi_x.clone();
+                to_k(&mut k1);
+                psi_k = self.gauge(&k1, t, true);
+                let uh: Vec<CMat> = (0..nn)
+                    .map(|k| {
+                        let (h0, h1) = (graphene_h(n, k, elec, t), graphene_h(n, k, elec, t + dt));
+                        let eps = (h0.norm() + h1.norm()) * 0.5;
+                        let vdphi = -0.5 * ((dh_t(k, t) / h0).im + (dh_t(k, t + dt) / h1).im) * 0.5;
+                        let sq = (eps * eps + vdphi * vdphi).sqrt();
+                        let (cs, sn) = ((dt * sq).cos(), (dt * sq).sin());
+                        let mut m = CMat::zeros(4, 4);
+                        for o in [0, 2] {
+                            m[(o, o)] = cs + i * eps * sn / sq;
+                            m[(o, o + 1)] = -i * vdphi * sn / sq;
+                            m[(o + 1, o)] = -i * vdphi * sn / sq;
+                            m[(o + 1, o + 1)] = cs - i * eps * sn / sq;
+                        }
+                        m
+                    })
+                    .collect();
+                caroli_dynamics::apply_k(&mut psi_k, 4, &uh);
+                psi_x = self.gauge(&psi_k, t, false);
+                to_x(&mut psi_x);
+                caroli_dynamics::apply_local(&mut psi_x, nn, 4, &uv);
+                if it % self.ndiag == 0 {
+                    let mut k1 = psi_x.clone();
+                    to_k(&mut k1);
+                    psi_k = self.gauge(&k1, t, true);
+                    let orb = self.gauge(&psi_k, t, false);
+                    let mut cur = 0.0;
+                    let mut np = 0.0;
+                    for k in 0..nn {
+                        let (kx, ky) = graphene_k(n, k);
+                        let dh = -i * (i * (ky - elec * t) / s3).exp() / s3
+                            + i * (0.5 * kx).cos() * (-i * (ky - elec * t) * 0.5 / s3).exp() / s3;
+                        cur += (orb[k].conj() * dh * orb[k + nn]
+                            + orb[k + 2 * nn].conj() * dh * orb[k + 3 * nn])
+                            .re;
+                        np += psi_k[k].norm_sqr();
+                    }
+                    let cur = if it == 0 { 0.0 } else { -4.0 * cur };
+                    cur_tab[iss] += cur;
+                    np_tab[iss] += 2.0 * np;
+                    w_tab[iss] += graphene_width(n, &psi_x);
+                    iss += 1;
+                }
+            }
+            if self.vimp == 0.0 {
+                break;
+            }
+        }
+        if self.vimp != 0.0 {
+            for v in [&mut cur_tab, &mut np_tab, &mut w_tab] {
+                v.iter_mut().for_each(|x| *x /= self.samples as f64);
+            }
+        }
+        (cur_tab, np_tab, w_tab)
+    }
+}
+
+/// Thesis `width_t` (with the baseline's in-bounds `xy_mesh`): sublattice densities, quadrant
+/// swap, `sqrt(⟨x²⟩ − ⟨x⟩² + ⟨y²⟩ − ⟨y⟩²)` over the A (x1, y1) and B (x2, y2) positions.
+pub fn graphene_width(n: usize, psi_x: &[c64]) -> f64 {
+    let nn = n * n;
+    let s3 = 3f64.sqrt();
+    let (h, n2) = (0.5, n / 2);
+    let idx = |a: usize, b: usize| a + n * b; // (first index x, second y), 0-based
+    let (mut x1, mut y1, mut x2, mut y2) = (vec![0.0; nn], vec![0.0; nn], vec![0.0; nn], vec![0.0; nn]);
+    for j in -(n2 as i64)..(n2 as i64) {
+        for i in -(n2 as i64)..(n2 as i64) {
+            let p = idx((i + n2 as i64) as usize, (j + n2 as i64) as usize);
+            x1[p] = (i + 1) as f64 * h + (j + 1) as f64 + h;
+            y1[p] = (i + 1) as f64 * s3 * h + h / s3;
+            x2[p] = (i + 1) as f64 * h + (j + 1) as f64;
+            y2[p] = (i + 1) as f64 * s3 * h;
+        }
+    }
+    let dens = |a: usize, b: usize| -> Vec<f64> {
+        (0..nn).map(|p| psi_x[p + a * nn].norm_sqr() + psi_x[p + b * nn].norm_sqr()).collect()
+    };
+    let swap = |d: &[f64]| -> Vec<f64> {
+        let mut out = d.to_vec();
+        for jj in 0..n2 {
+            for kk in 0..n2 {
+                out[idx(jj, kk)] = d[idx(jj + n2, kk + n2)];
+                out[idx(jj + n2, kk + n2)] = d[idx(jj, kk)];
+                out[idx(jj + n2, kk)] = d[idx(jj, kk + n2)];
+                out[idx(jj, kk + n2)] = d[idx(jj + n2, kk)];
+            }
+        }
+        out
+    };
+    let (d1, d2) = (swap(&dens(0, 2)), swap(&dens(1, 3)));
+    let moment = |c1: &[f64], c2: &[f64], pw: i32| -> f64 {
+        (0..nn).map(|p| c1[p].powi(pw) * d1[p] + c2[p].powi(pw) * d2[p]).sum()
+    };
+    let wx2 = moment(&x1, &x2, 2) - moment(&x1, &x2, 1).powi(2);
+    let wy2 = moment(&y1, &y2, 2) - moment(&y1, &y2, 1).powi(2);
+    (wx2 + wy2).sqrt()
+}
+
+/// Parameters of graphene `wavepacket-density` (`g_s.ini`; `imp_conc` in percent; one
+/// realisation).
+#[derive(Clone, Copy, Debug)]
+pub struct GrapheneDensity {
+    pub n: usize,
+    pub vimp: f64,
+    pub imp_conc: f64,
+    pub elec: f64,
+    pub t_total: f64,
+    pub dt: f64,
+    pub ndiag: usize,
+    pub choice_spin: i32,
+}
+
+/// Output of [`GrapheneDensity::run`].
+pub struct DensityRun {
+    pub current: Vec<f64>,
+    pub pairs: Vec<f64>,
+    /// Sublattice densities (A, then B) of the conduction-band projection, one `n × n` map per
+    /// diagnostic, quadrant-swapped.
+    pub density_a: Vec<Vec<f64>>,
+    pub density_b: Vec<Vec<f64>>,
+}
+
+impl GrapheneDensity {
+    pub fn run(&self) -> DensityRun {
+        let (n, nn) = (self.n, self.n * self.n);
+        let nt = (self.t_total / self.dt) as usize;
+        let ntdiag = nt / self.ndiag;
+        let n_imp = (self.imp_conc * nn as f64 / 100.0) as usize;
+        let (s3, i, elec, dt) = (3f64.sqrt(), c64::new(0.0, 1.0), self.elec, self.dt);
+        let fft = caroli_torus::Fft2::new(n);
+        let to_k = |psi: &mut [c64]| psi.chunks_exact_mut(nn).for_each(|c| fft.forward(c));
+        let to_x = |psi: &mut [c64]| {
+            psi.chunks_exact_mut(nn).for_each(|c| {
+                fft.backward(c);
+                c.iter_mut().for_each(|z| *z /= nn as f64);
+            })
+        };
+        let band = |t: f64, sign: f64| -> Vec<c64> {
+            let mut s = vec![c64::new(0.0, 0.0); 4 * nn];
+            for k in 0..nn {
+                let phi = graphene_h(n, k, elec, t).arg();
+                s[k] = sign * (i * 0.5 * phi).exp();
+                s[k + nn] = (-i * 0.5 * phi).exp();
+            }
+            s
+        };
+        let mut rng = Xoshiro256::gfortran(1237);
+        let mut psi_k = band(0.0, -1.0);
+        let norm = (2.0 * nn as f64).sqrt();
+        psi_k.iter_mut().for_each(|z| *z /= norm);
+        let uv = if self.vimp != 0.0 {
+            graphene_half_steps(&mut rng, n, n_imp, self.vimp, dt, self.choice_spin)
+        } else {
+            Vec::new()
+        };
+        let mut psi_x = psi_k.clone();
+        to_x(&mut psi_x);
+        let (mut cur_tab, mut np_tab) = (vec![0.0; ntdiag + 1], vec![0.0; ntdiag + 1]);
+        let (mut da, mut db) = (Vec::new(), Vec::new());
+        let mut iss = 0;
+        for it in 0..=nt {
+            let t = it as f64 * dt;
+            caroli_dynamics::apply_local(&mut psi_x, nn, 4, &uv);
+            psi_k = psi_x.clone();
+            to_k(&mut psi_k);
+            let uh: Vec<CMat> = (0..nn)
+                .map(|k| {
+                    let phi = graphene_h(n, k, elec, t).arg();
+                    let eps = ((graphene_h(n, k, elec, t) + graphene_h(n, k, elec, t + dt)) * 0.5).norm();
+                    let (cs, sn) = ((dt * eps).cos(), (dt * eps).sin());
+                    let mut m = CMat::zeros(4, 4);
+                    for o in [0, 2] {
+                        m[(o, o)] = c64::new(cs, 0.0);
+                        m[(o, o + 1)] = -i * (i * phi).exp() * sn;
+                        m[(o + 1, o)] = -i * (-i * phi).exp() * sn;
+                        m[(o + 1, o + 1)] = c64::new(cs, 0.0);
+                    }
+                    m
+                })
+                .collect();
+            caroli_dynamics::apply_k(&mut psi_k, 4, &uh);
+            psi_x = psi_k.clone();
+            to_x(&mut psi_x);
+            caroli_dynamics::apply_local(&mut psi_x, nn, 4, &uv);
+            if it % self.ndiag == 0 {
+                psi_k = psi_x.clone();
+                to_k(&mut psi_k);
+                // Conduction-band projection back to orbitals, densities per sublattice.
+                let mut p2 = vec![c64::new(0.0, 0.0); 4 * nn];
+                for k in 0..nn {
+                    let phi = graphene_h(n, k, elec, t).arg();
+                    for o in [0, 2] {
+                        let p1 = (-i * phi).exp() * psi_k[k + o * nn] + psi_k[k + (o + 1) * nn];
+                        p2[k + o * nn] = (i * phi).exp() * p1;
+                        p2[k + (o + 1) * nn] = p1;
+                    }
+                }
+                to_x(&mut p2);
+                let swap = |d: Vec<f64>| -> Vec<f64> {
+                    let (n2, idx) = (n / 2, |a: usize, b: usize| a + n * b);
+                    let mut out = d.clone();
+                    for jj in 0..n2 {
+                        for kk in 0..n2 {
+                            out[idx(jj, kk)] = d[idx(jj + n2, kk + n2)];
+                            out[idx(jj + n2, kk + n2)] = d[idx(jj, kk)];
+                            out[idx(jj + n2, kk)] = d[idx(jj, kk + n2)];
+                            out[idx(jj, kk + n2)] = d[idx(jj + n2, kk)];
+                        }
+                    }
+                    out
+                };
+                da.push(swap((0..nn).map(|p| p2[p].norm_sqr() + p2[p + 2 * nn].norm_sqr()).collect()));
+                db.push(swap((0..nn).map(|p| p2[p + nn].norm_sqr() + p2[p + 3 * nn].norm_sqr()).collect()));
+                let psi_0 = band(t, 1.0);
+                let (mut cur, mut np) = (0.0, 0.0);
+                for k in 0..nn {
+                    let (kx, ky) = graphene_k(n, k);
+                    let dh = -i * (i * (ky - elec * t) / s3).exp() / s3
+                        + i * (0.5 * kx).cos() * (-i * (ky - elec * t) * 0.5 / s3).exp() / s3;
+                    cur += (psi_k[k].conj() * dh * psi_k[k + nn]
+                        + psi_k[k + 2 * nn].conj() * dh * psi_k[k + 3 * nn])
+                        .re;
+                    let p: c64 = (0..4).map(|c| psi_k[k + c * nn].conj() * psi_0[k + c * nn]).sum();
+                    np += p.norm_sqr();
+                }
+                let (cur, np) = if t == 0.0 { (0.0, 0.0) } else { (-4.0 * cur, 2.0 * np) };
+                cur_tab[iss] += cur;
+                np_tab[iss] += np;
+                iss += 1;
+            }
+        }
+        // The program writes the first NTDIAG entries only.
+        cur_tab.truncate(ntdiag);
+        np_tab.truncate(ntdiag);
+        DensityRun { current: cur_tab, pairs: np_tab, density_a: da, density_b: db }
     }
 }
