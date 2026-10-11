@@ -144,20 +144,25 @@ kernel void kpm_step(device const uint* row_ptr [[buffer(0)]],
     }
 }
 
-/// Sums the `p.n` pairs of `partials` (in a fixed order) into `sums[2 slot + {0, 1}]`; one
-/// threadgroup.
+inline df64 widen(float x) { return df64{x, 0.0f}; }
+inline df64 widen(df64 x) { return x; }
+
+/// Sums the `p.n` pairs of `partials` (in a fixed order) into `sums[2 slot + {0, 1}]`, in
+/// double-single whatever the precision of the partial sums; one threadgroup.
 template <typename T>
 kernel void reduce_partials(device const cplx<T>* partials [[buffer(0)]],
-                            device cplx<T>* sums [[buffer(1)]],
+                            device cplx<df64>* sums [[buffer(1)]],
                             constant Params& p [[buffer(2)]],
                             uint lid [[thread_position_in_threadgroup]]) {
-    threadgroup cplx<T> shared_nn[GROUP];
-    threadgroup cplx<T> shared_np[GROUP];
-    cplx<T> nn = czero<T>();
-    cplx<T> np = czero<T>();
+    threadgroup cplx<df64> shared_nn[GROUP];
+    threadgroup cplx<df64> shared_np[GROUP];
+    cplx<df64> nn = czero<df64>();
+    cplx<df64> np = czero<df64>();
     for (uint g = lid; g < p.n; g += GROUP) {
-        nn = nn + partials[2 * g];
-        np = np + partials[2 * g + 1];
+        cplx<T> a = partials[2 * g];
+        cplx<T> b = partials[2 * g + 1];
+        nn = nn + cplx<df64>{widen(a.re), widen(a.im)};
+        np = np + cplx<df64>{widen(b.re), widen(b.im)};
     }
     shared_nn[lid] = nn;
     shared_np[lid] = np;

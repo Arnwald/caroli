@@ -294,7 +294,8 @@ impl MetalOperator<'_> {
         let steps = kernel.len().div_ceil(2);
         // Per-threadgroup shares of the current step, then the reduced sums of every step.
         let partials = self.gpu.buffer(self.bytes(2 * groups))?;
-        let sums = self.gpu.buffer(self.bytes(2 * steps))?;
+        // The sums are always double-single (4 floats per complex).
+        let sums = self.gpu.buffer(2 * steps * 4 * std::mem::size_of::<f32>())?;
         let kernels = self.gpu.kernels(self.precision);
         self.run(2 * steps, |encoder, i| {
             let s = i / 2;
@@ -326,7 +327,10 @@ impl MetalOperator<'_> {
                 encoder.dispatchThreadgroups_threadsPerThreadgroup(threadgroups(1), GROUP_SIZE);
             }
         })?;
-        let all = self.read(&sums, 2 * steps);
+        // SAFETY: `sums` holds 2·steps double-single complex numbers written by the kernels.
+        let raw =
+            unsafe { std::slice::from_raw_parts(sums.contents().as_ptr() as *const f32, 2 * steps * 4) };
+        let all = decode(raw, Precision::DoubleSingle);
         let s1: Vec<c64> = all.iter().step_by(2).copied().collect();
         let s2: Vec<c64> = all.iter().skip(1).step_by(2).copied().collect();
         Ok(doubled_moments(&s1, &s2, vectors, kernel))
