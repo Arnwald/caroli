@@ -4,6 +4,10 @@
 //!
 //! The k-space step is supplied per time step, so time-dependent fields (vector potentials,
 //! `k → k − A(t)`) only change `U_K`. [`exp_i`] builds the exponentials of Hermitian blocks.
+//!
+//! [`Chebyshev`] propagates with any Hamiltonian given as a product `H̃ψ` (sparse matrices of
+//! any geometry, GPU operators): `exp(−iH dt)` expanded in Chebyshev polynomials of the
+//! rescaled `H̃ = (H − centre)/half_width`, exact to the requested tolerance for any `dt`.
 
 use caroli_model::{CMat, c64};
 use caroli_torus::Fft2;
@@ -16,6 +20,83 @@ pub fn exp_i(h: &CMat, tau: f64) -> CMat {
     let n = h.nrows();
     let phases: Vec<c64> = (0..n).map(|k| c64::from_polar(1.0, -s[k].re * tau)).collect();
     CMat::from_fn(n, n, |i, j| (0..n).map(|k| u[(i, k)] * phases[k] * u[(j, k)].conj()).sum())
+}
+
+/// Bessel functions `J_0(x) … J_{count−1}(x)` (Miller's backward recurrence, normalised by
+/// `J_0 + 2 Σ J_2k = 1`).
+pub fn bessel_j(x: f64, count: usize) -> Vec<f64> {
+    if x == 0.0 {
+        return (0..count).map(|n| if n == 0 { 1.0 } else { 0.0 }).collect();
+    }
+    let ax = x.abs();
+    let top = count.max(ax as usize) + 30 + (10.0 * ax.cbrt()) as usize;
+    let mut j = vec![0.0; top + 2];
+    j[top] = 1e-300;
+    for n in (1..=top).rev() {
+        j[n - 1] = 2.0 * n as f64 / ax * j[n] - j[n + 1];
+        if j[n - 1].abs() > 1e250 {
+            j.iter_mut().for_each(|v| *v *= 1e-250);
+        }
+    }
+    let norm = j[0] + 2.0 * j.iter().skip(2).step_by(2).sum::<f64>();
+    j.truncate(count);
+    j.iter_mut().enumerate().for_each(|(n, v)| {
+        *v /= norm;
+        // J_n(−x) = (−1)^n J_n(x).
+        if x < 0.0 && n % 2 == 1 {
+            *v = -*v;
+        }
+    });
+    j
+}
+
+/// Propagator `ψ ← exp(−iH dt) ψ` by the Chebyshev expansion
+/// `exp(−iH dt) = e^{−i·centre·dt} Σ_n (2 − δ_n0) (−i)^n J_n(half_width·dt) T_n(H̃)`.
+#[derive(Clone, Debug)]
+pub struct Chebyshev {
+    /// Expansion coefficients, the global phase included.
+    pub coefficients: Vec<c64>,
+}
+
+impl Chebyshev {
+    /// Terms up to `|J_n| < tol` (the spectrum of `H̃` must lie in [−1, 1]).
+    pub fn new(dt: f64, centre: f64, half_width: f64, tol: f64) -> Self {
+        let tau = half_width * dt;
+        let guess = (1.3 * tau.abs()) as usize + 40 + (8.0 * tau.abs().cbrt()) as usize;
+        let j = bessel_j(tau, guess);
+        let last = j.iter().rposition(|v| v.abs() > tol).unwrap_or(0);
+        let phase = c64::from_polar(1.0, -centre * dt);
+        let coefficients = (0..=last.max(1))
+            .map(|n| {
+                let minus_i_n =
+                    [c64::new(1.0, 0.0), c64::new(0.0, -1.0), c64::new(-1.0, 0.0), c64::new(0.0, 1.0)][n % 4];
+                phase * minus_i_n * if n == 0 { j[0] } else { 2.0 * j[n] }
+            })
+            .collect();
+        Self { coefficients }
+    }
+
+    /// One step: `ψ ← Σ_n c_n T_n(H̃) ψ` with `apply(x, y)` setting `y = H̃ x`.
+    pub fn step(&self, apply: impl Fn(&[c64], &mut [c64]), psi: &mut [c64]) {
+        let c = &self.coefficients;
+        let n = psi.len();
+        let mut t0 = psi.to_vec();
+        let mut t1 = vec![c64::new(0.0, 0.0); n];
+        apply(&t0, &mut t1);
+        for i in 0..n {
+            psi[i] = c[0] * t0[i] + c[1] * t1[i];
+        }
+        let mut t2 = vec![c64::new(0.0, 0.0); n];
+        for &ck in &c[2..] {
+            apply(&t1, &mut t2);
+            for i in 0..n {
+                let next = 2.0 * t2[i] - t0[i];
+                psi[i] += ck * next;
+                t0[i] = t1[i];
+                t1[i] = next;
+            }
+        }
+    }
 }
 
 /// Multiplies the wave function (`ψ[site + n²·c]`) by a block on each listed site.
@@ -95,6 +176,43 @@ impl SplitOperator {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn bessel_values() {
+        // J_0(1), J_1(1), J_5(1) and J_0(10), J_12(10) (Abramowitz & Stegun).
+        let j = bessel_j(1.0, 6);
+        assert!((j[0] - 0.765_197_686_557_966_6).abs() < 1e-15);
+        assert!((j[1] - 0.440_050_585_744_933_5).abs() < 1e-15);
+        assert!((j[5] - 2.497_577_302_112_344e-4).abs() < 1e-17);
+        let j = bessel_j(10.0, 13);
+        assert!((j[0] + 0.245_935_764_451_348_3).abs() < 1e-14);
+        assert!((j[12] - 6.337_025_497_015_6e-2).abs() < 1e-13);
+    }
+
+    /// Chebyshev propagation of a BHZ flake against exact exponentiation, for a short and a
+    /// long time step.
+    #[test]
+    fn chebyshev_matches_exact_exponential() {
+        use caroli_lattice::Region;
+        use caroli_model::presets::{BhzParams, bhz};
+        let model = bhz(BhzParams { lambda: 0.2, ..BhzParams::default() });
+        let region = Region::cuboid(model.lattice(), [5, 4, 0]);
+        let h = model.sparse_hamiltonian(&region);
+        let (lo, hi) = h.spectral_bounds();
+        let (centre, half) = ((hi + lo) / 2.0, (hi - lo) / 2.0 * 1.01);
+        let scaled = h.rescaled(centre, half);
+        let dense = h.to_dense();
+        let psi0: Vec<c64> =
+            (0..h.n).map(|i| c64::new((0.7 * i as f64).cos(), (0.2 * i as f64).sin())).collect();
+        for dt in [0.05, 7.5] {
+            let mut psi = psi0.clone();
+            Chebyshev::new(dt, centre, half, 1e-15).step(|x, y| scaled.apply(x, y), &mut psi);
+            let u = exp_i(&dense, dt);
+            let exact: Vec<c64> = (0..h.n).map(|r| (0..h.n).map(|c| u[(r, c)] * psi0[c]).sum()).collect();
+            let err = psi.iter().zip(&exact).map(|(a, b)| (a - b).norm()).fold(0.0, f64::max);
+            assert!(err < 1e-12, "dt {dt}: {err:e}");
+        }
+    }
 
     /// exp(−i σ_x τ) = cos τ − i σ_x sin τ.
     #[test]

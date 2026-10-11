@@ -79,6 +79,12 @@ impl TwoTerminal {
         self
     }
 
+    /// Transmissions at many energies, in parallel.
+    pub fn transmissions(&self, energies: &[f64], method: SelfEnergyMethod) -> Vec<Result<f64, GreenError>> {
+        use rayon::prelude::*;
+        energies.par_iter().map(|&e| self.transmission_with(e, method)).collect()
+    }
+
     /// Recursive sweeps from both ends at one energy (see [`Sweeps`]).
     pub fn sweeps(&self, energy: f64, method: SelfEnergyMethod) -> Result<Sweeps, GreenError> {
         let (sigma_l, sigma_r) = self.self_energies(energy, method)?;

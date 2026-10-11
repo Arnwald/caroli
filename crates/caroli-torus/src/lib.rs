@@ -14,8 +14,12 @@
 
 use caroli_lattice::Region;
 use caroli_model::{CMat, Model, c64};
+use rayon::prelude::*;
 use rustfft::{Fft, FftPlanner};
 use std::sync::Arc;
+
+/// Grids from this size on are transformed in parallel.
+const PARALLEL_N: usize = 128;
 
 /// k value of FFT index `i` on a ring of `n` sites.
 pub fn k_value(i: usize, n: usize) -> f64 {
@@ -45,6 +49,23 @@ impl Fft2 {
 
     fn run(&self, plan: &Arc<dyn Fft<f64>>, data: &mut [c64]) {
         let n = self.n;
+        if n >= PARALLEL_N {
+            // Rows in parallel, then the columns as rows of the transpose.
+            data.par_chunks_exact_mut(n).for_each(|row| plan.process(row));
+            let mut t = vec![c64::new(0.0, 0.0); n * n];
+            t.par_chunks_exact_mut(n).enumerate().for_each(|(x, col)| {
+                for y in 0..n {
+                    col[y] = data[x + n * y];
+                }
+                plan.process(col);
+            });
+            data.par_chunks_exact_mut(n).enumerate().for_each(|(y, row)| {
+                for x in 0..n {
+                    row[x] = t[y + n * x];
+                }
+            });
+            return;
+        }
         // Along x: contiguous rows.
         for row in data.chunks_exact_mut(n) {
             plan.process(row);
@@ -181,6 +202,28 @@ mod tests {
         assert!((a[kx + n * ky] - direct).norm() < 1e-12);
         f.backward(&mut a);
         assert!(a.iter().zip(&psi).all(|(u, v)| (u / (n * n) as f64 - v).norm() < 1e-13));
+    }
+
+    /// The parallel path gives the same numbers as the serial one.
+    #[test]
+    fn parallel_fft_is_identical() {
+        let n = PARALLEL_N;
+        let psi: Vec<c64> =
+            (0..n * n).map(|i| c64::new((i as f64 * 0.37).sin(), (i as f64 * 0.11).cos())).collect();
+        let f = Fft2::new(n);
+        let mut a = psi.clone();
+        f.forward(&mut a);
+        let mut b = psi.clone();
+        for row in b.chunks_exact_mut(n) {
+            f.forward.process(row);
+        }
+        let mut col = vec![c64::new(0.0, 0.0); n];
+        for x in 0..n {
+            (0..n).for_each(|y| col[y] = b[x + n * y]);
+            f.forward.process(&mut col);
+            (0..n).for_each(|y| b[x + n * y] = col[y]);
+        }
+        assert_eq!(a, b);
     }
 
     /// The FFT operator equals the real-space Hamiltonian of the periodic supercell.

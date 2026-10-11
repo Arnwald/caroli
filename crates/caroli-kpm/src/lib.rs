@@ -6,7 +6,9 @@
 //! this estimates the density of states (stochastic trace); with a site orbital it gives the
 //! local density of states.
 
+use caroli_disorder::rng::Xoshiro256;
 use caroli_model::c64;
+use rayon::prelude::*;
 
 /// Jackson kernel `g_n`, `n = 0..m`.
 pub fn jackson(m: usize) -> Vec<f64> {
@@ -43,6 +45,28 @@ pub fn moments(apply: impl Fn(&[c64], &mut [c64]), start: &[c64], kernel: &[f64]
             s1[i] = s2;
         }
     }
+    mu
+}
+
+/// Random-phase vector `r_j = e^{2πiφ_j}` (`⟨r|r⟩ = n`): `⟨r|A|r⟩` is an unbiased estimate of
+/// `Tr A`.
+pub fn random_phases(rng: &mut Xoshiro256, n: usize) -> Vec<c64> {
+    (0..n).map(|_| c64::from_polar(1.0, 2.0 * std::f64::consts::PI * rng.uniform())).collect()
+}
+
+/// [`moments`] averaged over several start vectors (stochastic trace), the vectors in
+/// parallel. The result does not depend on the number of threads.
+pub fn stochastic_moments(
+    apply: impl Fn(&[c64], &mut [c64]) + Sync,
+    starts: &[Vec<c64>],
+    kernel: &[f64],
+) -> Vec<c64> {
+    let all: Vec<Vec<c64>> = starts.par_iter().map(|s| moments(&apply, s, kernel)).collect();
+    let mut mu = vec![c64::new(0.0, 0.0); kernel.len()];
+    for m in &all {
+        mu.iter_mut().zip(m).for_each(|(a, b)| *a += b);
+    }
+    mu.iter_mut().for_each(|a| *a /= starts.len() as f64);
     mu
 }
 
@@ -104,6 +128,22 @@ mod tests {
         // The peak sits at ε.
         let peak = xs.iter().zip(&rho).max_by(|a, b| a.1.total_cmp(b.1)).unwrap().0;
         assert!((peak - eps).abs() < 0.01);
+    }
+
+    /// The stochastic trace of a diagonal matrix is exact with random phases.
+    #[test]
+    fn stochastic_trace_of_diagonal() {
+        let eps = [0.1, -0.4, 0.75];
+        let mut rng = Xoshiro256::seed_from_u64(7);
+        let starts: Vec<Vec<c64>> = (0..4).map(|_| random_phases(&mut rng, 3)).collect();
+        let kernel = vec![1.0; 6];
+        let mu = stochastic_moments(
+            |v, out| out.iter_mut().zip(v).zip(&eps).for_each(|((o, x), e)| *o = x * *e),
+            &starts,
+            &kernel,
+        );
+        let t2: f64 = eps.iter().map(|e| 2.0 * e * e - 1.0).sum();
+        assert!((mu[0].re - 3.0).abs() < 1e-14 && (mu[2].re - t2).abs() < 1e-14);
     }
 
     #[test]

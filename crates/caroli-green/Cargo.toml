@@ -11,4 +11,5 @@ repository.workspace = true
 caroli-lattice.workspace = true
 caroli-model.workspace = true
 faer.workspace = true
+rayon.workspace = true
 thiserror.workspace = true

@@ -13,6 +13,7 @@
 
 use caroli_model::{CMat, c64};
 use faer::linalg::solvers::DenseSolveCore;
+use rayon::prelude::*;
 
 /// Uniform k grid of `m × n` points `2π (i/m, j/n)`, in FFT order along each axis
 /// (`0, …, π − δ, −π, …, −δ`), as the thesis `k_FBZ`; returned as `(kx, ky)` with `kx`
@@ -54,33 +55,47 @@ fn identity_minus(z: c64, h: &CMat) -> CMat {
 }
 
 impl Scba {
-    /// `⟨G⟩(z) = (1/N_k) Σ_k [z − H(k) − Σ_MF − Σ₂]⁻¹`.
+    /// `⟨G⟩(z) = (1/N_k) Σ_k [z − H(k) − Σ_MF − Σ₂]⁻¹`. Large grids are summed in parallel, in
+    /// fixed chunks added in order, so the result does not depend on the number of threads.
     pub fn local_green(&self, z: c64, sigma: &CMat) -> CMat {
         let n = self.mean_field.nrows();
         let shift = &self.mean_field + sigma;
-        let mut acc = vec![c64::new(0.0, 0.0); n * n];
-        let mut a = vec![c64::new(0.0, 0.0); n * n];
-        let mut inv = vec![c64::new(0.0, 0.0); n * n];
-        for h in &self.hk {
-            if n <= SMALL {
-                for j in 0..n {
-                    for i in 0..n {
-                        let d = if i == j { z } else { c64::new(0.0, 0.0) };
-                        a[i + n * j] = d - h[(i, j)] - shift[(i, j)];
+        let partial = |hk: &[CMat]| -> Vec<c64> {
+            let mut acc = vec![c64::new(0.0, 0.0); n * n];
+            let mut a = vec![c64::new(0.0, 0.0); n * n];
+            let mut inv = vec![c64::new(0.0, 0.0); n * n];
+            for h in hk {
+                if n <= SMALL {
+                    for j in 0..n {
+                        for i in 0..n {
+                            let d = if i == j { z } else { c64::new(0.0, 0.0) };
+                            a[i + n * j] = d - h[(i, j)] - shift[(i, j)];
+                        }
                     }
-                }
-                gauss_jordan_inverse(n, &mut a, &mut inv);
-                acc.iter_mut().zip(&inv).for_each(|(s, x)| *s += x);
-            } else {
-                let m = identity_minus(z, h) - &shift;
-                let g = m.partial_piv_lu().inverse();
-                for j in 0..n {
-                    for i in 0..n {
-                        acc[i + n * j] += g[(i, j)];
+                    gauss_jordan_inverse(n, &mut a, &mut inv);
+                    acc.iter_mut().zip(&inv).for_each(|(s, x)| *s += x);
+                } else {
+                    let m = identity_minus(z, h) - &shift;
+                    let g = m.partial_piv_lu().inverse();
+                    for j in 0..n {
+                        for i in 0..n {
+                            acc[i + n * j] += g[(i, j)];
+                        }
                     }
                 }
             }
-        }
+            acc
+        };
+        let acc = if self.hk.len() >= 2 * K_CHUNK {
+            let parts: Vec<Vec<c64>> = self.hk.par_chunks(K_CHUNK).map(partial).collect();
+            let mut acc = vec![c64::new(0.0, 0.0); n * n];
+            for p in &parts {
+                acc.iter_mut().zip(p).for_each(|(s, x)| *s += x);
+            }
+            acc
+        } else {
+            partial(&self.hk)
+        };
         let scale = 1.0 / self.hk.len() as f64;
         CMat::from_fn(n, n, |i, j| acc[i + n * j] * scale)
     }
@@ -115,6 +130,9 @@ impl Scba {
 
 /// Blocks up to this size are inverted with [`gauss_jordan_inverse`] (no allocation).
 const SMALL: usize = 16;
+
+/// k points per parallel task in [`Scba::local_green`].
+const K_CHUNK: usize = 256;
 
 /// Inverse of the column-major `n × n` matrix `a` (destroyed) into `inv`, by Gauss–Jordan
 /// elimination with partial pivoting.

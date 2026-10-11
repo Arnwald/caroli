@@ -11,6 +11,9 @@ pub use faer::c64;
 
 pub mod gamma;
 pub mod presets;
+pub mod sparse;
+
+pub use sparse::SparseMatrix;
 
 /// Complex dense matrix (orbital blocks and Hamiltonians).
 pub type CMat = Mat<c64>;
@@ -97,16 +100,7 @@ impl Model {
     /// Dense Hamiltonian of a finite region (open boundaries).
     pub fn hamiltonian(&self, region: &Region) -> CMat {
         let mut h = CMat::zeros(region.orbitals(), region.orbitals());
-        for i in 0..region.len() {
-            add_block(
-                &mut h,
-                region.offset(i),
-                region.offset(i),
-                &self.onsite_matrix(&region.sites()[i]),
-                c64::new(1.0, 0.0),
-            );
-        }
-        self.add_couplings_one_way(&mut h, region, region, c64::new(1.0, 0.0));
+        self.build(&mut h, region, &[], &[]);
         h
     }
 
@@ -114,9 +108,43 @@ impl Model {
     /// cells) and `phases` the matching Bloch phases `k·T` in radians. Hoppings that leave the
     /// region by `n` periods pick up `exp(i Σ n·phase)`.
     pub fn bloch_hamiltonian(&self, region: &Region, periods: &[Cell], phases: &[f64]) -> CMat {
+        let mut h = CMat::zeros(region.orbitals(), region.orbitals());
+        self.build(&mut h, region, periods, phases);
+        h
+    }
+
+    /// Sparse Hamiltonian of a finite region (open boundaries), for regions too large for
+    /// dense matrices (KPM, time evolution).
+    pub fn sparse_hamiltonian(&self, region: &Region) -> SparseMatrix {
+        self.sparse_bloch_hamiltonian(region, &[], &[])
+    }
+
+    /// Sparse version of [`Self::bloch_hamiltonian`] (twisted periodic boundaries).
+    pub fn sparse_bloch_hamiltonian(
+        &self,
+        region: &Region,
+        periods: &[Cell],
+        phases: &[f64],
+    ) -> SparseMatrix {
+        let mut t = Triplets(Vec::new());
+        self.build(&mut t, region, periods, phases);
+        SparseMatrix::from_triplets(region.orbitals(), t.0)
+    }
+
+    /// On-site terms, couplings inside the region and, for each combination of −1, 0, +1
+    /// periods except the region itself, couplings to that image with its Bloch phase.
+    fn build(&self, h: &mut impl Sink, region: &Region, periods: &[Cell], phases: &[f64]) {
         assert_eq!(periods.len(), phases.len());
-        let mut h = self.hamiltonian(region);
-        // Neighbouring images: every combination of -1, 0, +1 period, except the region itself.
+        for i in 0..region.len() {
+            h.block(
+                region.offset(i),
+                region.offset(i),
+                &self.onsite_matrix(&region.sites()[i]),
+                c64::new(1.0, 0.0),
+                false,
+            );
+        }
+        self.add_couplings_one_way(h, region, region, c64::new(1.0, 0.0));
         let combos = 3usize.pow(periods.len() as u32);
         for c in 0..combos {
             let mut shift = [0i64; 3];
@@ -135,10 +163,9 @@ impl Model {
             if any {
                 let image = region.translated(shift);
                 let (s, cs) = phase.sin_cos();
-                self.add_couplings_one_way(&mut h, region, &image, c64::new(cs, s));
+                self.add_couplings_one_way(h, region, &image, c64::new(cs, s));
             }
         }
-        h
     }
 
     /// Coupling matrix `⟨a| H |b⟩` between two disjoint regions (rows: `a`, columns: `b`).
@@ -150,21 +177,21 @@ impl Model {
 
     /// Adds `⟨a| H |b⟩` (hoppings from a site of `a` to a site of `b`, in either direction of
     /// the stored hoppings) times `factor` into `h`, rows indexed by `a` and columns by `b`.
-    fn add_couplings_one_way(&self, h: &mut CMat, a: &Region, b: &Region, factor: c64) {
+    fn add_couplings_one_way(&self, h: &mut impl Sink, a: &Region, b: &Region, factor: c64) {
         for (i, site) in a.sites().iter().enumerate() {
             for hop in &self.hoppings {
                 // Forward: site is `from`, partner is `to` at +offset.
                 if hop.from == site.sub {
                     let partner = shifted(site, hop.offset, 1, hop.to);
                     if let Some(j) = b.index_of(&partner) {
-                        add_block(h, a.offset(i), b.offset(j), &hop.matrix, factor);
+                        h.block(a.offset(i), b.offset(j), &hop.matrix, factor, false);
                     }
                 }
                 // Backward: site is `to`, partner is `from` at -offset; block is matrix†.
                 if hop.to == site.sub {
                     let partner = shifted(site, hop.offset, -1, hop.from);
                     if let Some(j) = b.index_of(&partner) {
-                        add_block_adjoint(h, a.offset(i), b.offset(j), &hop.matrix, factor);
+                        h.block(a.offset(i), b.offset(j), &hop.matrix, factor, true);
                     }
                 }
             }
@@ -196,18 +223,36 @@ fn shifted(site: &Site, offset: Cell, sign: i64, sub: usize) -> Site {
     }
 }
 
-fn add_block(h: &mut CMat, r0: usize, c0: usize, m: &CMat, factor: c64) {
-    for j in 0..m.ncols() {
-        for i in 0..m.nrows() {
-            h[(r0 + i, c0 + j)] += factor * m[(i, j)];
+/// Destination of Hamiltonian blocks: a dense matrix or a list of sparse entries.
+trait Sink {
+    /// Adds `factor · m` (or `factor · m†`) with its top-left corner at `(r0, c0)`.
+    fn block(&mut self, r0: usize, c0: usize, m: &CMat, factor: c64, adjoint: bool);
+}
+
+impl Sink for CMat {
+    fn block(&mut self, r0: usize, c0: usize, m: &CMat, factor: c64, adjoint: bool) {
+        let (rows, cols) = if adjoint { (m.ncols(), m.nrows()) } else { (m.nrows(), m.ncols()) };
+        for j in 0..cols {
+            for i in 0..rows {
+                let v = if adjoint { m[(j, i)].conj() } else { m[(i, j)] };
+                self[(r0 + i, c0 + j)] += factor * v;
+            }
         }
     }
 }
 
-fn add_block_adjoint(h: &mut CMat, r0: usize, c0: usize, m: &CMat, factor: c64) {
-    for j in 0..m.nrows() {
-        for i in 0..m.ncols() {
-            h[(r0 + i, c0 + j)] += factor * m[(j, i)].conj();
+struct Triplets(Vec<(usize, usize, c64)>);
+
+impl Sink for Triplets {
+    fn block(&mut self, r0: usize, c0: usize, m: &CMat, factor: c64, adjoint: bool) {
+        let (rows, cols) = if adjoint { (m.ncols(), m.nrows()) } else { (m.nrows(), m.ncols()) };
+        for j in 0..cols {
+            for i in 0..rows {
+                let v = if adjoint { m[(j, i)].conj() } else { m[(i, j)] };
+                if v != c64::new(0.0, 0.0) {
+                    self.0.push((r0 + i, c0 + j, factor * v));
+                }
+            }
         }
     }
 }

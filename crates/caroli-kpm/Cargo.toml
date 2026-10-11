@@ -11,3 +11,4 @@ repository.workspace = true
 caroli-model.workspace = true
 caroli-torus.workspace = true
 caroli-disorder.workspace = true
+rayon.workspace = true

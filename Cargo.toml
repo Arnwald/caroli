@@ -23,6 +23,7 @@ faer = "0.24"
 num-complex = "0.4"
 thiserror = "2"
 approx = "0.5"
+rayon = "1.12"
 
 # Numerical dependencies (faer) are unusable unoptimised: optimise them even in dev/test builds.
 [profile.dev.package."*"]
