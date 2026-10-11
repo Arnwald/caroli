@@ -40,9 +40,13 @@ const SEEDS: [i32; 2] = [2015, 4031];
 
 /// (title, opposite-g, conc, E_F, J_I values).
 type Case = (&'static str, i32, f64, f64, &'static [f64]);
-const CASES: [Case; 2] = [
+const CASES: [Case; 4] = [
     ("'F' (same-g), n_I = 0.2, M_z = 1", 0, 0.2, 0.0, &[0.0, 0.1, 0.2, 0.3, 0.4, 0.5, 0.6]),
     ("'AF' (opposite-g), n_I = 0.4, M_z = 1", 1, 0.4, 0.02, &[0.0, 0.1, 0.2, 0.25, 0.3, 0.35, 0.4, 0.45, 0.5, 0.6]),
+    // Deep in the G = 1 plateau.
+    ("'F' (same-g), n_I = 0.2, M_z = 1", 0, 0.2, -0.05, &[0.8, 1.0, 1.2, 1.5]),
+    // Across the onset of the plateau, on the cut of `born_wide_maps`.
+    ("'F' (same-g), n_I = 0.2, M_z = 1", 0, 0.2, -0.06, &[0.6, 0.65, 0.7, 0.75, 0.8, 0.85, 0.9, 0.95, 1.0]),
 ];
 
 /// Per-vector moments `⟨φ_v| T_n(H̃) |φ_v⟩` with the doubling `μ_{2n} = 2⟨T_n|T_n⟩ − μ_0`,

@@ -130,5 +130,37 @@ Golden cases with disorder use the same impurity configurations as the thesis.
         a 1M-orbital torus is 4× (f32) or 2× (double-single) faster than 10 CPU cores.
       - CUDA: f64 through NVRTC, feature `cuda`. Not yet run on NVIDIA hardware.
     - Not on the GPU: dense transport solves (RGF), and FFT-based torus operators.
+12. Transport precision, chosen by the user (planned). The RGF sweep would take a `Precision`:
+    - `Double`: the default, on the CPU.
+    - `Single`: GPU in f32, for previews.
+    - `Mixed`: each slice inversion in f32, refined once (`X ← X + X(1 − A X)`) with the
+      residual in double-single.
+
+    The loss was measured with `crates/caroli-validation/examples/rgf_precision.rs`:
+    - systems: the spin blocks of the g2g1 maps (disordered length 256), at 6 energies per
+      disorder strength;
+    - quantity: |ΔT| per block against `Double`;
+    - samples: 2 configurations at W = 64, 1 at W ≥ 128.
+
+    | W | `Single`: median / 99 % / max | `Single` on plateaus, max | `Mixed`: median / 99 % / max |
+    |---|---|---|---|
+    | 64 | 5.6e-6 / 1.6e-3 / 1.0e-2 | 2.4e-4 | 7.5e-12 / 4.0e-7 / 8.7e-7 |
+    | 128 | 1.3e-5 / 5.2e-3 / 2.5e-2 | 1.3e-3 | 1.9e-11 / 8.9e-7 / 8.5e-5 |
+
+    - **Where the loss comes from.** The single-precision inversions. Rounding the lead
+      self-energies costs less than 1e-7, and a double-precision final trace does not help.
+    - **How it grows.** About ×2.5 per doubling of W, and most in diffusive regions.
+      Transmissions below 1e-38 underflow to zero, so localisation lengths need `Double` or
+      `Mixed`.
+    - **Reporting the loss.** Every reduced-precision run should report its own error:
+      - the residual norms ‖1 − A X‖ of the inversions, which `Mixed` computes anyway;
+      - a random fraction of the points (say 2 %) recomputed in `Double`, with the median and
+        maximum |ΔT| returned with the results.
+    - **CPU timing.** On the M5 CPU, the f32 sweep takes half the time of the f64 one (4.4 s
+      against 8.7 s at W = 128).
+    - **Faster double path, to do first.** Two changes:
+      - the coupling between slices is diagonal site by site, so two of the three products per
+        slice become O(n²);
+      - dense algebra through Accelerate (AMX).
 11. Examples: the two thesis studies (TI with magnetic impurities: G maps, local currents, Born
     phase diagram; graphene under a field: current, pair creation, DOS).

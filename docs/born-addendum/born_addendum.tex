@@ -1,0 +1,736 @@
+\documentclass[11pt,a4paper]{article}
+\usepackage[utf8]{inputenc}
+\usepackage[T1]{fontenc}
+\usepackage{lmodern}
+\usepackage[margin=2.4cm]{geometry}
+\usepackage{amsmath,amssymb,bm}
+\usepackage{graphicx}
+\usepackage{booktabs}
+\usepackage[section]{placeins}
+\usepackage{needspace}
+\usepackage{xcolor}
+\usepackage[font=small,labelfont=bf]{caption}
+\usepackage[colorlinks=true,linkcolor=blue!50!black,citecolor=blue!50!black,urlcolor=blue!50!black]{hyperref}
+\graphicspath{{figures/}}
+
+\newcommand{\up}{{\uparrow}}
+\newcommand{\dn}{{\downarrow}}
+\newcommand{\I}{\mathrm{i}}
+\newcommand{\Tr}{\operatorname{Tr}}
+\newcommand{\todo}[1]{\textcolor{red}{[#1]}}
+% Figures from figures/ (written by the plotting scripts); a frame marks a missing one.
+\newcommand{\fig}[1]{\IfFileExists{figures/#1.pdf}{\includegraphics[width=\textwidth]{#1}}%
+  {\fbox{\parbox[c][4cm][c]{0.9\textwidth}{\centering missing figure \texttt{\detokenize{#1}}}}}}
+
+\title{The sign of the mass self-energy in the Born analysis of\\
+``Anomalous quantum Hall effect induced by disorder in topological insulators''}
+\author{Arnaud Demion}
+\date{October 2026}
+
+\begin{document}
+\maketitle
+
+\begin{abstract}
+The self-consistent Born approximation (SCBA) used in Ref.~\cite{g2g1}, and in Chapter~2 of the
+thesis~\cite{thesis}, renormalises the masses of the two spin blocks with the wrong sign. The
+error is in the definition of the renormalised (barred) parameters,
+$\mathrm{Re}\,\Sigma \equiv -\mathrm{diag}[(\bar m - m)\tau_z + (\bar\mu - \mu)\tau_0,\dots]$, which holds for
+the chemical potential but not for the mass. The program that computed the Born phase diagrams
+(Fig.~4 of Ref.~\cite{g2g1}) implements these equations as written. With the correct sign, the
+disorder fluctuations push both masses towards the topological side, as in the topological
+Anderson insulator that the paper follows. Three checks confirm it, none of which uses the
+derivation:
+a full matrix SCBA, the exact disorder-averaged Green's function, and spin-resolved transport. The
+numerical results of the paper (Figs.~1--3) are unaffected, and so is its main conclusion: a
+$G=1$ Chern-insulator phase, carried by the spin-down edge state, for both couplings. What changes
+is the Born interpretation. In the same-$g$ (``ferromagnetic'') case, the spin-down block, which
+carries the $G=1$ plateau, never changes sign, whereas the published lines invert it. The
+spin-up channel is lost because the Fermi level enters the spin-up band, shifted by the mean
+exchange field. At stronger disorder the spin-up block does become trivial, as the paper says,
+but through a resonance that no Born approximation describes. In the opposite-$g$ (``antiferromagnetic'') case, the spin-up mass changes
+sign at $J_I\simeq 0.40$, not $0.30$. The apparent agreement of the published inversion line
+with the antiferromagnetic conductance map is a finite-width effect of the 64-site ribbons.
+\end{abstract}
+
+\tableofcontents
+
+%======================================================================
+\section{Summary}
+
+\begin{itemize}
+\item \textbf{The error.} The mass equations of the SCBA carry the wrong sign
+  (Sec.~\ref{s:error}). The chemical-potential equations are right.
+\item \textbf{Where it comes from.} The derivation, as printed in Ref.~\cite{g2g1} and in
+  the thesis~\cite{thesis}: the code \texttt{self\_born.f90} implements the printed equations
+  faithfully. A replica of the program reproduces the published Born data (runs 00--07) to
+  $10^{-14}$.
+\item \textbf{Independent evidence} (Sec.~\ref{s:checks}):
+  \begin{enumerate}
+  \item a matrix SCBA computed from the Hamiltonian, without the reduction;
+  \item the exact renormalised masses, from the disorder-averaged Green's function
+    (Fig.~\ref{f:masses});
+  \item the spin-resolved conductance of the same ribbons as the paper.
+  \end{enumerate}
+  All three follow the corrected sign. At weak disorder the corrected SCBA agrees with the exact
+  masses to $10^{-3}$, while the published one moves them in the opposite direction.
+\item \textbf{Impact on Fig.~4.} With the published maps (Fig.~\ref{f:phase},
+  Sec.~\ref{s:impact}):
+  \begin{itemize}
+  \item same-$g$: the corrected lines explain $99.9\,\%$ of the $G=1$ plateau, the published
+    ones $20\,\%$;
+  \item opposite-$g$: the published spin-up inversion line sits at the left edge of the $G=1$
+    region, the corrected one inside it.
+  \end{itemize}
+\item \textbf{Why the published lines looked right} (Sec.~\ref{s:width}). The ribbons are 64
+  sites wide. Close to the inversion, the spin-up edge states decay over $1.5/|\bar m_\up|$
+  sites, so they overlap across the ribbon and the spin-up channel is lost before the mass
+  changes sign. Wider ribbons move the transition towards the exact inversion. At $W=256$ the
+  spin-up block still carries $T_\up=0.99$ where the published masses make it trivial. The
+  wrong sign moves the Born inversion by about the same amount in the same direction: a
+  coincidence.
+\item \textbf{Origin and stability of $G=1$} (Sec.~\ref{s:origin}). $G=1$ is a Chern
+  insulator: the spin-down block keeps its topological gap, while the spin-up states at the
+  Fermi level no longer conduct. Each edge then carries a single chiral mode, with nothing to
+  backscatter into. The same-$g$ plateau does not depend on the ribbon width, and it survives
+  tilted moments ($M_z=0.8$), whereas $G=2$ does not.
+\end{itemize}
+
+%======================================================================
+\section{The model and the published equations}\label{s:model}
+
+The two spin blocks of the BHZ model are, on the square lattice (lattice constant 1),
+\begin{equation}
+h_\sigma(\bm k) = -D_{\bm k}\,\tau_0 + (m - B_{\bm k})\,\tau_z + A\,(\text{terms odd in }\bm k),
+\qquad B_{\bm k} = B(4-2\cos k_x-2\cos k_y),
+\label{e:h}
+\end{equation}
+and similarly for $D_{\bm k}$. The parameters are $A=1$, $B=-0.376406$, $D=-0.280933$ and
+$m=-0.137$, so the clean system is topological, $m/B>0$. The Pauli matrices $\tau$ act on the
+electron (E) and hole (H) orbitals.
+
+The magnetic impurities occupy a fraction $n_I$ of the sites. They carry classical moments
+$\bm S_i$ with $\langle S_z\rangle = M_z$ and couple through
+\begin{equation}
+V_\alpha = J_I \sum_{i\in I} \bm S_i\cdot\bm\sigma\,\tau_\alpha ,\qquad
+\tau_\alpha = \tau_0\ \text{(same-$g$, ``F'')},\quad \tau_\alpha=\tau_z\ \text{(opposite-$g$, ``AF'')}.
+\label{e:V}
+\end{equation}
+This note treats the fully polarised case $M_z=1$ of the paper's Figs.~1, 2 and~4. Then
+$V_\alpha = J_I\sigma_z\tau_\alpha$ on the impurity sites, $s_z$ is conserved, and the two spin blocks
+are independent disordered systems. The mean field $\langle V_\alpha\rangle = n_I J_I M_z\,\sigma_z\tau_\alpha$
+shifts, block by block:
+\begin{itemize}
+\item the chemical potential, $\mu_\sigma = \mu - \sigma n_I J_I M_z$, for same-$g$;
+\item the mass, $m_\sigma = m + \sigma n_I J_I M_z$, for opposite-$g$.
+\end{itemize}
+
+Ref.~\cite{g2g1} (Secs.~IV\,A ``Born approximation'' and IV\,B ``Phase diagram'') and the
+thesis~\cite{thesis} (Sec.\ ``Discussion : l'approximation de Born'') write the mean-field Green's function and the SCBA self-energy as
+\begin{equation}
+g_\alpha(E,\bm k) = \left[E+\mu-H_0(\bm k)-\langle V_\alpha\rangle\right]^{-1},\qquad
+\Sigma(E) = \frac{n_I J_I^2}{N^2}\sum_{\bm k}\left[v_z\, g_z + v_\perp g_\perp\right],
+\label{e:sigma}
+\end{equation}
+where $g$ is replaced by the full averaged Green's function in the self-consistent version. They
+then \emph{define} the renormalised parameters by
+\begin{equation}
+\mathrm{Re}\,\Sigma \equiv -\mathrm{diag}\big[(\bar m_\up-m_\up)\tau_z+(\bar\mu_\up-\mu_\up)\tau_0,\;
+(\bar m_\dn-m_\dn)\tau_z-(\bar\mu_\dn-\mu_\dn)\tau_0\big]
+\qquad\text{(as printed)},
+\label{e:def}
+\end{equation}
+and obtain
+\begin{align}
+\bar\mu_\sigma &= \mu_\sigma - \frac{n_I J_I^2}{N^2}\sum_{\bm k}\Big[\frac{v_z}{\Delta_\sigma}(E_F+\bar\mu_\sigma+D_{\bm k})
+ + \frac{v_\perp}{\Delta_{\bar\sigma}}(E_F+\bar\mu_{\bar\sigma}+D_{\bm k})\Big],\label{e:mu}\\
+\bar m_\sigma &= m_\sigma - \frac{n_I J_I^2}{N^2}\sum_{\bm k}\Big[\frac{v_z}{\Delta_\sigma}(\bar m_\sigma-B_{\bm k})
+ + \frac{v_\perp}{\Delta_{\bar\sigma}}(\bar m_{\bar\sigma}-B_{\bm k})\Big],\label{e:m}
+\end{align}
+with $\Delta_\sigma = (E_F+\bar\mu_\sigma+D_{\bm k})^2-(\bar m_\sigma-B_{\bm k})^2-\sin^2k_x-\sin^2k_y$. The
+gap of block $\sigma$ is centred on $-\bar\mu_\sigma$, with half-width $|\bar m_\sigma|$, and the block
+is topological when $\bar m_\sigma/B>0$. Fig.~4 of Ref.~\cite{g2g1} draws the band edges
+$E_F=-\bar\mu_\sigma\pm\bar m_\sigma$ and the lines $\bar m_\sigma=0$.\footnote{Eq.~(\ref{e:def}) as
+printed also has opposite signs for the $\tau_0$ terms of the two blocks. Eqs.~(\ref{e:mu}) use
+the same sign for both, which is the right one. The thesis writes $\mu_\up$ instead of $m_\up$
+on the right-hand side of the spin-up mass equation; the program uses $m_\up$.}
+
+The program \texttt{self\_born.f90}, which produced Fig.~4, iterates exactly
+Eqs.~(\ref{e:mu}) and~(\ref{e:m}). In it, \texttt{norm} is $n_I J_I^2/N^2$, \texttt{kc} is
+$B_{\bm k}/B$, and \texttt{vzu = vz/detu} with \texttt{detu} $=\Delta_\up$:
+\begin{verbatim}
+  154  vz = (1-conc**2)*Mz**2 + (1-Mz)**2/3.0
+  192  deltaMu = -norm * sum( vzu*(Mu - B*kc) + vperpd*(Md - B*kc) )
+  200  Mu_temp = Mu0 + deltaMu
+\end{verbatim}
+A replica written for this note reproduces the published Born data of runs 00--07 to
+$10^{-14}$. The code is therefore a faithful implementation of the printed equations.
+
+%======================================================================
+\section{The error}\label{s:error}
+
+\subsection{Derivation}
+
+The averaged Green's function is
+$\langle G\rangle = [E+\mu-H_0-\langle V\rangle-\Sigma]^{-1}$. The renormalised parameters
+are defined by writing it as the Green's function of a clean block with barred parameters:
+\begin{equation}
+E+\mu_\sigma-h_\sigma(\bm k; m_\sigma)-\Sigma_\sigma = E+\bar\mu_\sigma - h_\sigma(\bm k;\bar m_\sigma).
+\end{equation}
+The mass enters $h_\sigma$ as $+m\,\tau_z$ (Eq.~\ref{e:h}), the chemical potential as $-\mu\,\tau_0$.
+Identifying the $\tau_0$ and $\tau_z$ components gives
+\begin{equation}
+\boxed{\;\mathrm{Re}\,\Sigma_\sigma = (\bar m_\sigma-m_\sigma)\,\tau_z-(\bar\mu_\sigma-\mu_\sigma)\,\tau_0\;}
+\label{e:defok}
+\end{equation}
+The minus sign of Eq.~(\ref{e:def}) is right for $\mu$ and wrong for $m$. The $\tau_z$ component of
+$g_\sigma$ is $(\bar m_\sigma-B_{\bm k})/\Delta_\sigma$ (Ref.~\cite{g2g1}, Eq.~for $g_z$). The mass equation
+therefore reads
+\begin{equation}
+\boxed{\;\bar m_\sigma = m_\sigma + \frac{n_I J_I^2}{N^2}\sum_{\bm k}\Big[\frac{v_z}{\Delta_\sigma}(\bar m_\sigma-B_{\bm k})
+ + \frac{v_\perp}{\Delta_{\bar\sigma}}(\bar m_{\bar\sigma}-B_{\bm k})\Big]\;}
+\label{e:mok}
+\end{equation}
+Eq.~(\ref{e:mu}) for $\bar\mu_\sigma$ is unchanged.
+
+\subsection{One-line check}
+
+Treat a uniform, non-random term $\delta\,\tau_z$ as a self-energy: $\Sigma=\delta\,\tau_z$ exactly, and
+it shifts the mass to $m+\delta$. Eq.~(\ref{e:def}) gives $\bar m = m-\delta$.
+
+\subsection{It is not a sign convention}
+
+Some authors write $\langle G\rangle=[g^{-1}+\Sigma]^{-1}$ with $\Sigma=-\langle VgV\rangle$. A change of convention
+flips the $\tau_0$ and $\tau_z$ components of $\Sigma$ together. Eqs.~(\ref{e:mu}) and~(\ref{e:m}) treat them
+differently: both carry a minus sign in front of the sum, while $\mu$ enters the Hamiltonian
+with a minus sign and $m$ with a plus sign. No convention makes both equations right; the
+checks of Sec.~\ref{s:checks} show which one is wrong.
+
+\subsection{Consistency with the perturbative result and with the topological Anderson insulator}
+
+At lowest order, Ref.~\cite{g2g1} obtains
+\begin{equation}
+\mathrm{Re}\,\Sigma = \frac{n_I J_I^2}{8\pi}\,\frac{B\tau_z-D\tau_0}{B^2-D^2}
+\Big[v_z\log\Big|\frac{(B^2-D^2)k_*^4}{\Delta(E_F,0)}\Big| + \dots\Big],
+\end{equation}
+with a large positive logarithm when $E_F$ is in the gap. With Eq.~(\ref{e:defok}), the mass
+correction $\bar m-m=\mathrm{Re}\,\Sigma_{\tau_z}$ has the sign of $B$. It moves $\bar m$ away from
+zero on the topological side, $\bar m/B>0$. This is the renormalisation that explains the
+topological Anderson insulator~\cite{li2009,groth2009,jiang2009}, the mechanism the paper says it
+follows. With Eq.~(\ref{e:def}), the published equations push the masses towards the trivial side
+instead.
+
+Physically, at second order the two couplings act alike on each block: $\tau_0$ disorder (same-$g$)
+and $\tau_z$ disorder (opposite-$g$) give the same $\langle VgV\rangle$ once the terms odd in $\bm k$ are
+summed out, since $\tau_z(a+b\tau_z)\tau_z=a+b\tau_z$. Both are the scalar disorder of the topological
+Anderson insulator.
+
+\subsection{A second, smaller correction}
+
+The longitudinal weight is printed as $v_z = \langle S_z^2\rangle - n_I^2M_z^2 = (1-n_I^2)M_z^2+(1-M_z)^2/3$.
+The prefactor $n_I$ of Eq.~(\ref{e:sigma}) is already factored out of the second cumulant of
+the Bernoulli occupation, $n_I\langle S_z^2\rangle - n_I^2 M_z^2$. The weight should therefore be
+$v_z = (1-n_I)M_z^2 + (1-M_z)^2/3$. The printed value overestimates the longitudinal
+fluctuations by a factor $1+n_I$. This factor is positive, so it changes the size of the
+fluctuation term and never its direction: the direction is set by the sign alone. The corrected
+curves below include both corrections.
+
+%======================================================================
+\section{Checks that do not use the derivation}\label{s:checks}
+
+\subsection{Matrix SCBA}
+
+The SCBA can be solved without the reduction to four scalars. The self-energy is iterated as a
+$4\times4$ matrix, $\Sigma = \sum_t w_t V_t\langle G\rangle_{\mathrm{loc}}V_t$, where $V_t$ are the
+exchange vertices with their second-cumulant weights and
+$\langle G\rangle_{\mathrm{loc}} = N^{-2}\sum_{\bm k}[E+\I\eta-H_0(\bm k)-\langle V\rangle-\Sigma]^{-1}$, on the same
+$k$ grid. The reduced equations with the sign of Eq.~(\ref{e:mok}) reproduce this matrix
+solution to $10^{-7}$, for both couplings. With the sign of Eq.~(\ref{e:m}) they do not.
+
+\subsection{Exact renormalised masses}\label{s:exact}
+
+The disorder-averaged Green's function at $\bm k=0$ defines the exact self-energy, to all orders
+in $J_I$:
+\begin{equation}
+\Sigma(E) = E - H_0(\bm 0) - \langle G(\bm 0, E)\rangle^{-1}.
+\end{equation}
+In each block, $H_0(\bm 0)=m\tau_z$ and $\langle G(\bm 0)\rangle$ is diagonal in the E/H basis, so
+\begin{equation}
+\bar m = m + \tfrac12\,\mathrm{Re}(\Sigma_{EE}-\Sigma_{HH}),\qquad
+\bar\mu = -\tfrac12\,\mathrm{Re}(\Sigma_{EE}+\Sigma_{HH}),\qquad
+\Gamma = -\tfrac12\,\mathrm{Im}(\Sigma_{EE}+\Sigma_{HH}).
+\end{equation}
+These include the mean field, like the SCBA's $\bar m_\sigma$ and $\bar\mu_\sigma$.
+The broadening $\Gamma$ stays near zero when no state lies at $E$.
+
+We computed $\langle G(\bm 0)\rangle_{aa} = \langle\phi_a|(E+\I\eta-H)^{-1}|\phi_a\rangle$:
+\begin{itemize}
+\item $\phi_a$ is the normalised $\bm k=0$ plane wave on orbital $a$;
+\item $H$ is the Hamiltonian of a $160\times160$ periodic lattice with
+  $\lfloor n_I\cdot160^2\rfloor$ impurities, and $\eta=0.006$;
+\item the resolvent is expanded in Chebyshev polynomials of the rescaled Hamiltonian
+  (Appendix~\ref{a:methods}).
+\end{itemize}
+Two independent samples agree to $10^{-3}$. Fig.~\ref{f:masses} and Table~\ref{t:masses} compare
+the result with both versions of the SCBA.
+
+\begin{figure}[t]
+\centering
+\fig{born_masses}
+\caption{\label{f:masses}Renormalised masses: exact (circles, disorder-averaged Green's function,
+no Born approximation), published SCBA (dashed), corrected SCBA (solid), mean field (dotted).
+A block is topological for $\bar m<0$. Left: same-$g$, $n_I=0.2$, $E_F=0$. Right: opposite-$g$,
+$n_I=0.4$, $E_F=0.02$.}
+\end{figure}
+
+\begin{table}[t]
+\centering
+\caption{\label{t:masses}Renormalised masses, exact and in the two versions of the SCBA.}
+\begin{tabular}{lcccc}
+\toprule
+case & $J_I$ & exact & published & corrected\\
+\midrule
+same-$g$, $\bar m_\up$, $E_F=0$ & 0.2 & $-0.1428$ & $-0.1312$ & $-0.1419$\\
+ & 0.4 & $-0.1720$ & $-0.1121$ & $-0.1597$\\
+ & 0.6 & $-0.2432$ & $-0.0705$ & $-0.1989$\\
+same-$g$, $\bar m_\dn$, $E_F=0$ & 0.2 & $-0.1408$ & $-0.1319$ & $-0.1413$\\
+ & 0.4 & $-0.1500$ & $-0.1175$ & $-0.1536$\\
+ & 0.6 & $-0.1628$ & $-0.0960$ & $-0.1734$\\
+opposite-$g$, $\bar m_\up$, $E_F=0.02$ & 0.30 & $-0.0302$ & $+0.0029$ & $-0.0313$\\
+ & 0.35 & $-0.0147$ & $+0.0307$ & $-0.0164$\\
+ & 0.40 & $+0.0002$ & $+0.0591$ & $-0.0021$\\
+ & 0.45 & $+0.0145$ & $+0.0884$ & $+0.0098$\\
+opposite-$g$, $\bar m_\dn$, $E_F=0.02$ & 0.40 & $-0.3377$ & $-0.2506$ & $-0.3422$\\
+same-$g$, $\bar m_\dn$, $E_F=-0.05$ & 0.8 & $-0.1790$ & $-0.0605$ & $-0.2084$\\
+ & 1.0 & $-0.1964$ & $-0.0176$ & $-0.2569$\\
+ & 1.2 & $-0.2150$ & $+0.0331$ & $-0.3129$\\
+ & 1.5 & $-0.2485$ & $+0.1235$ & $-0.3511$\\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\begin{itemize}
+\item \textbf{Direction.} Measured from the mean field, the exact masses move towards the
+  topological side, like the corrected SCBA and unlike the published one.
+\item \textbf{Weak disorder.} At same-$g$, $J_I=0.2$, the corrected SCBA is within $10^{-3}$ of
+  the exact masses. The published one is off by $0.01$, in the opposite direction.
+\item \textbf{The inversion.} At opposite-$g$, the exact spin-up mass changes sign at
+  $J_I=0.40$, where the corrected SCBA puts it. The published SCBA puts it at $0.30$.
+\item \textbf{Strong disorder.} The corrected SCBA remains close up to $J_I=0.6$. At same-$g$
+  the exact masses are even more topological (higher orders).
+\item \textbf{The block that carries $G=1$.} At same-$g$ and $E_F=-0.05$, deep in the $G=1$
+  plateau, the exact spin-down mass stays topological and its gap widens up to $J_I=1.5$. The
+  broadening there stays below $0.005$: no state lies at $E_F$. The published SCBA inverts this
+  block at $J_I\approx1.1$, which does not happen.
+\item \textbf{Spin up at strong disorder.} Table~\ref{t:resonance} follows the line
+  $E_F=-0.06$, through the onset of the $G=1$ plateau.
+  \begin{itemize}
+  \item For $J_I\gtrsim0.4$, $E_F$ lies in the spin-up band, and the spin-up states are strongly
+    scattered.
+  \item Near $J_I\approx0.87$, the $\bm k=0$ self-energy of that block goes through a resonance:
+    the broadening peaks at $1.2$, and the mass diverges and changes sign.
+  \item Beyond it, the block has a trivial gap around $E_F$: $\bar m_\up>0$, with a broadening of
+    $0.01$ at $J_I=1.2$ and $0.006$ at $1.5$ ($E_F=-0.05$).
+  \end{itemize}
+  This is a strong-scattering effect, outside any Born approximation. The published SCBA
+  reaches a trivial spin-up block through a smooth inversion, at $J_I=0.72$ on this line; the
+  corrected one never does. Both predict $T_\up=0$ in this region, as observed. The spin-down
+  block stays topological throughout, with no state at $E_F$.
+\end{itemize}
+
+\begin{table}[t]
+\centering
+\caption{\label{t:resonance}Exact $\bm k=0$ parameters along $E_F=-0.06$ (same-$g$, $n_I=0.2$),
+across the onset of the $G=1$ plateau, with the published spin-up mass for comparison.}
+\begin{tabular}{cccccc}
+\toprule
+$J_I$ & $\bar m_\up$ & $\Gamma_\up$ & published $\bar m_\up$ & $\bar m_\dn$ & $\Gamma_\dn$\\
+\midrule
+0.60 & $-0.270$ & 0.10 & $-0.055$ & $-0.164$ & 0.0004\\
+0.70 & $-0.273$ & 0.21 & $-0.010$ & $-0.171$ & 0.0005\\
+0.80 & $-0.569$ & 0.37 & $+0.053$ & $-0.179$ & 0.0006\\
+0.85 & $-1.212$ & 1.24 & $+0.088$ & $-0.183$ & 0.0006\\
+0.90 & $+1.176$ & 0.38 & $+0.113$ & $-0.188$ & 0.0007\\
+0.95 & $+0.552$ & 0.08 & $+0.124$ & $-0.192$ & 0.0008\\
+1.00 & $+0.369$ & 0.04 & $+0.132$ & $-0.197$ & 0.0008\\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\subsection{Spin-resolved transport}\label{s:spin}
+
+With $M_z=1$, the transmission splits exactly into $T=T_\up+T_\dn$. We computed it on the ribbons
+of the paper's maps: $400\times64$ sites, $n_I\cdot256\cdot64$ impurities in the central 256
+columns, 8 configurations per point. Table~\ref{t:spin} lists the points where the two versions
+disagree on the topology of a block.
+
+\begin{table}[t]
+\centering
+\caption{\label{t:spin}Exact spin-resolved transmissions and the renormalised mass of the relevant
+block in the two versions of the SCBA. Means over 8 configurations ($W=64$, $128$; ribbons of
+$400$ sites) or 3 configurations ($W=256$; disordered length $256$).}
+\begin{tabular}{lcccccc}
+\toprule
+case & $J_I$ & $E_F$ & $T_\up$ & $T_\dn$ & published & corrected\\
+\midrule
+same-$g$, $W=64$ & 1.2 & $-0.05$ & 0.000 & 1.000 & $\bar m_\dn=+0.033$ (trivial) & $\bar m_\dn=-0.313$\\
+same-$g$, $W=64$ & 1.3 & $-0.12$ & 0.000 & 1.000 & $\bar m_\dn=+0.080$ (trivial) & $\bar m_\dn=-0.314$\\
+opposite-$g$, $W=64$ & 0.30 & 0.02 & 0.840 & 1.000 & $\bar m_\up=+0.003$ & $\bar m_\up=-0.031$\\
+opposite-$g$, $W=64$ & 0.35 & 0.02 & 0.005 & 1.000 & $\bar m_\up=+0.031$ (trivial) & $\bar m_\up=-0.016$\\
+opposite-$g$, $W=128$ & 0.30 & 0.02 & 0.997 & 1.000 & & \\
+opposite-$g$, $W=128$ & 0.35 & 0.02 & 0.562 & 1.000 & & \\
+opposite-$g$, $W=128$ & 0.40 & 0.02 & 0.012 & 1.000 & $\bar m_\up=+0.059$ & $\bar m_\up=-0.002$\\
+opposite-$g$, $W=256$ & 0.35 & 0.02 & 0.989 & 1.000 & $\bar m_\up=+0.031$ (trivial) & $\bar m_\up=-0.016$\\
+opposite-$g$, $W=256$ & 0.40 & 0.02 & 0.339 & 1.000 & $\bar m_\up=+0.059$ & $\bar m_\up=-0.002$\\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\begin{itemize}
+\item \textbf{Same-$g$.} The spin-down block carries a quantized channel, in 8 configurations out
+  of 8, where the published masses make it trivial. A trivial block cannot carry a quantized
+  chiral channel.
+\item \textbf{Opposite-$g$.} The spin-up channel vanishes earlier than the exact inversion, and
+  later when the ribbon is wider. A trivial block would carry no channel at any width. This
+  finite-width effect is the subject of Sec.~\ref{s:width}.
+\end{itemize}
+
+%======================================================================
+\section{Impact on the Born phase diagrams}\label{s:impact}
+
+Fig.~\ref{f:phase} draws both versions of the Born lines over the published conductance maps.
+These are the data of Fig.~1 of Ref.~\cite{g2g1}, averaged over 101 configurations
+(opposite-$g$) and 50 configurations (same-$g$), in the colours of the thesis. Table~\ref{t:phase}
+counts the points of the $G=1$ plateau that each version explains. A block counts for one
+channel if it is topological and $E_F$ lies in its gap (``localised'' reading). Alternatively it
+counts if it is topological, whatever $E_F$ (``topological'' reading).
+
+\begin{figure}[p]
+\centering
+\fig{born_phase}
+\caption{\label{f:phase}Born lines over the published conductance maps (Fig.~1 of
+Ref.~\cite{g2g1}): published (left) and corrected SCBA (right). Light blue: $|\langle G\rangle-1|<0.05$; blue:
+$|\langle G\rangle-2|<0.05$. Solid lines: spin-up band edges; dashed: spin-down band edges; dotted:
+$\bar m_\sigma=0$.}
+\end{figure}
+
+\begin{table}[t]
+\centering
+\caption{\label{t:phase}Share of the $G=1$ plateau ($|\langle G\rangle-1|<0.05$) of the published maps
+predicted at $G=1$ by the Born lines.}
+\begin{tabular}{lccccc}
+\toprule
+ & & \multicolumn{2}{c}{localised reading} & \multicolumn{2}{c}{topological reading}\\
+map & $G=1$ points & published & corrected & published & corrected\\
+\midrule
+same-$g$, $n_I=0.2$ & 1065 & 20\,\% & 99.9\,\% & 39\,\% & 0\,\%\\
+opposite-$g$, $n_I=0.4$ & 122 & 94\,\% & 88\,\% & 96\,\% & 59\,\%\\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\needspace{8\baselineskip}
+\paragraph{Same-$g$.}
+\begin{itemize}
+\item \textbf{Published lines.} Both masses change sign: $\bar m_\up=0$ at $J_I\approx0.65$--$0.95$,
+  then $\bar m_\dn=0$ at $J_I\approx1.0$--$1.2$. Beyond the second line no block is topological,
+  so $G$ should vanish. The published map shows $G=1$ there, up to $J_I=1.5$: 566 of its 1065
+  $G=1$ points lie where the published masses make both blocks trivial. The shaded $G=1$ region
+  of the paper's Fig.~4 covers only a small part of the plateau.
+\item \textbf{Corrected lines.} No mass changes sign. They locate where the spin-up channel
+  starts to fall, at the spin-up band edge, and keep spin down topological, as the exact masses
+  do. The strong-disorder end of the spin-up behaviour (Sec.~\ref{s:exact}) is beyond them.
+\end{itemize}
+Table~\ref{t:onset} follows the published map along lines of constant $E_F$:
+\begin{itemize}
+\item $G$ leaves 2 at the corrected spin-up band edge.
+\item The plateau begins 0.2--0.4 further, along a line with the same slope.
+\item The published $\bar m_\up=0$ line is almost vertical ($J_I=0.65$--$0.83$). It lies within
+  0.04 of the onset of the plateau for $-0.11\lesssim E_F\lesssim-0.06$, and 0.08--0.2 away
+  elsewhere.
+\item On the line $E_F=-0.06$, the exact spin-up block does turn trivial, at $J_I\approx0.9$,
+  through the resonance of Sec.~\ref{s:exact}. The paper's picture of a trivial spin-up block
+  therefore holds at strong disorder, but not through the mechanism, nor at the place, that the
+  published line gives.
+\end{itemize}
+
+\begin{table}[t]
+\centering
+\caption{\label{t:onset}Same-$g$ published map along lines of constant $E_F$: where $\langle G\rangle$ leaves 2
+($<1.95$) and where the $G=1$ plateau begins ($|\langle G\rangle-1|<0.05$), against the corrected spin-up
+band edge and the published $\bar m_\up=0$ line.}
+\begin{tabular}{ccccc}
+\toprule
+$E_F$ & $G$ leaves 2 & plateau begins & corrected E$\up$ edge & published $\bar m_\up=0$\\
+\midrule
+$-0.109$ & 0.24 & 0.62 & 0.14 & 0.65\\
+$-0.084$ & 0.31 & 0.64 & 0.26 & 0.68\\
+$-0.058$ & 0.38 & 0.76 & 0.38 & 0.72\\
+$-0.033$ & 0.48 & 0.83 & 0.48 & 0.75\\
+$-0.008$ & 0.52 & 0.93 & 0.59 & 0.78\\
+$+0.018$ & 0.57 & 0.98 & 0.70 & 0.81\\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\paragraph{Opposite-$g$.}
+\begin{itemize}
+\item \textbf{Published line.} $\bar m_\up=0$ at $J_I\approx0.29$ lies at the left edge of the
+  $G=1$ region, as the paper describes.
+\item \textbf{Corrected line.} It lies at $J_I\approx0.41$--$0.45$, inside that region.
+\end{itemize}
+Sec.~\ref{s:width} shows that the left edge of the $G=1$ region is not the inversion but a
+finite-width effect.
+
+%======================================================================
+\section{Why the published inversion line matched the antiferromagnetic map}\label{s:width}
+
+\subsection{Overlap of the edge states}
+
+An edge state of a BHZ block with mass $m$ decays into the bulk over $\xi=1/\lambda_-$. Here
+$\lambda_\pm^2$ are the roots of $(E_0-D\lambda^2)^2=(m+B\lambda^2)^2-A^2\lambda^2$ at the edge-state energy
+$E_0=-mD/B$~\cite{zhou2008}. For $|m|\ll A^2|B|/(B^2-D^2)$,
+\begin{equation}
+\xi \simeq \frac{A|B|}{|m|\sqrt{B^2-D^2}} \simeq \frac{1.50}{|m|}\ \text{sites}.
+\end{equation}
+This gives $\xi=10.7$ sites for the clean mass, 50 sites for $|m|=0.03$ and 100 sites for
+$|m|=0.015$. In a ribbon of width $W$, the two counter-propagating spin-up edge states overlap
+once $\xi$ becomes comparable with $W$. The disorder then backscatters between them across the
+ribbon, and the block's channel is lost while the block is still topological~\cite{zhou2008}. For
+the paper's $W=64$, this happens at $|\bar m_\up|\approx0.015$--$0.03$ ($\xi\approx50$--$100$
+sites), i.e. $J_I\approx0.30$--$0.35$ at $n_I=0.4$ (Table~\ref{t:masses}). That is where the published map leaves $G=2$, where the
+published $\bar m_\up=0$ line happens to lie.
+
+\subsection{Wider ribbons}
+
+Fig.~\ref{f:width} (left) follows both blocks along $E_F=0.02$ for $W=64$, $128$ and $256$.
+The disordered length is 256, with 8, 3 and 3 configurations.
+\begin{itemize}
+\item \textbf{The spin-up channel disappears later in wider ribbons.} $T_\up=1/2$ at
+  $J_I\approx0.32$ ($W=64$), $0.355$ ($W=128$) and $0.39$ ($W=256$). The transition converges on
+  the exact inversion, $J_I=0.40$ (Table~\ref{t:masses}), and the channel is lost when $\xi$
+  becomes comparable with $W$.
+\item \textbf{The published inversion is ruled out.} At $W=256$ and $J_I=0.35$, the spin-up block
+  carries $T_\up=0.989$, the same within $0.002$ in the three configurations. The published SCBA
+  makes this block trivial there, with a gap of $0.06$. A trivial block carries no channel at
+  any width.
+\item \textbf{The spin-down channel also survives longer.} At $W=256$, $T_\dn=1.000$ up to
+  $J_I=0.475$, and it stays above $0.8$ on average up to $0.6$. At $W=64$ it is already $0.89$
+  at $J_I=0.45$ and $0.60$ at $0.5$. Its loss in narrow ribbons comes from the impurity states
+  that fill its gap (Sec.~\ref{s:origin}), which connect the two edges more easily when they
+  are close.
+\item \textbf{The opposite-$g$ $G=1$ window moves and widens.} At $W=256$ it starts at the exact
+  inversion, $J_I\approx0.40$, and extends beyond $J_I=0.6$.
+\end{itemize}
+Fig.~\ref{f:width} (right) follows the same-$g$ line $E_F=-0.06$.
+\begin{itemize}
+\item The spin-down block carries $T_\dn=1.000$ at every $J_I$ up to 1.5 and at every width, far
+  beyond the published $\bar m_\dn=0$ line.
+\item $T_\up$ starts to fall at the corrected spin-up band edge ($J_I\approx0.38$) at every width.
+  It then crosses a diffusive region, where its value grows with $W$, and vanishes from
+  $J_I\approx0.8$ at every width.
+\end{itemize}
+Fig.~\ref{f:widephase} shows the full maps. The caroli maps at $W=64$ reproduce the published
+ones. At $W=128$:
+\begin{itemize}
+\item the same-$g$ plateau is unchanged;
+\item the opposite-$g$ $G=2$ region extends to the corrected inversion, and the $G=1$ region
+  sits in the wedge beyond it, where the spin-up gap is trivial.
+\end{itemize}
+
+\begin{figure}[t]
+\centering
+\fig{born_wide_phase}
+\caption{\label{f:widephase}$\langle G\rangle$ maps in the colours of the thesis: published map
+($W=64$, Fortran, 101 and 50 configurations), and caroli on the same disordered length for
+$W=64$ (8 configurations) and $W=128$ (3 configurations). Lines: corrected SCBA.}
+\end{figure}
+
+\begin{figure}[t]
+\centering
+\fig{born_width}
+\caption{\label{f:width}Transmissions of the two blocks along a line of constant $E_F$ for
+$W=64$, $128$ and $256$ (8, 3 and 3 configurations; disordered length 256). Left: opposite-$g$,
+$E_F=0.02$, with the published and corrected spin-up inversions. Right: same-$g$, $E_F=-0.06$,
+with the corrected spin-up band edge and the published inversions of both blocks.}
+\end{figure}
+
+\subsection{The coincidence}
+
+The wrong sign moves the Born inversion from $J_I=0.40$ to $0.30$. The finite width moves the
+observed loss of the spin-up channel from $0.40$ to about $0.32$--$0.35$ at $W=64$. The two
+shifts have the same direction and similar sizes, so the published line happened to fall on the
+edge of the published map. The same wrong sign predicts that both blocks become trivial at
+same-$g$, which the published map itself contradicts (Sec.~\ref{s:impact}).
+
+%======================================================================
+\section{Origin and stability of the $G=1$ phase}\label{s:origin}
+
+Fig.~\ref{f:spinmaps} resolves the conductance by spin. In each block, the corrected band edges
+of that block bound the region where it carries one channel.
+
+\begin{figure}[t]
+\centering
+\fig{born_spin_maps}
+\caption{\label{f:spinmaps}Spin-resolved transmissions $\langle T_\up\rangle$ (left) and $\langle T_\dn\rangle$
+(right), $W=128$, 3 configurations, with the corrected band edges of each block. Black: the
+block carries one channel; white: none. Top: opposite-$g$, $n_I=0.4$. Bottom: same-$g$,
+$n_I=0.2$.}
+\end{figure}
+
+\paragraph{Two independent Chern insulators.} With $M_z=1$, $s_z$ is conserved and each block is a
+two-dimensional system without time-reversal symmetry (class A). Its two-terminal conductance is
+quantized to the Chern number of the occupied states whenever the states at $E_F$ are
+localised. A block therefore contributes one channel as long as $E_F$ lies above the delocalised
+states of its valence band and below those of its conduction band.
+
+\paragraph{Same-$g$: how the phase appears.}
+\begin{itemize}
+\item The mean exchange field acts as a spin-dependent chemical potential: the spin-up bands
+  rise by $n_I J_I$ and the spin-down bands sink by $n_I J_I$.
+\item The fluctuations widen both gaps (Fig.~\ref{f:masses}).
+\item Near $E_F=0$, the Fermi level enters the spin-up valence band as $J_I$ grows: $T_\up$ starts
+  to fall at the corrected spin-up band edge.
+\item Once $E_F$ lies below the delocalised spin-up states, the spin-up states at $E_F$ are
+  localised and carry no Chern number, so $T_\up=0$. The grey crossover of the map is the
+  passage through those states.
+\item At stronger disorder ($J_I\gtrsim0.9$ on $E_F=-0.06$), the spin-up block goes through a
+  resonance and becomes a trivial insulator at $E_F$ (Table~\ref{t:resonance}). $T_\up$ stays
+  zero.
+\item The spin-down gap still contains $E_F$, so $T_\dn=1$.
+\item The plateau ends only when $E_F$ reaches the spin-down conduction band, at the top right
+  of the map.
+\end{itemize}
+On the plateau of the $W=64$ maps (8 configurations), $T_\dn$ is within $10^{-3}$ of 1 in $97\,\%$
+of the single configurations, and $T_\up<10^{-3}$ in $92\,\%$.
+
+\paragraph{Why it is so stable.}
+\begin{itemize}
+\item The $G=1$ phase is a Chern insulator of total Chern number 1. Each edge carries a single
+  chiral mode. There is no counter-propagating mode to scatter into, in either spin, so no
+  disorder can backscatter it as long as the bulk states at $E_F$ are localised.
+\item The $G=2$ phase is different: each edge carries two counter-propagating modes, one per
+  spin, and only $s_z$ conservation keeps them apart.
+\item Tilting the moments shows the difference. With $M_z=0.8$ the in-plane components couple
+  the spins. On the thesis map at $M_z=0.8$ (same-$g$, $n_I=0.2$, 56 configurations), the
+  $G=2$ plateau shrinks from $23\,\%$ to $3.8\,\%$ of the map, while the $G=1$ plateau keeps
+  $13.9\,\%$ (against $26\,\%$ at $M_z=1$).
+\end{itemize}
+
+\paragraph{Opposite-$g$.}
+\begin{itemize}
+\item The mean field is a spin-dependent mass, so the spin-up block does change sign, at
+  $J_I\simeq0.40$ for $n_I=0.4$. The fluctuations delay this inversion relative to the mean
+  field ($0.34$).
+\item In Fig.~\ref{f:spinmaps}, $T_\up=1$ fills the corrected topological gap of the spin-up
+  block: the wedge between its two band edges, which closes at $J_I\approx0.41$,
+  $E_F\approx0.02$. $T_\up=0$ fills the trivial gap that opens beyond.
+\item The $G=1$ phase is the region where the spin-up gap is trivial while spin down still
+  conducts.
+\item The spin-down block becomes more topological, but at $n_I=0.4$ its gap fills with
+  impurity states for $J_I\gtrsim0.45$. The exact broadening at $E_F=0.02$ rises from $0.001$ at
+  $J_I=0.35$ to $0.013$, $0.024$ and $0.048$ at $J_I=0.45$, $0.5$ and $0.6$. At $W=64$, $T_\dn$
+  drops to $0.89$, $0.60$ and $0.32$.
+\item In the paper's 64-site ribbons, the $G=1$ window is therefore narrow at this
+  concentration. It widens in wider ribbons, where both channels survive longer
+  (Sec.~\ref{s:width}).
+\end{itemize}
+
+%======================================================================
+\section{What changes for the paper}\label{s:addendum}
+
+\paragraph{Unchanged.}
+\begin{itemize}
+\item The numerical results: conductance maps (Fig.~1), local currents (Fig.~2) and local
+  densities of states (Fig.~3).
+\item The main conclusion: a disorder-induced $G=1$ Chern-insulator phase for both couplings,
+  carried by the spin-down edge state and caused by the suppression of one spin channel through
+  selective scattering and localisation.
+\end{itemize}
+
+\paragraph{Changed.}
+\begin{itemize}
+\item The sign of the mass equations of the SCBA, and the weight $v_z$.
+\item Fig.~4 and the paragraphs that interpret it:
+  \begin{itemize}
+  \item same-$g$: the spin-down mass never changes sign, whereas the published lines invert
+    it at $J_I\approx1.0$--$1.2$. The plateau begins where the spin-up states at $E_F$ stop
+    conducting, after $E_F$ has entered the spin-up band, shifted by the exchange field. The
+    spin-up block becomes trivial only at stronger disorder, through a resonance beyond the
+    Born approximation;
+  \item opposite-$g$: the spin-up inversion lies at $J_I\simeq0.40$ for $n_I=0.4$, and the left
+    edge of the $G=1$ region in the maps is set by the ribbon width.
+  \end{itemize}
+\end{itemize}
+
+\paragraph{Draft addendum.}
+\begin{quote}\small
+In the self-consistent Born analysis of Sec.~IV\,B, the definition of the renormalised
+parameters should read
+$\mathrm{Re}\,\Sigma = \mathrm{diag}[(\bar m_\up-m_\up)\tau_z-(\bar\mu_\up-\mu_\up)\tau_0,\;(\bar m_\dn-m_\dn)\tau_z-(\bar\mu_\dn-\mu_\dn)\tau_0]$,
+so that the mass equations carry a plus sign in front of the sum. In addition, the
+longitudinal weight is $v_z=(1-n_I)M_z^2+(1-M_z)^2/3$. The corrected Born phase diagrams are
+shown below.
+
+With the correct sign, the fluctuations renormalise both masses towards the topological side,
+as in the topological Anderson insulator, and the same-$g$ spin-down mass does not change sign. The
+$G=1$ phase of the same-$g$ case arises because the spin-dependent shift of the bands brings
+the Fermi level into the spin-up band, whose states are localised by the disorder. At stronger
+disorder, the spin-up block becomes trivial through resonant scattering, beyond the Born
+approximation. Meanwhile the spin-down block keeps a topological gap and its chiral edge state,
+as shown in Fig.~2. In
+the opposite-$g$ case, the spin-up inversion occurs at $J_I\approx0.40$ for $n_I=0.4$.
+
+The numerical results and the conclusions of the paper are unchanged.
+\end{quote}
+
+%======================================================================
+\appendix
+\section{Methods and reproducibility}\label{a:methods}
+
+All calculations use the Rust toolbox \texttt{caroli}, which reproduces the thesis programs on
+their own test cases. Each item below is an example, run with
+\begin{verbatim}
+  cargo run --release -p caroli-validation --example <name>
+\end{verbatim}
+\begin{itemize}
+\item \texttt{born\_lines}: published and corrected Born parameters, on the grids of the
+  published maps.
+\item \texttt{born\_self\_energy}: exact renormalised masses (Sec.~\ref{s:exact}).
+\item \texttt{born\_spin\_channels}: spin-resolved transmissions of Table~\ref{t:spin}.
+\item \texttt{born\_wide\_maps}: spin-resolved maps and cuts for $W=64,128,256$.
+\end{itemize}
+The figures come from the plotting scripts \texttt{plot\_born\_phase.py},
+\texttt{plot\_born\_masses.py} and \texttt{plot\_born\_wide.py} in the same folder.
+
+\paragraph{Chebyshev expansion of the resolvent.} With $\tilde H=(H-c)/h$ rescaled into $(-1,1)$,
+$\tilde z = (E+\I\eta-c)/h$, $s=\sqrt{\tilde z^2-1}$ and $t=\tilde z-s$ chosen with $|t|<1$,
+\begin{equation}
+\langle\phi|(E+\I\eta-H)^{-1}|\phi\rangle = \frac{1}{h\,s}\Big[\mu_0+2\sum_{n\ge1}t^n\mu_n\Big],\qquad
+\mu_n = \langle\phi|T_n(\tilde H)|\phi\rangle .
+\end{equation}
+The moments are obtained two per product with $\tilde H$, from
+$\mu_{2n}=2\langle T_n|T_n\rangle-\mu_0$ and $\mu_{2n+1}=2\langle T_n|T_{n+1}\rangle-\mu_1$. The series is
+truncated where $|t|^n<10^{-10}$.
+
+\paragraph{Spin-resolved transport.} With $M_z=1$ each block is a two-orbital BHZ model with its
+own disorder. Its transmission is computed by recursive Green's functions, with the lead
+self-energies from the propagating and evanescent modes. The blocks reproduce the four-orbital
+calculation to $10^{-12}$.
+
+\begin{thebibliography}{9}
+\bibitem{g2g1} L.~Raymond, A.~D.~Verga, and A.~Demion, \emph{Anomalous quantum Hall effect induced
+  by disorder in topological insulators}, \todo{journal reference}.
+\bibitem{thesis} A.~Demion, \emph{Transport électronique dans le graphène et les isolants
+  topologiques 2D en présence de désordre magnétique}, PhD thesis, Aix-Marseille Université
+  (2015).
+\bibitem{li2009} J.~Li, R.-L.~Chu, J.~K.~Jain, and S.-Q.~Shen, Phys.\ Rev.\ Lett.\ \textbf{102},
+  136806 (2009).
+\bibitem{groth2009} C.~W.~Groth, M.~Wimmer, A.~R.~Akhmerov, J.~Tworzyd\l{}o, and
+  C.~W.~J.~Beenakker, Phys.\ Rev.\ Lett.\ \textbf{103}, 196805 (2009).
+\bibitem{jiang2009} H.~Jiang, L.~Wang, Q.-F.~Sun, and X.~C.~Xie, Phys.\ Rev.\ B \textbf{80},
+  165316 (2009).
+\bibitem{zhou2008} B.~Zhou, H.-Z.~Lu, R.-L.~Chu, S.-Q.~Shen, and Q.~Niu, Phys.\ Rev.\ Lett.\
+  \textbf{101}, 246807 (2008).
+\end{thebibliography}
+
+\end{document}

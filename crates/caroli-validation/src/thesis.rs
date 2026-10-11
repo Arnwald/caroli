@@ -15,6 +15,38 @@ pub fn impurity_region(x0: i64, nx_imp: usize, ny: usize) -> Vec<Site> {
         .collect()
 }
 
+/// Spin block `s` (orbitals 2s, 2s + 1) of the BHZ model with the exchange of fully polarised
+/// impurities (`n_z = ±1`, so s_z is conserved): `(device, clean lead)` two-orbital models. The
+/// blocks reproduce the four-orbital transport block by block.
+pub fn bhz_spin_block(
+    s: usize,
+    imp: &MagneticImpurities,
+    j: f64,
+    coupling: caroli_model::presets::GFactors,
+) -> (caroli_model::Model, caroli_model::Model) {
+    use caroli_model::presets::{BhzParams, bhz, bhz_spin};
+    use caroli_model::{Model, OnSite};
+    fn block(m: &CMat, s: usize) -> CMat {
+        for a in 0..4 {
+            for b in 0..4 {
+                assert!(a / 2 == b / 2 || m[(a, b)].norm() < 1e-14, "the matrix couples the spins");
+            }
+        }
+        CMat::from_fn(2, 2, |a, b| m[(2 * s + a, 2 * s + b)])
+    }
+    let full = bhz(BhzParams::default());
+    let onsite = full.onsite_matrix(&Site { cell: [0, 0, 0], sub: 0 });
+    let build = || {
+        full.hoppings().iter().fold(
+            Model::new(caroli_lattice::Lattice::square(1.0, 2)).onsite(0, block(&onsite, s)),
+            |m, h| m.hopping(h.from, h.to, h.offset, block(&h.matrix, s)),
+        )
+    };
+    let exchange = imp.exchange(j, &bhz_spin(coupling));
+    let device = build().with_onsite_term(move |site: &Site| exchange.matrix(site).map(|m| block(&m, s)));
+    (device, build())
+}
+
 /// Disorder parameters of `conductance-2t` (`ti.ini`).
 #[derive(Clone, Copy, Debug)]
 pub struct Conductance2t {
