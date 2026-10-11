@@ -124,15 +124,18 @@ impl TwoTerminal {
     /// Lead self-energies `(Σ_L, Σ_R)` on the first and last slices.
     pub fn self_energies(&self, energy: f64, method: SelfEnergyMethod) -> Result<(CMat, CMat), GreenError> {
         match method {
-            SelfEnergyMethod::Modes => {
-                let ml = self.left.modes(energy)?;
-                let mr = self.right.modes(energy)?;
-                Ok((sigma_left(&self.left.h01, &ml), sigma_right(&self.right.h01, &mr)))
-            }
-            SelfEnergyMethod::ModesBroadened { eta } => {
-                let z = c64::new(energy, eta);
+            SelfEnergyMethod::Modes | SelfEnergyMethod::ModesBroadened { .. } => {
+                let z = match method {
+                    SelfEnergyMethod::ModesBroadened { eta } => c64::new(energy, eta),
+                    _ => c64::new(energy, 0.0),
+                };
+                // Identical leads (the usual case) share one set of modes.
                 let ml = self.left.modes_at(z)?;
-                let mr = self.right.modes_at(z)?;
+                let mr = if self.left.h00 == self.right.h00 && self.left.h01 == self.right.h01 {
+                    ml.clone()
+                } else {
+                    self.right.modes_at(z)?
+                };
                 Ok((sigma_left(&self.left.h01, &ml), sigma_right(&self.right.h01, &mr)))
             }
             SelfEnergyMethod::Decimation { eta } => {

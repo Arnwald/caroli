@@ -9,6 +9,7 @@
 pub mod decimation;
 pub mod modes;
 pub mod multi;
+mod schur;
 mod two_terminal;
 
 pub use multi::{AttachedLead, Interface, MultiSolution, MultiTerminal};
@@ -28,6 +29,8 @@ pub enum GreenError {
         "lead modes: {right} right-going and {left} left-going, expected {expected} each (energy at a band edge?)"
     )]
     ModeCount { right: usize, left: usize, expected: usize },
+    #[error("lead self-energy undefined near E = {0} (subband edge or bound state of the lead surface)")]
+    Singular(f64),
 }
 
 /// Inverse of a square matrix (partial-pivoting LU).
