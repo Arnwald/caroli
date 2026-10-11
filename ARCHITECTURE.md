@@ -42,14 +42,26 @@ The dependencies only go downward: lattice ← model ← green ← caroli.
 - **BHZ conventions** follow the thesis codes (2014+): basis `(E1↑, H1↑, E1↓, H1↓)`, Γ matrices
   of `numbers.f90`. Exchange coupling: `GFactors::Same` (g_E = g_H, `n·s`) and `Opposite`
   (g_E = −g_H, `n·s τ_z`). The thesis calls these "ferro" and "antiferro".
-- **Lead self-energies by mode matching** (`caroli_green::modes`). The Bloch factors λ come from
-  the linearised quadratic eigenproblem. The modes are split into right- and left-going ones
-  (decaying, or propagating with the sign of the velocity, which is diagonalised within each
-  degenerate group). Then `Σ_R = H1 F₊` and `Σ_L = H1† F₋⁻¹`.
-  - The calculation is exact at real energy; no `η` is needed.
-  - Each mode is stored as `(ψ_j, ψ_{j+1})`, so singular couplings (λ = 0 or ∞) are handled.
-  - The generalised eigenproblem is solved through a Möbius shift `(A − σB)⁻¹B`, because faer's
-    QZ is about 150× slower than its standard eigensolver at these sizes.
+- **Lead self-energies by mode matching** (`caroli_green::modes`), after Wimmer and Kwant.
+  - The coupling is compressed by its SVD, `H1 = u v†` (rank r). The Bloch modes then solve a
+    regular 2r pencil in `x = (u†ψ_{j−1}, v†ψ_j)`, stabilised by `i(uu† + vv†)` so that it holds
+    even when `H0 − E` is singular. Low-rank couplings (graphene cut along a slanted direction)
+    give small, well-conditioned problems.
+  - Invariant subspaces come from a complex Schur decomposition with reordering (`schur.rs`).
+    faer's Hessenberg reduction is followed by our own single-shift QR, because faer's QZ is slow
+    near n = 80 and its standard Schur is private. Eigenvectors are not used for the evanescent
+    modes: for strongly decaying modes they are nearly dependent (inverse condition 1e-15 in a
+    100-wide ribbon).
+  - Propagating modes are split by velocity sign. The current is diagonalised within each
+    degenerate group.
+  - `Σ_R = u X_γ X_α⁻¹ u†` and `Σ_L = v Y_α Y_γ⁻¹ v†`, from orthonormal bases of the right- and
+    left-going subspaces.
+  - The result is exact at real energy, with no `η`. The exceptions are subband edges (Jordan
+    blocks, zero velocity) and bound states of the lead surface (singular `X_α`, as for graphene
+    at E = 0): the modes are then computed at `E + δ`, with δ from 1e-9 to 1e-6 of the
+    bandwidth, which gives the limit from above.
+  - Identical leads share one set of modes. Independent blocks (spin-conserving disorder) are
+    solved separately (`TwoTerminal::blocks`).
   - Decimation (Lopez Sancho – Rubio) is kept as a cross-check only. It loses all accuracy when
     E is close to an eigenvalue of the lead cell: T of a clean chain at E = 1e-9 is off by 0.5
     with η = 1e-12.
