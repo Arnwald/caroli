@@ -351,14 +351,9 @@ impl ScbaAnalytic {
     /// `v_⊥ = (2/3)(1 − mz)(1 + 2 mz)` with 2/3 in single precision. Two stages (mixing 0.15 to
     /// 1e-4, then 0.8 to 1e-6). Returns `(M↑, μ↑, M↓, μ↓)` maps (real parts), J fastest.
     pub fn run(&self) -> [Vec<f64>; 4] {
-        let Self { m, n, conc, mz, anti, points, j_range, ef, eta } = *self;
-        let (mass, b, d) = (-0.137, -0.376406, -0.280933);
+        let Self { m, n, points, j_range, ef, .. } = *self;
         let grid = caroli_born::k_grid(m, n);
-        let kc: Vec<f64> = grid.iter().map(|k| 4.0 - 2.0 * k[0].cos() - 2.0 * k[1].cos()).collect();
-        let ks: Vec<f64> = grid.iter().map(|k| k[0].sin().powi(2) + k[1].sin().powi(2)).collect();
-        let vz = (1.0 - conc * conc) * mz * mz + (1.0 - mz) * (1.0 - mz) / 3.0;
-        let vperp = (2.0f32 / 3.0f32) as f64 * (1.0 - mz) * (1.0 + 2.0 * mz);
-        let anti = anti as f64;
+        let k = self.k_terms(&grid);
         let mut out = [
             vec![0.0; points * points],
             vec![0.0; points * points],
@@ -367,50 +362,69 @@ impl ScbaAnalytic {
         ];
         for iu in 0..points {
             let ji = iu as f64 * (j_range.1 - j_range.0) / (points - 1) as f64 + j_range.0;
-            let norm = conc * ji * ji / (n * m) as f64;
             for ie in 0..points {
                 let e = ie as f64 * (ef.1 - ef.0) / (points - 1) as f64 + ef.0;
-                let z = c64::new(e, eta);
-                let mu0 = c64::new(mass + anti * ji * conc * mz, 0.0);
-                let md0 = c64::new(mass - anti * ji * conc * mz, 0.0);
-                let muu0 = c64::new(-(1.0 - anti) * ji * conc * mz, 0.0);
-                let mud0 = c64::new((1.0 - anti) * ji * conc * mz, 0.0);
-                let (mut mu, mut md, mut muu, mut mud) = (mu0, md0, muu0, mud0);
-                for (p, prec) in [(0.15, 1e-4), (0.8, 1e-6)] {
-                    let (mut diff, mut kk) = (1.0, 0);
-                    while diff > prec && kk < 500 {
-                        let (mut dmu, mut dmd, mut dmuu, mut dmud) =
-                            (c64::new(0.0, 0.0), c64::new(0.0, 0.0), c64::new(0.0, 0.0), c64::new(0.0, 0.0));
-                        for (c, s) in kc.iter().zip(&ks) {
-                            let eu = z + muu + d * c;
-                            let ed = z + mud + d * c;
-                            let (mu_k, md_k) = (mu - b * c, md - b * c);
-                            let detu = eu * eu - mu_k * mu_k - s;
-                            let detd = ed * ed - md_k * md_k - s;
-                            let (vzu, vzd, vpu, vpd) = (vz / detu, vz / detd, vperp / detu, vperp / detd);
-                            dmu += vzu * mu_k + vpd * md_k;
-                            dmd += vzd * md_k + vpu * mu_k;
-                            dmuu += vzu * eu + vpd * ed;
-                            dmud += vzd * ed + vpu * eu;
-                        }
-                        let (mut_, mdt, muut, mudt) =
-                            (mu0 - dmu * norm, md0 - dmd * norm, muu0 - dmuu * norm, mud0 - dmud * norm);
-                        let ch = |t: c64, x: c64| ((t - x).norm() - prec * t.norm()).abs();
-                        diff = p * (ch(mut_, mu) + ch(mdt, md) + ch(muut, muu) + ch(mudt, mud));
-                        let mixp = |t: c64, x: c64| t * p + x * (1.0 - p);
-                        (mu, md, muu, mud) =
-                            (mixp(mut_, mu), mixp(mdt, md), mixp(muut, muu), mixp(mudt, mud));
-                        kk += 1;
-                    }
+                let r = self.solve_point(&k, ji, e);
+                for (o, v) in out.iter_mut().zip(r) {
+                    o[iu + points * ie] = v;
                 }
-                let k = iu + points * ie;
-                out[0][k] = mu.re;
-                out[1][k] = muu.re;
-                out[2][k] = md.re;
-                out[3][k] = mud.re;
             }
         }
         out
+    }
+
+    /// `(M↑, μ↑, M↓, μ↓)` at one `(J_I, E_F)` (the program's iteration for one grid point).
+    pub fn point(&self, ji: f64, e: f64) -> [f64; 4] {
+        self.solve_point(&self.k_terms(&caroli_born::k_grid(self.m, self.n)), ji, e)
+    }
+
+    /// `(k_c, k_s)` on the k grid.
+    fn k_terms(&self, grid: &[[f64; 2]]) -> Vec<(f64, f64)> {
+        grid.iter()
+            .map(|k| (4.0 - 2.0 * k[0].cos() - 2.0 * k[1].cos(), k[0].sin().powi(2) + k[1].sin().powi(2)))
+            .collect()
+    }
+
+    fn solve_point(&self, k: &[(f64, f64)], ji: f64, e: f64) -> [f64; 4] {
+        let Self { m, n, conc, mz, anti, eta, .. } = *self;
+        let (mass, b, d) = (-0.137, -0.376406, -0.280933);
+        let vz = (1.0 - conc * conc) * mz * mz + (1.0 - mz) * (1.0 - mz) / 3.0;
+        let vperp = (2.0f32 / 3.0f32) as f64 * (1.0 - mz) * (1.0 + 2.0 * mz);
+        let anti = anti as f64;
+        let norm = conc * ji * ji / (n * m) as f64;
+        let z = c64::new(e, eta);
+        let mu0 = c64::new(mass + anti * ji * conc * mz, 0.0);
+        let md0 = c64::new(mass - anti * ji * conc * mz, 0.0);
+        let muu0 = c64::new(-(1.0 - anti) * ji * conc * mz, 0.0);
+        let mud0 = c64::new((1.0 - anti) * ji * conc * mz, 0.0);
+        let (mut mu, mut md, mut muu, mut mud) = (mu0, md0, muu0, mud0);
+        for (p, prec) in [(0.15, 1e-4), (0.8, 1e-6)] {
+            let (mut diff, mut kk) = (1.0, 0);
+            while diff > prec && kk < 500 {
+                let (mut dmu, mut dmd, mut dmuu, mut dmud) =
+                    (c64::new(0.0, 0.0), c64::new(0.0, 0.0), c64::new(0.0, 0.0), c64::new(0.0, 0.0));
+                for &(c, s) in k {
+                    let eu = z + muu + d * c;
+                    let ed = z + mud + d * c;
+                    let (mu_k, md_k) = (mu - b * c, md - b * c);
+                    let detu = eu * eu - mu_k * mu_k - s;
+                    let detd = ed * ed - md_k * md_k - s;
+                    let (vzu, vzd, vpu, vpd) = (vz / detu, vz / detd, vperp / detu, vperp / detd);
+                    dmu += vzu * mu_k + vpd * md_k;
+                    dmd += vzd * md_k + vpu * mu_k;
+                    dmuu += vzu * eu + vpd * ed;
+                    dmud += vzd * ed + vpu * eu;
+                }
+                let (mut_, mdt, muut, mudt) =
+                    (mu0 - dmu * norm, md0 - dmd * norm, muu0 - dmuu * norm, mud0 - dmud * norm);
+                let ch = |t: c64, x: c64| ((t - x).norm() - prec * t.norm()).abs();
+                diff = p * (ch(mut_, mu) + ch(mdt, md) + ch(muut, muu) + ch(mudt, mud));
+                let mixp = |t: c64, x: c64| t * p + x * (1.0 - p);
+                (mu, md, muu, mud) = (mixp(mut_, mu), mixp(mdt, md), mixp(muut, muu), mixp(mudt, mud));
+                kk += 1;
+            }
+        }
+        [mu.re, muu.re, md.re, mud.re]
     }
 }
 

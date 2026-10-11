@@ -29,6 +29,18 @@ pub fn bessel_j(x: f64, count: usize) -> Vec<f64> {
         return (0..count).map(|n| if n == 0 { 1.0 } else { 0.0 }).collect();
     }
     let ax = x.abs();
+    if ax < 1e-30 {
+        // Leading term (x/2)^n / n!; the next one is smaller by (x/2)² < 1e-60.
+        let mut term = 1.0;
+        return (0..count)
+            .map(|n| {
+                if n > 0 {
+                    term *= x / 2.0 / n as f64;
+                }
+                term
+            })
+            .collect();
+    }
     let top = count.max(ax as usize) + 30 + (10.0 * ax.cbrt()) as usize;
     let mut j = vec![0.0; top + 2];
     j[top] = 1e-300;
@@ -111,6 +123,41 @@ impl Chebyshev {
     }
 }
 
+/// A time-dependent Hamiltonian for [`magnus4_step`].
+pub trait TimeDependent {
+    /// `y = Σ_i w_i H(t_i) x` for `stages = [(t_i, w_i)]`.
+    fn apply(&self, stages: &[(f64, f64)], x: &[c64], y: &mut [c64]);
+    /// Bounds `(lower, upper)` on the spectrum of `H(t)` at every `t`.
+    fn bounds(&self) -> (f64, f64);
+}
+
+/// One step of the fourth-order commutator-free Magnus integrator (Blanes & Moan, 2006):
+/// `U(t + dt, t) ≈ exp(−i dt B₂) exp(−i dt B₁)`, `B₁ = α₂ H(t₁) + α₁ H(t₂)`,
+/// `B₂ = α₁ H(t₁) + α₂ H(t₂)`, `t₁,₂ = t + (1/2 ∓ √3/6) dt`, `α₁,₂ = (3 ∓ 2√3)/12`.
+/// Each exponential is a [`Chebyshev`] expansion to `tol`: the global error is O(dt⁴), with no
+/// splitting error between kinetic and potential terms.
+pub fn magnus4_step(h: &impl TimeDependent, psi: &mut [c64], t: f64, dt: f64, tol: f64) {
+    let s3 = 3f64.sqrt();
+    let (t1, t2) = (t + (0.5 - s3 / 6.0) * dt, t + (0.5 + s3 / 6.0) * dt);
+    let (a1, a2) = ((3.0 - 2.0 * s3) / 12.0, (3.0 + 2.0 * s3) / 12.0);
+    let (lo, hi) = h.bounds();
+    for stages in [[(t1, a2), (t2, a1)], [(t1, a1), (t2, a2)]] {
+        // Spectrum of Σ w_i H(t_i) (a weight is negative).
+        let (blo, bhi) = stages
+            .iter()
+            .fold((0.0, 0.0), |(l, u), &(_, w)| (l + (w * lo).min(w * hi), u + (w * lo).max(w * hi)));
+        let (centre, half) = ((bhi + blo) / 2.0, ((bhi - blo) / 2.0 * 1.01).max(1e-300));
+        let cheb = Chebyshev::new(dt, centre, half, tol);
+        cheb.step(
+            |x, y| {
+                h.apply(&stages, x, y);
+                y.iter_mut().zip(x).for_each(|(y, x)| *y = (*y - centre * x) / half);
+            },
+            psi,
+        );
+    }
+}
+
 /// Multiplies the wave function (`ψ[site + n²·c]`) by a block on each listed site.
 pub fn apply_local(psi: &mut [c64], nn: usize, comps: usize, blocks: &[(usize, CMat)]) {
     let mut tmp = vec![c64::new(0.0, 0.0); comps];
@@ -150,8 +197,13 @@ pub struct SplitOperator {
 
 impl SplitOperator {
     /// Propagator with the local potential `v` (site, Hermitian block) and time step `dt`.
+    /// Blocks listed for the same site are summed before exponentiation.
     pub fn new(n: usize, comps: usize, v: &[(usize, CMat)], dt: f64) -> Self {
-        let half_potential = v.iter().map(|(s, b)| (*s, exp_i(b, dt / 2.0))).collect();
+        let mut summed: std::collections::BTreeMap<usize, CMat> = std::collections::BTreeMap::new();
+        for (s, b) in v {
+            summed.entry(*s).and_modify(|m| *m += b).or_insert_with(|| b.clone());
+        }
+        let half_potential = summed.into_iter().map(|(s, b)| (s, exp_i(&b, dt / 2.0))).collect();
         Self { n, comps, half_potential, fft: Fft2::new(n) }
     }
 
@@ -189,6 +241,76 @@ impl SplitOperator {
 mod tests {
     use super::*;
 
+    /// Fourth order: halving dt divides the error by about 16 (dense driven 6-level system,
+    /// reference with dt/16).
+    #[test]
+    fn magnus4_is_fourth_order() {
+        struct Driven(CMat, CMat);
+        #[allow(clippy::needless_range_loop)] // dense products, indices read best
+        impl TimeDependent for Driven {
+            fn apply(&self, stages: &[(f64, f64)], x: &[c64], y: &mut [c64]) {
+                let n = x.len();
+                y.iter_mut().for_each(|v| *v = c64::new(0.0, 0.0));
+                for &(t, w) in stages {
+                    let f = (1.3 * t).cos();
+                    for i in 0..n {
+                        for j in 0..n {
+                            y[i] += w * (self.0[(i, j)] + f * self.1[(i, j)]) * x[j];
+                        }
+                    }
+                }
+            }
+            fn bounds(&self) -> (f64, f64) {
+                let r = |m: &CMat| {
+                    (0..m.nrows())
+                        .map(|i| (0..m.ncols()).map(|j| m[(i, j)].norm()).sum::<f64>())
+                        .fold(0.0, f64::max)
+                };
+                let b = r(&self.0) + r(&self.1);
+                (-b, b)
+            }
+        }
+        let n = 6;
+        let herm = |seed: f64| {
+            let a = CMat::from_fn(n, n, |i, j| {
+                c64::new((seed * (i * 7 + j) as f64).sin(), (seed * (i + 3 * j) as f64).cos())
+            });
+            CMat::from_fn(n, n, |i, j| (a[(i, j)] + a[(j, i)].conj()) * 0.5)
+        };
+        let h = Driven(herm(0.37), herm(1.11));
+        let psi0: Vec<c64> =
+            (0..n).map(|i| c64::new(1.0 / (n as f64).sqrt(), 0.0) * c64::from_polar(1.0, i as f64)).collect();
+        let evolve = |dt: f64| {
+            let mut psi = psi0.clone();
+            let steps = (2.0 / dt).round() as usize;
+            for k in 0..steps {
+                magnus4_step(&h, &mut psi, k as f64 * dt, dt, 1e-15);
+            }
+            psi
+        };
+        let reference = evolve(0.0125);
+        let err =
+            |dt: f64| evolve(dt).iter().zip(&reference).map(|(a, b)| (a - b).norm_sqr()).sum::<f64>().sqrt();
+        let (e1, e2) = (err(0.2), err(0.1));
+        assert!(e1 / e2 > 12.0 && e1 / e2 < 20.0, "errors {e1:e}, {e2:e}");
+        let norm: f64 = reference.iter().map(|z| z.norm_sqr()).sum();
+        assert!((norm - 1.0).abs() < 1e-13);
+    }
+
+    /// Blocks listed twice for a site act as their sum.
+    #[test]
+    fn split_operator_sums_duplicate_sites() {
+        let m = |a: f64, b: f64| {
+            CMat::from_fn(2, 2, |i, j| {
+                c64::new(if i == j { a * if i == 0 { 1.0 } else { -1.0 } } else { b }, 0.0)
+            })
+        };
+        let twice = SplitOperator::new(4, 2, &[(5, m(0.0, 0.8)), (5, m(0.6, 0.0))], 0.1);
+        let once = SplitOperator::new(4, 2, &[(5, m(0.6, 0.8))], 0.1);
+        assert_eq!(twice.half_potential.len(), 1);
+        assert!((&twice.half_potential[0].1 - &once.half_potential[0].1).norm_max() < 1e-15);
+    }
+
     #[test]
     fn bessel_values() {
         // J_0(1), J_1(1), J_5(1) and J_0(10), J_12(10) (Abramowitz & Stegun).
@@ -196,6 +318,12 @@ mod tests {
         assert!((j[0] - 0.765_197_686_557_966_6).abs() < 1e-15);
         assert!((j[1] - 0.440_050_585_744_933_5).abs() < 1e-15);
         assert!((j[5] - 2.497_577_302_112_344e-4).abs() < 1e-17);
+        let tiny = bessel_j(1e-60, 3);
+        assert!(
+            (tiny[0] - 1.0).abs() < 1e-15
+                && (tiny[1] - 5e-61).abs() < 1e-75
+                && (tiny[2] - 1.25e-121).abs() < 1e-135
+        );
         let j = bessel_j(10.0, 13);
         assert!((j[0] + 0.245_935_764_451_348_3).abs() < 1e-14);
         assert!((j[12] - 6.337_025_497_015_6e-2).abs() < 1e-13);

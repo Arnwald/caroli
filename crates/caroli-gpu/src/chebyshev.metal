@@ -102,8 +102,9 @@ inline cplx<T> chebyshev_entry(device const uint* row_ptr, device const uint* co
 }
 
 /// KPM step: `next = 2 H̃ cur − prev`, and this threadgroup's shares of `⟨cur|cur⟩` and
-/// `⟨cur|next⟩` in `partials[2 (slot · groups + group) + {0, 1}]` (the moments follow from
-/// `μ_2n = 2⟨T_n|T_n⟩ − μ_0` and `μ_{2n+1} = 2⟨T_n|T_{n+1}⟩ − μ_1`).
+/// `⟨cur|next⟩` in `partials[2 group + {0, 1}]` (the moments follow from
+/// `μ_2n = 2⟨T_n|T_n⟩ − μ_0` and `μ_{2n+1} = 2⟨T_n|T_{n+1}⟩ − μ_1`); `reduce_partials` then
+/// adds them up.
 template <typename T>
 kernel void kpm_step(device const uint* row_ptr [[buffer(0)]],
                      device const uint* cols [[buffer(1)]],
@@ -115,8 +116,7 @@ kernel void kpm_step(device const uint* row_ptr [[buffer(0)]],
                      constant Params& p [[buffer(7)]],
                      uint gid [[thread_position_in_grid]],
                      uint lid [[thread_position_in_threadgroup]],
-                     uint group [[threadgroup_position_in_grid]],
-                     uint groups [[threadgroups_per_grid]]) {
+                     uint group [[threadgroup_position_in_grid]]) {
     threadgroup cplx<T> shared_nn[GROUP];
     threadgroup cplx<T> shared_np[GROUP];
     cplx<T> nn = czero<T>();
@@ -139,8 +139,39 @@ kernel void kpm_step(device const uint* row_ptr [[buffer(0)]],
         threadgroup_barrier(mem_flags::mem_threadgroup);
     }
     if (lid == 0) {
-        partials[2 * (p.slot * groups + group)] = shared_nn[0];
-        partials[2 * (p.slot * groups + group) + 1] = shared_np[0];
+        partials[2 * group] = shared_nn[0];
+        partials[2 * group + 1] = shared_np[0];
+    }
+}
+
+/// Sums the `p.n` pairs of `partials` (in a fixed order) into `sums[2 slot + {0, 1}]`; one
+/// threadgroup.
+template <typename T>
+kernel void reduce_partials(device const cplx<T>* partials [[buffer(0)]],
+                            device cplx<T>* sums [[buffer(1)]],
+                            constant Params& p [[buffer(2)]],
+                            uint lid [[thread_position_in_threadgroup]]) {
+    threadgroup cplx<T> shared_nn[GROUP];
+    threadgroup cplx<T> shared_np[GROUP];
+    cplx<T> nn = czero<T>();
+    cplx<T> np = czero<T>();
+    for (uint g = lid; g < p.n; g += GROUP) {
+        nn = nn + partials[2 * g];
+        np = np + partials[2 * g + 1];
+    }
+    shared_nn[lid] = nn;
+    shared_np[lid] = np;
+    threadgroup_barrier(mem_flags::mem_threadgroup);
+    for (uint s = GROUP / 2; s > 0; s >>= 1) {
+        if (lid < s) {
+            shared_nn[lid] = shared_nn[lid] + shared_nn[lid + s];
+            shared_np[lid] = shared_np[lid] + shared_np[lid + s];
+        }
+        threadgroup_barrier(mem_flags::mem_threadgroup);
+    }
+    if (lid == 0) {
+        sums[2 * p.slot] = shared_nn[0];
+        sums[2 * p.slot + 1] = shared_np[0];
     }
 }
 
@@ -181,6 +212,8 @@ kernel void propagate_init(device const cplx<T>* cur [[buffer(0)]],
 
 INSTANTIATE("kpm_step_f32", kpm_step, float)
 INSTANTIATE("kpm_step_df64", kpm_step, df64)
+INSTANTIATE("reduce_partials_f32", reduce_partials, float)
+INSTANTIATE("reduce_partials_df64", reduce_partials, df64)
 INSTANTIATE("propagate_step_f32", propagate_step, float)
 INSTANTIATE("propagate_step_df64", propagate_step, df64)
 INSTANTIATE("propagate_init_f32", propagate_init, float)

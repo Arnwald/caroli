@@ -127,11 +127,12 @@ pub fn block_moments(apply: impl Fn(&[c64], &mut [c64]), starts: &[Vec<c64>], ke
 
 /// `μ_0 + 2 Σ_{n≥1} μ_n T_n(x)` at every `x`.
 pub fn chebyshev_series(mu: &[c64], x: &[f64]) -> Vec<c64> {
+    assert!(!mu.is_empty(), "no moments");
     x.iter()
         .map(|&e| {
-            let mut acc = mu[0] + mu[1] * (2.0 * e);
+            let mut acc = mu[0] + mu.get(1).map_or(c64::new(0.0, 0.0), |m| m * (2.0 * e));
             let (mut tm2, mut tm1) = (1.0, e);
-            for &m in &mu[2..] {
+            for &m in mu.iter().skip(2) {
                 let t = 2.0 * e * tm1 - tm2;
                 acc += m * (2.0 * t);
                 tm2 = tm1;
@@ -142,7 +143,8 @@ pub fn chebyshev_series(mu: &[c64], x: &[f64]) -> Vec<c64> {
         .collect()
 }
 
-/// Density at `x` from the series: `Re[series(x)] / (π sqrt(1 − x²))`.
+/// Density at `x` from the series: `Re[series(x)] / (π sqrt(1 − x²))` (`x` strictly inside
+/// (−1, 1)).
 pub fn density(mu: &[c64], x: &[f64]) -> Vec<f64> {
     chebyshev_series(mu, x)
         .iter()

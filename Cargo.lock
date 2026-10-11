@@ -195,6 +195,7 @@ dependencies = [
  "caroli-model",
  "caroli-torus",
  "faer",
+ "rayon",
  "regex",
  "serde",
  "sha1_smol",

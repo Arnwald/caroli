@@ -43,7 +43,10 @@ impl Moments {
         match *self {
             Moments::Isotropic => 2.0 * u - 1.0,
             Moments::Cone { theta0 } => -(1.0 - theta0.cos()) * u + 1.0,
-            Moments::Polarized { mz } => 2.0 * (1.0 - mz) * u + 2.0 * mz - 1.0,
+            Moments::Polarized { mz } => {
+                assert!((0.0..=1.0).contains(&mz), "polarisation mz = {mz} outside [0, 1]");
+                2.0 * (1.0 - mz) * u + 2.0 * mz - 1.0
+            }
         }
     }
 

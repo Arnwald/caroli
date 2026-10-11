@@ -38,11 +38,11 @@ __device__ inline cplx chebyshev_entry(const unsigned* row_ptr, const unsigned* 
 }
 
 // KPM step: next = 2 H̃ cur − prev, and this block's shares of ⟨cur|cur⟩ and ⟨cur|next⟩ in
-// partials[2 (slot · gridDim.x + blockIdx.x) + {0, 1}].
+// partials[2 blockIdx.x + {0, 1}]; reduce_partials then adds them up.
 extern "C" __global__ void kpm_step(const unsigned* row_ptr, const unsigned* cols,
                                     const cplx* vals, const cplx* prev, const cplx* cur,
                                     cplx* next, cplx* partials, unsigned vectors, unsigned total,
-                                    unsigned first, unsigned slot) {
+                                    unsigned first) {
     __shared__ cplx s_nn[GROUP];
     __shared__ cplx s_np[GROUP];
     unsigned lid = threadIdx.x;
@@ -67,8 +67,36 @@ extern "C" __global__ void kpm_step(const unsigned* row_ptr, const unsigned* col
         __syncthreads();
     }
     if (lid == 0) {
-        partials[2 * (slot * gridDim.x + blockIdx.x)] = s_nn[0];
-        partials[2 * (slot * gridDim.x + blockIdx.x) + 1] = s_np[0];
+        partials[2 * blockIdx.x] = s_nn[0];
+        partials[2 * blockIdx.x + 1] = s_np[0];
+    }
+}
+
+// Sums the `groups` pairs of partials (in a fixed order) into sums[2 slot + {0, 1}]; one block.
+extern "C" __global__ void reduce_partials(const cplx* partials, cplx* sums, unsigned groups,
+                                           unsigned slot) {
+    __shared__ cplx s_nn[GROUP];
+    __shared__ cplx s_np[GROUP];
+    unsigned lid = threadIdx.x;
+    cplx nn = cplx{0.0, 0.0};
+    cplx np = cplx{0.0, 0.0};
+    for (unsigned g = lid; g < groups; g += GROUP) {
+        nn = cadd(nn, partials[2 * g]);
+        np = cadd(np, partials[2 * g + 1]);
+    }
+    s_nn[lid] = nn;
+    s_np[lid] = np;
+    __syncthreads();
+    for (unsigned s = GROUP / 2; s > 0; s >>= 1) {
+        if (lid < s) {
+            s_nn[lid] = cadd(s_nn[lid], s_nn[lid + s]);
+            s_np[lid] = cadd(s_np[lid], s_np[lid + s]);
+        }
+        __syncthreads();
+    }
+    if (lid == 0) {
+        sums[2 * slot] = s_nn[0];
+        sums[2 * slot + 1] = s_np[0];
     }
 }
 

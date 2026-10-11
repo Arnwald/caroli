@@ -15,17 +15,17 @@ use caroli_model::{CMat, c64};
 use faer::linalg::solvers::DenseSolveCore;
 use rayon::prelude::*;
 
-/// Uniform k grid of `m × n` points `2π (i/m, j/n)`, in FFT order along each axis
-/// (`0, …, π − δ, −π, …, −δ`), as the thesis `k_FBZ`; returned as `(kx, ky)` with `kx`
-/// varying fastest.
+/// Uniform k grid of `m × n` points `2π (i/m, j/n)` in the first Brillouin zone, listed as the
+/// thesis `k_FBZ` (negative values first: `−π, …, −δ, 0, …, π − δ` for even sizes,
+/// `−π + δ/2 … π − δ/2` symmetric for odd ones); returned as `(kx, ky)` with `kx` varying
+/// fastest.
 pub fn k_grid(m: usize, n: usize) -> Vec<[f64; 2]> {
     let axis = |len: usize| -> Vec<f64> {
         let k0 = 2.0 * std::f64::consts::PI / len as f64;
-        // k_FBZ lists (i − len) k0 for i = len/2..len−1, then i k0 for i = 0..len/2−1.
-        (len / 2..len)
-            .map(|i| (i as f64 - len as f64) * k0)
-            .chain((0..len / 2).map(|i| i as f64 * k0))
-            .collect()
+        // k_FBZ lists (i − len) k0 for the upper indices, then i k0 for i = 0, 1, …; the
+        // positive half has ⌈len/2⌉ values so that odd sizes stay inside (−π, π).
+        let half = len.div_ceil(2);
+        (half..len).map(|i| (i as f64 - len as f64) * k0).chain((0..half).map(|i| i as f64 * k0)).collect()
     };
     let (kx, ky) = (axis(m), axis(n));
     ky.iter().flat_map(|&y| kx.iter().map(move |&x| [x, y])).collect()
@@ -113,7 +113,8 @@ impl Scba {
     }
 
     /// Fixed-point iteration `Σ ← (1 − p) Σ + p F(Σ)` from `guess` until the largest change
-    /// of an element is below `tol` (at most `max_iter` steps).
+    /// of an element is below `tol` (at most `max_iter` steps). A non-finite update stops the
+    /// iteration with a NaN residual.
     pub fn solve(&self, z: c64, guess: &CMat, mixing: f64, tol: f64, max_iter: usize) -> Solution {
         let mut sigma = guess.clone();
         let mut residual = f64::INFINITY;
@@ -126,6 +127,114 @@ impl Scba {
         }
         Solution { sigma, iterations, residual }
     }
+}
+
+impl Scba {
+    /// Fixed point `Σ₂ = F(Σ₂)` by Anderson acceleration (Anderson mixing, also known as DIIS)
+    /// on the residual `F(Σ) − Σ` with the last `depth` iterates, from `guess`, until the
+    /// largest change of an element is below `tol`. It needs far fewer k sums than
+    /// [`Self::solve`]. When the extrapolation misbehaves (non-finite values, a residual that
+    /// grows tenfold), the history is dropped and a plain step taken.
+    pub fn solve_anderson(&self, z: c64, guess: &CMat, depth: usize, tol: f64, max_iter: usize) -> Solution {
+        let n = guess.nrows();
+        let flat = |m: &CMat| -> Vec<f64> {
+            (0..n * n).flat_map(|k| [m[(k % n, k / n)].re, m[(k % n, k / n)].im]).collect()
+        };
+        let unflat =
+            |v: &[f64]| CMat::from_fn(n, n, |i, j| c64::new(v[2 * (i + n * j)], v[2 * (i + n * j) + 1]));
+        // NaN-propagating maximum: a failed update must not look converged.
+        let residual = |f: &[f64]| {
+            f.chunks_exact(2)
+                .map(|c| c[0].hypot(c[1]))
+                .fold(0.0, |m: f64, d| if d.is_nan() || m.is_nan() { f64::NAN } else { m.max(d) })
+        };
+        let mut x = flat(guess);
+        let mut g = flat(&self.update(z, guess));
+        let mut f: Vec<f64> = g.iter().zip(&x).map(|(a, b)| a - b).collect();
+        let (mut dfs, mut dgs): (Vec<Vec<f64>>, Vec<Vec<f64>>) = (Vec::new(), Vec::new());
+        let mut iterations = 1;
+        let mut res = residual(&f);
+        while res > tol && iterations < max_iter {
+            let mut next = g.clone();
+            if !dfs.is_empty() {
+                if let Some(gamma) = least_squares(&dfs, &f) {
+                    for (k, gk) in gamma.iter().enumerate() {
+                        next.iter_mut().zip(&dgs[k]).for_each(|(a, d)| *a -= gk * d);
+                    }
+                }
+            }
+            if next.iter().any(|v| !v.is_finite()) {
+                next = g.clone();
+                dfs.clear();
+                dgs.clear();
+            }
+            let g_next = flat(&self.update(z, &unflat(&next)));
+            let f_next: Vec<f64> = g_next.iter().zip(&next).map(|(a, b)| a - b).collect();
+            let res_next = residual(&f_next);
+            iterations += 1;
+            if res_next.is_nan() || res_next >= 10.0 * res {
+                // Restart from a plain step.
+                dfs.clear();
+                dgs.clear();
+            } else {
+                dfs.push(f_next.iter().zip(&f).map(|(a, b)| a - b).collect());
+                dgs.push(g_next.iter().zip(&g).map(|(a, b)| a - b).collect());
+                if dfs.len() > depth {
+                    dfs.remove(0);
+                    dgs.remove(0);
+                }
+            }
+            (x, g, f, res) = (next, g_next, f_next, res_next);
+        }
+        let _ = x;
+        Solution { sigma: unflat(&g), iterations, residual: res }
+    }
+}
+
+/// `γ` minimising `‖f − Σ_k γ_k df_k‖` (normal equations, lightly regularised), or `None` if
+/// singular.
+fn least_squares(dfs: &[Vec<f64>], f: &[f64]) -> Option<Vec<f64>> {
+    let m = dfs.len();
+    let dot = |a: &[f64], b: &[f64]| a.iter().zip(b).map(|(x, y)| x * y).sum::<f64>();
+    let mut a = vec![0.0; m * m];
+    let mut b = vec![0.0; m];
+    for i in 0..m {
+        b[i] = dot(&dfs[i], f);
+        for j in 0..m {
+            a[i * m + j] = dot(&dfs[i], &dfs[j]);
+        }
+    }
+    let trace: f64 = (0..m).map(|i| a[i * m + i]).sum();
+    if trace.is_nan() || trace <= 0.0 {
+        return None;
+    }
+    for i in 0..m {
+        a[i * m + i] += 1e-12 * trace / m as f64;
+    }
+    // Gaussian elimination with partial pivoting.
+    for col in 0..m {
+        let piv = (col..m).max_by(|&r, &s| a[r * m + col].abs().total_cmp(&a[s * m + col].abs()))?;
+        if a[piv * m + col].abs() < 1e-300 {
+            return None;
+        }
+        for j in 0..m {
+            a.swap(col * m + j, piv * m + j);
+        }
+        b.swap(col, piv);
+        for r in col + 1..m {
+            let factor = a[r * m + col] / a[col * m + col];
+            for j in col..m {
+                a[r * m + j] -= factor * a[col * m + j];
+            }
+            b[r] -= factor * b[col];
+        }
+    }
+    let mut x = vec![0.0; m];
+    for i in (0..m).rev() {
+        let s: f64 = (i + 1..m).map(|j| a[i * m + j] * x[j]).sum();
+        x[i] = (b[i] - s) / a[i * m + i];
+    }
+    x.iter().all(|v| v.is_finite()).then_some(x)
 }
 
 /// Blocks up to this size are inverted with [`gauss_jordan_inverse`] (no allocation).
@@ -176,12 +285,17 @@ pub fn mix(a: &CMat, b: &CMat, p: f64) -> CMat {
     })
 }
 
-/// Largest `|a_ij − b_ij|`.
+/// Largest `|a_ij − b_ij|`; NaN if any difference is NaN (a failed update must not look
+/// converged).
 pub fn max_abs_diff(a: &CMat, b: &CMat) -> f64 {
     let mut m: f64 = 0.0;
     for j in 0..a.ncols() {
         for i in 0..a.nrows() {
-            m = m.max((a[(i, j)] - b[(i, j)]).norm());
+            let d = (a[(i, j)] - b[(i, j)]).norm();
+            if d.is_nan() {
+                return f64::NAN;
+            }
+            m = m.max(d);
         }
     }
     m
@@ -250,6 +364,49 @@ mod tests {
         assert_eq!(g[2][0], 0.0);
         assert!((g[3][0] - pi / 2.0).abs() < 1e-15);
         assert_eq!(g[4][1], 0.0);
+        // Odd sizes: symmetric inside (−π, π); a single point is k = 0.
+        let odd: Vec<f64> = k_grid(5, 1).iter().map(|k| k[0] / pi).collect();
+        assert!(odd.iter().zip([-0.8, -0.4, 0.0, 0.4, 0.8]).all(|(a, b)| (a - b).abs() < 1e-15));
+        assert_eq!(k_grid(1, 1), vec![[0.0, 0.0]]);
+    }
+
+    /// Anderson acceleration reaches the fixed point of plain mixing in far fewer steps
+    /// (BHZ with magnetic disorder, a matrix problem).
+    #[test]
+    fn anderson_matches_mixing() {
+        use caroli_model::presets::{BhzParams, GFactors, bhz, bhz_spin};
+        let model = bhz(BhzParams::default());
+        let cell = caroli_lattice::Region::cuboid(model.lattice(), [1, 1, 0]);
+        let hk = k_grid(32, 16)
+            .iter()
+            .map(|k| model.bloch_hamiltonian(&cell, &[[1, 0, 0], [0, 1, 0]], k))
+            .collect();
+        let (mz, conc, j) = (0.8, 0.3, 0.9);
+        let (mean_field, vertices) =
+            magnetic(conc, j, mz, mz * mz + (1.0 - mz).powi(2) / 3.0, &bhz_spin(GFactors::Opposite));
+        let scba = Scba { hk, mean_field, vertices };
+        let z = c64::new(0.05, 1e-3);
+        let zero = CMat::zeros(4, 4);
+        let slow = scba.solve(z, &zero, 0.3, 1e-12, 20000);
+        let fast = scba.solve_anderson(z, &zero, 6, 1e-12, 200);
+        assert!(fast.residual < 1e-12 && slow.residual < 1e-12);
+        assert!(max_abs_diff(&slow.sigma, &fast.sigma) < 1e-10);
+        assert!(fast.iterations * 5 < slow.iterations, "{} vs {}", fast.iterations, slow.iterations);
+    }
+
+    /// A singular local Green's function (real z on an eigenvalue) gives a NaN residual, not a
+    /// converged solution.
+    #[test]
+    fn nan_is_not_convergence() {
+        let one = |x: c64| CMat::from_fn(1, 1, |_, _| x);
+        let scba = Scba {
+            hk: vec![one(c64::new(0.0, 0.0)); 4],
+            mean_field: one(c64::new(0.0, 0.0)),
+            vertices: vec![(0.3, one(c64::new(1.0, 0.0)))],
+        };
+        let zero = one(c64::new(0.0, 0.0));
+        assert!(scba.solve(c64::new(0.0, 0.0), &zero, 0.5, 1e-12, 50).residual.is_nan());
+        assert!(scba.solve_anderson(c64::new(0.0, 0.0), &zero, 4, 1e-12, 50).residual.is_nan());
     }
 
     /// Single band, constant H(k) = 0: ⟨G⟩ = 1/(z − Σ) and the SCBA equation

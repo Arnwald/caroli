@@ -42,6 +42,7 @@ struct Params {
 
 struct Kernels {
     kpm_step: Pipeline,
+    reduce_partials: Pipeline,
     propagate_step: Pipeline,
     propagate_init: Pipeline,
 }
@@ -135,6 +136,7 @@ impl MetalDevice {
         let kernels = |suffix: &str| -> Result<Kernels, GpuError> {
             Ok(Kernels {
                 kpm_step: pipeline(&format!("kpm_step_{suffix}"))?,
+                reduce_partials: pipeline(&format!("reduce_partials_{suffix}"))?,
                 propagate_step: pipeline(&format!("propagate_step_{suffix}"))?,
                 propagate_init: pipeline(&format!("propagate_init_{suffix}"))?,
             })
@@ -235,7 +237,7 @@ impl MetalOperator<'_> {
     /// Runs `dispatches` encoded by `encode_one(encoder, index)`, `BATCH` per command buffer,
     /// and waits for the last.
     fn run(&self, dispatches: usize, mut encode_one: impl FnMut(&Encoder, usize)) -> Result<(), GpuError> {
-        let mut last: Option<Commands> = None;
+        let mut submitted: Vec<Commands> = Vec::new();
         let mut index = 0;
         while index < dispatches {
             let commands = self
@@ -252,10 +254,13 @@ impl MetalOperator<'_> {
             encoder.endEncoding();
             commands.commit();
             index += BATCH;
-            last = Some(commands);
+            submitted.push(commands);
         }
-        if let Some(commands) = last {
-            commands.waitUntilCompleted();
+        // Command buffers of one queue complete in order: wait for the last, then check all.
+        if let Some(last) = submitted.last() {
+            last.waitUntilCompleted();
+        }
+        for commands in &submitted {
             if let Some(error) = commands.error() {
                 return Err(backend("running the Chebyshev kernels", &error));
             }
@@ -274,6 +279,7 @@ impl MetalOperator<'_> {
     /// vectors at once, with the doubling relations (as [`caroli_kpm::block_moments`]).
     pub fn kpm_moments(&self, starts: &[Vec<c64>], kernel: &[f64]) -> Result<Vec<c64>, GpuError> {
         let (n, vectors) = (self.n, starts.len());
+        assert!(vectors > 0, "no start vectors");
         assert!(starts.iter().all(|s| s.len() == n), "start vectors must have {n} entries");
         assert!(kernel.len() >= 2, "at least two moments");
         let total = n * vectors;
@@ -286,34 +292,43 @@ impl MetalOperator<'_> {
         ];
         let groups = total.div_ceil(GROUP);
         let steps = kernel.len().div_ceil(2);
-        let partials = self.gpu.buffer(self.bytes(2 * steps * groups))?;
-        let pipeline = &self.gpu.kernels(self.precision).kpm_step;
-        self.run(steps, |encoder, s| {
-            let params = Params {
-                n: n as u32,
-                vectors: vectors as u32,
-                total: total32,
-                first: (s == 0) as u32,
-                slot: s as u32,
-            };
-            let (prev, cur, next) = (&t[(s + 2) % 3], &t[s % 3], &t[(s + 1) % 3]);
-            encoder.setComputePipelineState(pipeline);
-            // SAFETY: the kernel's arguments in order; the buffers live until `run` returns.
-            unsafe {
-                bind(
-                    encoder,
-                    &[&self.row_ptr, &self.cols, &self.vals, prev, cur, next, &partials],
-                    &[as_bytes(&params)],
-                )
-            };
-            encoder.dispatchThreadgroups_threadsPerThreadgroup(threadgroups(total), GROUP_SIZE);
+        // Per-threadgroup shares of the current step, then the reduced sums of every step.
+        let partials = self.gpu.buffer(self.bytes(2 * groups))?;
+        let sums = self.gpu.buffer(self.bytes(2 * steps))?;
+        let kernels = self.gpu.kernels(self.precision);
+        self.run(2 * steps, |encoder, i| {
+            let s = i / 2;
+            if i % 2 == 0 {
+                let params = Params {
+                    n: n as u32,
+                    vectors: vectors as u32,
+                    total: total32,
+                    first: (s == 0) as u32,
+                    slot: s as u32,
+                };
+                let (prev, cur, next) = (&t[(s + 2) % 3], &t[s % 3], &t[(s + 1) % 3]);
+                encoder.setComputePipelineState(&kernels.kpm_step);
+                // SAFETY: `kpm_step(row_ptr, cols, vals, prev, cur, next, partials, params)`; the
+                // buffers live until `run` returns.
+                unsafe {
+                    bind(
+                        encoder,
+                        &[&self.row_ptr, &self.cols, &self.vals, prev, cur, next, &partials],
+                        &[as_bytes(&params)],
+                    )
+                };
+                encoder.dispatchThreadgroups_threadsPerThreadgroup(threadgroups(total), GROUP_SIZE);
+            } else {
+                let params = Params { n: groups as u32, vectors: 0, total: 0, first: 0, slot: s as u32 };
+                encoder.setComputePipelineState(&kernels.reduce_partials);
+                // SAFETY: `reduce_partials(partials, sums, params)`.
+                unsafe { bind(encoder, &[&partials, &sums], &[as_bytes(&params)]) };
+                encoder.dispatchThreadgroups_threadsPerThreadgroup(threadgroups(1), GROUP_SIZE);
+            }
         })?;
-        let parts = self.read(&partials, 2 * steps * groups);
-        let (mut s1, mut s2) = (Vec::with_capacity(steps), Vec::with_capacity(steps));
-        for step in parts.chunks_exact(2 * groups) {
-            s1.push(step.iter().step_by(2).sum());
-            s2.push(step.iter().skip(1).step_by(2).sum());
-        }
+        let all = self.read(&sums, 2 * steps);
+        let s1: Vec<c64> = all.iter().step_by(2).copied().collect();
+        let s2: Vec<c64> = all.iter().skip(1).step_by(2).copied().collect();
         Ok(doubled_moments(&s1, &s2, vectors, kernel))
     }
 

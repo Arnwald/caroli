@@ -26,3 +26,4 @@ caroli-dynamics.workspace = true
 
 [dev-dependencies]
 faer.workspace = true
+rayon.workspace = true

@@ -127,6 +127,50 @@ mod tests {
     use crate::presets::{BhzParams, bhz};
     use caroli_lattice::Region;
 
+    /// A one-cell supercell of a chain with first- and second-neighbour hoppings:
+    /// `H(k) = 2 t1 cos k + 2 t2 cos 2k` (the second neighbour lies two periods away).
+    #[test]
+    fn long_hoppings_reach_far_images() {
+        use crate::{CMat, Model, c64};
+        use caroli_lattice::Lattice;
+        let one = |x: f64| CMat::from_fn(1, 1, |_, _| c64::new(x, 0.0));
+        let (t1, t2, k) = (-1.0, 0.3, 0.7);
+        let model = Model::new(Lattice::square(1.0, 1)).hopping(0, 0, [1, 0, 0], one(t1)).hopping(
+            0,
+            0,
+            [2, 0, 0],
+            one(t2),
+        );
+        let cell = Region::cuboid(model.lattice(), [1, 1, 0]);
+        let h = model.bloch_hamiltonian(&cell, &[[1, 0, 0]], &[k]);
+        let exact = 2.0 * t1 * k.cos() + 2.0 * t2 * (2.0 * k).cos();
+        assert!((h[(0, 0)].re - exact).abs() < 1e-14, "{} vs {exact}", h[(0, 0)].re);
+        let s = model.sparse_bloch_hamiltonian(&cell, &[[1, 0, 0]], &[k]);
+        assert!((s.to_dense()[(0, 0)].re - exact).abs() < 1e-14);
+    }
+
+    /// Sheared periods: one cell with periods [1,0,0] and [1,1,0]; the hopping [1,−1,0] is
+    /// 2 T₁ − T₂. `H(k)` at Bloch phases (φ₁, φ₂) is `Σ_offsets t e^{i n·φ}` over both directions.
+    #[test]
+    fn sheared_periods() {
+        use crate::{CMat, Model, c64};
+        use caroli_lattice::Lattice;
+        let one = |x: f64| CMat::from_fn(1, 1, |_, _| c64::new(x, 0.0));
+        let (t, tp) = (-1.0, 0.3);
+        let model = Model::new(Lattice::square(1.0, 1))
+            .hopping(0, 0, [1, 0, 0], one(t))
+            .hopping(0, 0, [0, 1, 0], one(t))
+            .hopping(0, 0, [1, 1, 0], one(tp))
+            .hopping(0, 0, [1, -1, 0], one(tp));
+        let cell = Region::cuboid(model.lattice(), [1, 1, 0]);
+        let (p1, p2) = (0.4, -0.9);
+        let h = model.bloch_hamiltonian(&cell, &[[1, 0, 0], [1, 1, 0]], &[p1, p2]);
+        // Offsets in the period basis: [1,0]=T1, [0,1]=T2−T1, [1,1]=T2, [1,−1]=2T1−T2.
+        let phase = |n1: f64, n2: f64| 2.0 * (n1 * p1 + n2 * p2).cos();
+        let exact = t * phase(1.0, 0.0) + t * phase(-1.0, 1.0) + tp * phase(0.0, 1.0) + tp * phase(2.0, -1.0);
+        assert!((h[(0, 0)].re - exact).abs() < 1e-14, "{} vs {exact}", h[(0, 0)].re);
+    }
+
     /// The sparse builders give the dense Hamiltonians, open and twisted-periodic.
     #[test]
     fn sparse_matches_dense() {

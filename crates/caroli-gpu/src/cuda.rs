@@ -37,6 +37,7 @@ pub struct CudaDevice {
     context: Arc<CudaContext>,
     stream: Arc<CudaStream>,
     kpm_step: CudaFunction,
+    reduce_partials: CudaFunction,
     propagate_step: CudaFunction,
     propagate_init: CudaFunction,
 }
@@ -59,6 +60,7 @@ impl CudaDevice {
         Ok(Self {
             stream: context.default_stream(),
             kpm_step: function("kpm_step")?,
+            reduce_partials: function("reduce_partials")?,
             propagate_step: function("propagate_step")?,
             propagate_init: function("propagate_init")?,
             context,
@@ -108,6 +110,7 @@ impl CudaOperator<'_> {
     /// the doubling relations (as [`caroli_kpm::block_moments`]).
     pub fn kpm_moments(&self, starts: &[Vec<c64>], kernel: &[f64]) -> Result<Vec<c64>, GpuError> {
         let (n, vectors) = (self.n, starts.len());
+        assert!(vectors > 0, "no start vectors");
         assert!(starts.iter().all(|s| s.len() == n), "start vectors must have {n} entries");
         assert!(kernel.len() >= 2, "at least two moments");
         let total = n * vectors;
@@ -119,26 +122,28 @@ impl CudaOperator<'_> {
         let mut next = self.zeros(total)?;
         let groups = total.div_ceil(GROUP);
         let steps = kernel.len().div_ceil(2);
-        let mut partials = self.zeros(2 * steps * groups)?;
-        let vectors32 = vectors as u32;
+        // Per-block shares of the current step, then the reduced sums of every step.
+        let mut partials = self.zeros(2 * groups)?;
+        let mut sums = self.zeros(2 * steps)?;
+        let (vectors32, groups32) = (vectors as u32, groups as u32);
         for step in 0..steps {
             let (first, slot) = ((step == 0) as u32, step as u32);
             let mut b = s.launch_builder(&self.gpu.kpm_step);
             b.arg(&self.row_ptr).arg(&self.cols).arg(&self.vals).arg(&prev).arg(&cur).arg(&mut next);
-            b.arg(&mut partials).arg(&vectors32).arg(&total32).arg(&first).arg(&slot);
-            // SAFETY: the arguments match `kpm_step`; every index stays below `total` or the
-            // partial sums allocated for `steps × groups` blocks.
+            b.arg(&mut partials).arg(&vectors32).arg(&total32).arg(&first);
+            // SAFETY: the arguments match `kpm_step`; indices stay below `total` and `2 groups`.
             unsafe { b.launch(config(total)) }.map_err(|e| backend("kpm_step", e))?;
+            let mut r = s.launch_builder(&self.gpu.reduce_partials);
+            r.arg(&partials).arg(&mut sums).arg(&groups32).arg(&slot);
+            // SAFETY: the arguments match `reduce_partials`; one block.
+            unsafe { r.launch(config(1)) }.map_err(|e| backend("reduce_partials", e))?;
             // (prev, cur, next) ← (T_n, T_{n+1}, free).
             std::mem::swap(&mut prev, &mut cur);
             std::mem::swap(&mut cur, &mut next);
         }
-        let parts = unflatten(&s.clone_dtoh(&partials).map_err(|e| backend("download", e))?);
-        let (mut s1, mut s2) = (Vec::with_capacity(steps), Vec::with_capacity(steps));
-        for step in parts.chunks_exact(2 * groups).take(steps) {
-            s1.push(step.iter().step_by(2).sum());
-            s2.push(step.iter().skip(1).step_by(2).sum());
-        }
+        let all = unflatten(&s.clone_dtoh(&sums).map_err(|e| backend("download", e))?);
+        let s1: Vec<c64> = all.iter().step_by(2).take(steps).copied().collect();
+        let s2: Vec<c64> = all.iter().skip(1).step_by(2).take(steps).copied().collect();
         Ok(doubled_moments(&s1, &s2, vectors, kernel))
     }
 

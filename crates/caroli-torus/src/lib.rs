@@ -9,7 +9,7 @@
 //! FFT conventions (those of FFTW, used by the thesis): forward `ψ̂(k) = Σ_x e^{−ik·x} ψ(x)`,
 //! backward `Σ_k e^{+ik·x} ψ̂(k)`, both unnormalised. With these, the k-space multiplier of a
 //! model with hoppings `H_{0,n} = ⟨x| H |x+n⟩` is `M(k) = Σ_n H_{0,n} e^{+ik·n}`
-//! ([`kinetic_from_model`]). k indices are in FFT order: `k_i = 2π i/n` for `i < n/2`, else
+//! ([`kinetic_from_model`]). k indices are in FFT order: `k_i = 2π i/n` for `2i < n`, else
 //! `2π (i − n)/n`.
 
 use caroli_lattice::Region;
@@ -21,9 +21,10 @@ use std::sync::Arc;
 /// Grids from this size on are transformed in parallel.
 const PARALLEL_N: usize = 128;
 
-/// k value of FFT index `i` on a ring of `n` sites.
+/// k value of FFT index `i` on a ring of `n` sites, in [−π, π) (the Nyquist index of an even
+/// ring is −π).
 pub fn k_value(i: usize, n: usize) -> f64 {
-    let i = if i < n / 2 { i as f64 } else { i as f64 - n as f64 };
+    let i = if 2 * i < n { i as f64 } else { i as f64 - n as f64 };
     2.0 * std::f64::consts::PI * i / n as f64
 }
 
