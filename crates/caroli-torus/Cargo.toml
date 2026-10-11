@@ -1,0 +1,13 @@
+[package]
+name = "caroli-torus"
+description = "Tight-binding Hamiltonians on periodic 2D supercells (tori) for caroli: kinetic part in k space through FFTs, local potentials in real space."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+caroli-lattice.workspace = true
+caroli-model.workspace = true
+rustfft = "6.4"

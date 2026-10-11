@@ -1,0 +1,13 @@
+[package]
+name = "caroli-kpm"
+description = "Kernel polynomial method for caroli: Chebyshev moments, Jackson kernel, densities of states."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+caroli-model.workspace = true
+caroli-torus.workspace = true
+caroli-disorder.workspace = true

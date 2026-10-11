@@ -489,3 +489,187 @@ pub fn thesis_transmission_pq(
     let gq = real_part(&caroli_green::broadening(&sol.sigmas[q]));
     caroli_green::trace(&(gp * &g * gq * g.adjoint())).re
 }
+
+/// The thesis KPM programs (`dos_ti.f90`, graphene `dos.f90`) on rank 0 of the serial MPI
+/// stub: only the spin-up states are traced (`choice = 1`, no LDOS).
+#[derive(Clone, Copy, Debug)]
+pub struct Kpm {
+    pub n: usize,
+    pub m: usize,
+    pub n_state: usize,
+    pub imp_conc: f64,
+    pub v_exc: f64,
+    /// 0: isotropic moments; otherwise along z (graphene: A +z, B −z).
+    pub choice_spin: i32,
+    /// TI only: opposite-g exchange (`variants/gap-antiferro`).
+    pub opposite: bool,
+}
+
+/// Thesis `random_state`: four `random_number(phi(N, N))`, `exp(2πiφ)`, then `N · ifft`.
+fn kpm_random_state(op: &caroli_torus::TorusOperator, rng: &mut Xoshiro256) -> Vec<c64> {
+    let mut s: Vec<c64> =
+        (0..op.len()).map(|_| c64::from_polar(1.0, 2.0 * std::f64::consts::PI * rng.uniform())).collect();
+    op.to_x(&mut s);
+    s.iter_mut().for_each(|z| *z *= op.n as f64);
+    s
+}
+
+/// Moments `(n_x, n_y, n_z)` drawn as the thesis `potential` (uniform then phi).
+fn kpm_moments(rng: &mut Xoshiro256, count: usize, isotropic: bool) -> Vec<[f64; 3]> {
+    let u: Vec<f64> = rng.uniforms(count).into_iter().map(|u| 2.0 * u - 1.0).collect();
+    let phi: Vec<f64> = rng.uniforms(count).into_iter().map(|p| 2.0 * std::f64::consts::PI * p).collect();
+    u.iter()
+        .zip(&phi)
+        .map(|(&z, &p)| {
+            if isotropic {
+                [(1.0 - z * z).sqrt() * p.cos(), (1.0 - z * z).sqrt() * p.sin(), z]
+            } else {
+                [0.0, 0.0, 1.0]
+            }
+        })
+        .collect()
+}
+
+/// Exchange matrix on components `(a, b)` of a 4-component spinor: `n_z` on (a, a), `−n_z` on
+/// (b, b), `n_x ∓ i n_y` off-diagonal; `sign` multiplies everything (opposite-g H orbitals).
+fn put_exchange(v: &mut CMat, a: usize, b: usize, n: [f64; 3], sign: f64) {
+    v[(a, a)] += c64::new(sign * n[2], 0.0);
+    v[(a, b)] += c64::new(sign * n[0], -sign * n[1]);
+    v[(b, a)] += c64::new(sign * n[0], sign * n[1]);
+    v[(b, b)] += c64::new(-sign * n[2], 0.0);
+}
+
+impl Kpm {
+    /// Sites in `impurities_set` order (x fastest) as torus indices.
+    fn draw_sites(&self, rng: &mut Xoshiro256, count: usize) -> Vec<usize> {
+        let n = self.n;
+        let candidates: Vec<Site> =
+            (0..n * n).map(|k| Site { cell: [(k % n) as i64, (k / n) as i64, 0], sub: 0 }).collect();
+        caroli_disorder::choose_sites(rng, &candidates, count)
+            .iter()
+            .map(|s| s.cell[0] as usize + n * s.cell[1] as usize)
+            .collect()
+    }
+
+    fn run(
+        &self,
+        kinetic: Vec<CMat>,
+        local: Vec<(usize, CMat)>,
+        e_k: &[f64],
+        de: f64,
+        rng: &mut Xoshiro256,
+    ) -> Vec<f64> {
+        let op = caroli_torus::TorusOperator::new(self.n, 4, kinetic, local);
+        let kernel = caroli_kpm::jackson(self.m);
+        let nn = (self.n * self.n) as f64;
+        let mut dos = vec![0.0; 2 * e_k.len()];
+        for _ in 0..self.n_state {
+            let mut state = kpm_random_state(&op, rng);
+            let nn2 = self.n * self.n;
+            state[2 * nn2..].iter_mut().for_each(|z| *z = c64::new(0.0, 0.0));
+            let mu = caroli_kpm::moments(|v, out| op.apply(v, out), &state, &kernel);
+            let series = caroli_kpm::chebyshev_series(&mu, e_k);
+            for (k, (s, e)) in series.iter().zip(e_k).enumerate() {
+                let norm = 1.0 / (std::f64::consts::PI * (1.0 - e * e).sqrt() * self.n_state as f64 * nn);
+                dos[k] += norm * s.re;
+            }
+        }
+        // Output record: dE·e_k + e0, then dos(:, 1:2)/dE (spin down left at zero on rank 0).
+        let mut out: Vec<f64> = e_k.iter().map(|e| de * e).collect();
+        out.extend(dos.iter().map(|d| d / de));
+        out
+    }
+
+    /// `dos_ti.f90` (gap version): BHZ (mass −0.137) with the thesis k-space signs
+    /// (`d33 = −sin kx`, `d44 = −sin ky`), `dE = (6 + |V_exc|)·1.01`, energies `i/(10M)`.
+    pub fn ti(&self) -> Vec<f64> {
+        let (mass, b, c, d) = (-0.137, -0.376406, 0.0, -0.280933);
+        let n = self.n;
+        let de = (6.0 + self.v_exc.abs()) * 1.01;
+        let mut rng = Xoshiro256::gfortran(1237);
+        let kinetic = (0..n * n)
+            .map(|k| {
+                let (kx, ky) = (caroli_torus::k_value(k % n, n), caroli_torus::k_value(k / n, n));
+                let (d33, d44) = (-kx.sin(), -ky.sin());
+                let f = 4.0 - 2.0 * kx.cos() - 2.0 * ky.cos();
+                let (d55, h0) = (mass - b * f, c - d * f);
+                let i = c64::new(0.0, 1.0);
+                let r = |x: f64| c64::new(x, 0.0);
+                let z = r(0.0);
+                let rows = [
+                    [r(d55 + h0), r(d33) - i * d44, z, z],
+                    [r(d33) + i * d44, r(-d55 + h0), z, z],
+                    [z, z, r(d55 + h0), r(-d33) - i * d44],
+                    [z, z, r(-d33) + i * d44, r(-d55 + h0)],
+                ];
+                CMat::from_fn(4, 4, |a, bb| rows[a][bb] / de)
+            })
+            .collect();
+        let n_imp = (self.imp_conc * (n * n) as f64) as usize;
+        let sites = self.draw_sites(&mut rng, n_imp);
+        let moments = kpm_moments(&mut rng, n_imp, self.choice_spin == 0);
+        let local = sites
+            .iter()
+            .zip(&moments)
+            .map(|(&s, &nm)| {
+                let mut v = CMat::zeros(4, 4);
+                put_exchange(&mut v, 0, 2, nm, 1.0);
+                put_exchange(&mut v, 1, 3, nm, if self.opposite { -1.0 } else { 1.0 });
+                (s, CMat::from_fn(4, 4, |a, bb| v[(a, bb)] * (self.v_exc / de)))
+            })
+            .collect();
+        let m = self.m as i64;
+        let e_k: Vec<f64> = (-m / 2..m / 2).map(|i| i as f64 / (10 * m) as f64).collect();
+        self.run(kinetic, local, &e_k, de, &mut rng)
+    }
+
+    /// Graphene `dos.f90`: `hk = −e^{ikx} − e^{−i(kx+√3ky)/2} − e^{−i(kx−√3ky)/2}` on the grid
+    /// `k0x = 4π/(3N)`, `k0y = 4π/(√3 N)`, components (A↑, B↑, A↓, B↓), impurities drawn on A
+    /// then on B, `dE = (3 + 1.6)·1.01` (1.6 in single precision), energies at the 2M Chebyshev
+    /// nodes.
+    pub fn graphene(&self) -> Vec<f64> {
+        let n = self.n;
+        // `(THREE + 1.6)*1.01_db`: the literal 1.6 is single precision in the thesis code.
+        let de = (3.0 + 1.6f32 as f64) * 1.01;
+        let mut rng = Xoshiro256::gfortran(1237);
+        let s3 = 3f64.sqrt();
+        let kv = |i: usize, k0: f64| (if i < n / 2 { i as f64 } else { i as f64 - n as f64 }) * k0;
+        let (k0x, k0y) = (
+            2.0 * 2.0 * std::f64::consts::PI / (3 * n) as f64,
+            2.0 * 2.0 * std::f64::consts::PI / (n as f64 * s3),
+        );
+        let kinetic = (0..n * n)
+            .map(|k| {
+                let (kx, ky) = (kv(k % n, k0x), kv(k / n, k0y));
+                let i = c64::new(0.0, 1.0);
+                let hk = -(i * kx).exp()
+                    - (-(i * 0.5) * (kx + s3 * ky)).exp()
+                    - (-(i * 0.5) * (kx - s3 * ky)).exp();
+                let mut h = CMat::zeros(4, 4);
+                h[(0, 1)] = hk / de;
+                h[(1, 0)] = hk.conj() / de;
+                h[(2, 3)] = hk / de;
+                h[(3, 2)] = hk.conj() / de;
+                h
+            })
+            .collect();
+        let n_imp = (self.imp_conc * (n * n) as f64) as usize;
+        let mut local: Vec<(usize, CMat)> = Vec::new();
+        for (sub, sign_z) in [(0usize, 1.0), (1usize, -1.0)] {
+            let sites = self.draw_sites(&mut rng, n_imp);
+            let mut moments = kpm_moments(&mut rng, n_imp, self.choice_spin == 0);
+            if self.choice_spin != 0 {
+                moments.iter_mut().for_each(|m| m[2] = sign_z);
+            }
+            for (&s, &nm) in sites.iter().zip(&moments) {
+                let mut v = CMat::zeros(4, 4);
+                put_exchange(&mut v, sub, sub + 2, nm, 1.0);
+                local.push((s, CMat::from_fn(4, 4, |a, b| v[(a, b)] * (self.v_exc / de))));
+            }
+        }
+        let k = 2 * self.m;
+        let e_k: Vec<f64> =
+            (0..k).map(|i| (std::f64::consts::PI * (i as f64 + 0.5) / k as f64).cos()).collect();
+        self.run(kinetic, local, &e_k, de, &mut rng)
+    }
+}

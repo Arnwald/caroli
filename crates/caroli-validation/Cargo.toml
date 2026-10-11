@@ -20,6 +20,8 @@ caroli-disorder.workspace = true
 caroli-keldysh.workspace = true
 caroli-born.workspace = true
 faer = "0.24"
+caroli-torus.workspace = true
+caroli-kpm.workspace = true
 
 [dev-dependencies]
 faer.workspace = true

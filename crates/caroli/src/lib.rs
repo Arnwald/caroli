@@ -18,8 +18,10 @@ pub use caroli_born as born;
 pub use caroli_disorder as disorder;
 pub use caroli_green as green;
 pub use caroli_keldysh as keldysh;
+pub use caroli_kpm as kpm;
 pub use caroli_lattice as lattice;
 pub use caroli_model as model;
+pub use caroli_torus as torus;
 
 /// The types needed for most calculations.
 pub mod prelude {
