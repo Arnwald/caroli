@@ -82,6 +82,7 @@ dependencies = [
  "caroli-lattice",
  "caroli-model",
  "caroli-torus",
+ "serde_json",
 ]
 
 [[package]]
