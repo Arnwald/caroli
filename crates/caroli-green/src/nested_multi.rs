@@ -134,11 +134,25 @@ impl NestedMultiTerminal {
     }
 
     fn block_transmissions(&self, block: &MultiBlock, energy: f64) -> Result<Vec<Vec<f64>>, GreenError> {
-        let sigmas: Vec<Option<CMat>> = block
-            .leads
-            .iter()
-            .map(|l| l.as_ref().map(|l| l.self_energy(energy, SelfEnergyMethod::Modes)).transpose())
-            .collect::<Result<_, _>>()?;
+        // Σ_p = V_p g V_p†, with the surface Green's function g computed once per distinct lead
+        // (opposite leads of a symmetric device often share h00 and h01).
+        let mut surfaces: Vec<(&AttachedLead, CMat)> = Vec::new();
+        let mut sigmas: Vec<Option<CMat>> = Vec::with_capacity(block.leads.len());
+        for l in &block.leads {
+            let Some(l) = l else {
+                sigmas.push(None);
+                continue;
+            };
+            let g = match surfaces.iter().find(|(m, _)| m.h00 == l.h00 && m.h01 == l.h01) {
+                Some((_, g)) => g.clone(),
+                None => {
+                    let g = l.surface_green(energy, SelfEnergyMethod::Modes)?;
+                    surfaces.push((l, g.clone()));
+                    g
+                }
+            };
+            sigmas.push(Some(&l.coupling * g * l.coupling.adjoint()));
+        }
         // The root keeps every orbital a lead couples to.
         let mut kept: Vec<usize> =
             block.leads.iter().flatten().flat_map(|l| l.orbitals.iter().copied()).collect();
