@@ -10,12 +10,13 @@
 //! Independent blocks of orbitals (e.g. the spin blocks of BHZ) are solved separately, each with
 //! the part of every lead it reaches.
 
+use crate::modes::ModeSolver;
 use crate::multi::{AttachedLead, Interface, attach_leads};
 use crate::nested::{
     BondCurrent, Components, Factor, Root, ScatteringStates, SiteTree, Tree, gamma_root, schur,
 };
 use crate::smatrix::{LeadSolution, SMatrix, ScatteringLead, scattering_blocks};
-use crate::{GreenError, SelfEnergyMethod, broadening, trace};
+use crate::{GreenError, broadening, caroli_trace, sandwich};
 use caroli_dense::Lu;
 use caroli_lattice::Region;
 use caroli_model::{CMat, Model, SparseMatrix, c64};
@@ -26,6 +27,8 @@ use std::rc::Rc;
 struct MultiBlock {
     tree: Tree,
     leads: Vec<Option<AttachedLead>>,
+    /// The energy-independent part of each lead's mode problem.
+    solvers: Vec<Option<ModeSolver>>,
     /// For each lead: the orbitals of its cell kept in the block (indices into the full cell).
     cells: Vec<Vec<usize>>,
 }
@@ -126,7 +129,21 @@ impl NestedMultiTerminal {
                     .zip(&offsets)
                     .map(|(l, &off)| (0..l.h00.nrows()).filter(|&k| mine(off + k)).collect())
                     .collect();
-                Some(MultiBlock { tree: sites.tree(region, &h, mine), leads: block_leads, cells })
+                // One mode solver per distinct lead (opposite leads often share h00 and h01).
+                let mut solvers: Vec<Option<ModeSolver>> = Vec::with_capacity(block_leads.len());
+                for (k, l) in block_leads.iter().enumerate() {
+                    let solver = l.as_ref().map(|l| {
+                        let twin = block_leads[..k]
+                            .iter()
+                            .position(|m| m.as_ref().is_some_and(|m| m.h00 == l.h00 && m.h01 == l.h01));
+                        match twin {
+                            Some(t) => solvers[t].clone().expect("solver of a lead"),
+                            None => ModeSolver::new(&l.h00, &l.h01),
+                        }
+                    });
+                    solvers.push(solver);
+                }
+                Some(MultiBlock { tree: sites.tree(region, &h, mine), leads: block_leads, solvers, cells })
             })
             .collect();
         let orbital_kinds = interfaces
@@ -171,7 +188,7 @@ impl NestedMultiTerminal {
             .leads
             .iter()
             .zip(&surfaces)
-            .map(|(l, g)| l.as_ref().zip(g.as_ref()).map(|(l, g)| &l.coupling * g * l.coupling.adjoint()))
+            .map(|(l, g)| l.as_ref().zip(g.as_ref()).map(|(l, g)| sandwich(&l.coupling, g)))
             .collect())
     }
 
@@ -180,15 +197,15 @@ impl NestedMultiTerminal {
     fn surfaces(block: &MultiBlock, energy: f64) -> Result<Vec<Option<CMat>>, GreenError> {
         let mut done: Vec<(&AttachedLead, CMat)> = Vec::new();
         let mut out = Vec::with_capacity(block.leads.len());
-        for l in &block.leads {
-            let Some(l) = l else {
+        for (l, solver) in block.leads.iter().zip(&block.solvers) {
+            let (Some(l), Some(solver)) = (l, solver) else {
                 out.push(None);
                 continue;
             };
             let g = match done.iter().find(|(m, _)| m.h00 == l.h00 && m.h01 == l.h01) {
                 Some((_, g)) => g.clone(),
                 None => {
-                    let g = l.surface_green(energy, SelfEnergyMethod::Modes)?;
+                    let g = l.surface_green_with(solver, c64::new(energy, 0.0))?;
                     done.push((l, g.clone()));
                     g
                 }
@@ -252,14 +269,14 @@ impl NestedMultiTerminal {
                             c64::new(0.0, 0.0)
                         }
                     });
-                    gammas[k] = Some(&l.coupling * projected * l.coupling.adjoint());
+                    gammas[k] = Some(sandwich(&l.coupling, &projected));
                 }
             }
             let sigmas: Vec<Option<CMat>> = block
                 .leads
                 .iter()
                 .zip(&surfaces)
-                .map(|(l, g)| l.as_ref().zip(g.as_ref()).map(|(l, g)| &l.coupling * g * l.coupling.adjoint()))
+                .map(|(l, g)| l.as_ref().zip(g.as_ref()).map(|(l, g)| sandwich(&l.coupling, g)))
                 .collect();
             let (kept, s, _) = self.root(block, energy, &sigmas, false)?;
             let k = kept.len();
@@ -276,7 +293,7 @@ impl NestedMultiTerminal {
                     };
                     let (ia, ib) = (index(&kept, la), index(&kept, lb));
                     let gab = CMat::from_fn(ia.len(), ib.len(), |x, y| green[(ia[x], ib[y])]);
-                    t[a][b] += trace(&(ga * &gab * gb * gab.adjoint())).re;
+                    t[a][b] += caroli_trace(ga, &gab, gb);
                 }
             }
         }
@@ -337,7 +354,7 @@ impl NestedMultiTerminal {
                 };
                 let (ip, iq) = (index(&kept, lp), index(&kept, lq));
                 let gpq = CMat::from_fn(ip.len(), iq.len(), |a, b| g[(ip[a], iq[b])]);
-                *tpq = trace(&(gp * &gpq * gq * gpq.adjoint())).re;
+                *tpq = caroli_trace(gp, &gpq, gq);
             }
         }
         Ok(t)

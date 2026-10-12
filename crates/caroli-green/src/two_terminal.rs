@@ -2,7 +2,10 @@
 
 use crate::gauge::Gauge;
 use crate::modes::{LeadModes, sigma_left, sigma_right};
-use crate::{GreenError, broadening, decimation, inverse, resolvent_matrix, trace};
+use crate::{
+    GreenError, adj_mul, broadening, caroli_trace, decimation, inverse, mul, resolvent_matrix, sandwich,
+    sandwich_adj,
+};
 use caroli_lattice::Region;
 use caroli_model::{CMat, Model, c64};
 
@@ -132,7 +135,7 @@ impl TwoTerminal {
                 a -= &sigma_l;
             } else {
                 let v = &self.couplings[k - 1];
-                a -= v.adjoint() * &left[k - 1] * v;
+                a -= sandwich_adj(v, &left[k - 1]);
             }
             left.push(inverse(&a));
         }
@@ -143,7 +146,7 @@ impl TwoTerminal {
                 a -= &sigma_r;
             } else {
                 let v = &self.couplings[k];
-                a -= v * &right[k + 1] * v.adjoint();
+                a -= sandwich(v, &right[k + 1]);
             }
             right[k] = inverse(&a);
         }
@@ -172,8 +175,8 @@ impl TwoTerminal {
                 let away_left = self.left.h01.adjoint().to_owned();
                 let gl = decimation::surface_green(&self.left.h00, &away_left, z)?;
                 let gr = decimation::surface_green(&self.right.h00, &self.right.h01, z)?;
-                let sigma_l = self.left.h01.adjoint() * &gl * &self.left.h01;
-                let sigma_r = &self.right.h01 * &gr * self.right.h01.adjoint();
+                let sigma_l = sandwich_adj(&self.left.h01, &gl);
+                let sigma_r = sandwich(&self.right.h01, &gr);
                 Ok((sigma_l, sigma_r))
             }
         }
@@ -268,12 +271,12 @@ impl TwoTerminal {
         let mut g1n = g.clone();
         for k in 1..n {
             let v = &self.couplings[k - 1];
-            let mut a = resolvent_matrix(z, &self.slices[k]) - v.adjoint() * &g * v;
+            let mut a = resolvent_matrix(z, &self.slices[k]) - sandwich_adj(v, &g);
             if k == n - 1 {
                 a -= &sigma_r;
             }
             g = inverse(&a);
-            g1n = &g1n * v * &g;
+            g1n = mul(&mul(&g1n, v), &g);
         }
         Ok(EndToEnd { sigma_l, sigma_r, g1n })
     }
@@ -310,13 +313,13 @@ impl Sweeps {
             a -= &self.sigma_l;
         } else {
             let v = &sys.couplings[n - 1];
-            a -= v.adjoint() * &self.left[n - 1] * v;
+            a -= sandwich_adj(v, &self.left[n - 1]);
         }
         if n == last {
             a -= &self.sigma_r;
         } else {
             let v = &sys.couplings[n];
-            a -= v * &self.right[n + 1] * v.adjoint();
+            a -= sandwich(v, &self.right[n + 1]);
         }
         inverse(&a)
     }
@@ -325,7 +328,7 @@ impl Sweeps {
     pub fn first_column(&self, sys: &TwoTerminal) -> Vec<CMat> {
         let mut col = vec![self.diagonal(sys, 0)];
         for n in 1..self.left.len() {
-            let next = &self.right[n] * sys.couplings[n - 1].adjoint() * &col[n - 1];
+            let next = mul(&self.right[n], &adj_mul(&sys.couplings[n - 1], &col[n - 1]));
             col.push(next);
         }
         col
@@ -337,7 +340,7 @@ impl Sweeps {
         let mut col = vec![CMat::zeros(0, 0); last + 1];
         col[last] = self.diagonal(sys, last);
         for n in (0..last).rev() {
-            col[n] = &self.left[n] * &sys.couplings[n] * &col[n + 1];
+            col[n] = mul(&self.left[n], &mul(&sys.couplings[n], &col[n + 1]));
         }
         col
     }
@@ -355,8 +358,7 @@ pub struct EndToEnd {
 impl EndToEnd {
     /// Caroli transmission `Tr[Γ_L G_1N Γ_R G_1N†]`.
     pub fn transmission(&self) -> f64 {
-        let t = broadening(&self.sigma_l) * &self.g1n * broadening(&self.sigma_r) * self.g1n.adjoint();
-        trace(&t).re
+        caroli_trace(&broadening(&self.sigma_l), &self.g1n, &broadening(&self.sigma_r))
     }
 }
 

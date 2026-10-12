@@ -14,7 +14,7 @@
 //!   carry no cross current, and the modes carry unit current.
 
 use crate::modes::{LeadModes, sigma_right};
-use crate::{GreenError, inverse};
+use crate::{GreenError, adj_mul, inverse, mul, sandwich};
 use caroli_model::{CMat, c64};
 use std::rc::Rc;
 
@@ -113,7 +113,7 @@ impl LeadSolution {
 
     /// `Σ = V g V†` on the device orbitals the lead couples to.
     pub(crate) fn self_energy(&self, coupling: &CMat) -> CMat {
-        coupling * &self.g * coupling.adjoint()
+        sandwich(coupling, &self.g)
     }
 }
 
@@ -152,23 +152,23 @@ pub(crate) fn scattering_blocks(green: &CMat, leads: &[Option<ScatteringLead>]) 
         let modes_q = &lq.solution.modes;
         let (phi_in, lam_in) = (&modes_q.left_modes, &modes_q.left_lambdas);
         // g H1† Φ_in, and the source s = Φ_in λ − g H1† Φ_in on the first cell.
-        let back = &lq.solution.g * (lq.h01.adjoint() * phi_in);
+        let back = mul(&lq.solution.g, &adj_mul(&lq.h01, phi_in));
         let source =
             CMat::from_fn(phi_in.nrows(), phi_in.ncols(), |a, c| phi_in[(a, c)] * lam_in[c] - back[(a, c)]);
-        let device_source = &lq.coupling * &source;
+        let device_source = mul(&lq.coupling, &source);
         for p in 0..n {
             let Some(lp) = &leads[p] else { continue };
             let gpq = CMat::from_fn(lp.at.len(), lq.at.len(), |a, b| green[(lp.at[a], lq.at[b])]);
-            let psi_device = &gpq * &device_source;
-            let mut psi1 = &lp.solution.g * (lp.coupling.adjoint() * &psi_device);
+            let psi_device = mul(&gpq, &device_source);
+            let mut psi1 = mul(&lp.solution.g, &adj_mul(&lp.coupling, &psi_device));
             if p == q {
                 psi1 -= &back;
             }
             // S = i diag(λ̄) [Φ_out† (H1 F) ψ_1 − diag(λ̄) Φ_out† H1† ψ_1].
             let modes_p = &lp.solution.modes;
             let (phi_out, lam_out) = (&modes_p.right_modes, &modes_p.right_lambdas);
-            let a = phi_out.adjoint() * (&lp.solution.rest * &psi1);
-            let b = phi_out.adjoint() * (lp.h01.adjoint() * &psi1);
+            let a = adj_mul(phi_out, &mul(&lp.solution.rest, &psi1));
+            let b = adj_mul(phi_out, &adj_mul(&lp.h01, &psi1));
             blocks[p][q] = CMat::from_fn(phi_out.ncols(), psi1.ncols(), |m, c| {
                 let conj = lam_out[m].conj();
                 i * conj * (a[(m, c)] - conj * b[(m, c)])

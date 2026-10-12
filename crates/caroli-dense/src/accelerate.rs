@@ -101,6 +101,22 @@ unsafe extern "C" {
         iwork: *mut Int,
         info: *mut Int,
     );
+    #[link_name = "zheevd$NEWLAPACK"]
+    fn zheevd(
+        jobz: *const u8,
+        uplo: *const u8,
+        n: *const Int,
+        a: *mut c64,
+        lda: *const Int,
+        w: *mut f64,
+        work: *mut c64,
+        lwork: *const Int,
+        rwork: *mut f64,
+        lrwork: *const Int,
+        iwork: *mut Int,
+        liwork: *const Int,
+        info: *mut Int,
+    );
     #[link_name = "zgemm$NEWLAPACK"]
     fn zgemm(
         transa: *const u8,
@@ -449,4 +465,68 @@ pub(crate) fn svd(a: MatRef<'_, c64>) -> Result<Svd, DenseError> {
         return Err(DenseError::Svd);
     }
     Ok(Svd { u, s, v: vt.adjoint().to_owned() })
+}
+
+/// Eigenvalues and eigenvectors of a Hermitian matrix, from its lower triangle (zheevd, divide
+/// and conquer).
+pub(crate) fn hermitian_eigen(a: MatRef<'_, c64>) -> Result<(Vec<f64>, Mat<c64>), DenseError> {
+    let n = a.nrows();
+    let mut v = a.to_owned();
+    let mut w = vec![0.0; n];
+    if n == 0 {
+        return Ok((w, v));
+    }
+    let ni = Int::try_from(n).map_err(|_| DenseError::Eigen)?;
+    let ld = Int::try_from(v.col_stride()).map_err(|_| DenseError::Eigen)?;
+    let mut info: Int = 0;
+    let query: Int = -1;
+    let (mut size, mut rsize, mut isize) = (ZERO, 0.0, 0 as Int);
+    // SAFETY: valid pointers and dimensions; the workspace queries only write the optimal sizes.
+    unsafe {
+        zheevd(
+            b"V".as_ptr(),
+            b"L".as_ptr(),
+            &ni,
+            v.as_ptr_mut(),
+            &ld,
+            w.as_mut_ptr(),
+            &mut size,
+            &query,
+            &mut rsize,
+            &query,
+            &mut isize,
+            &query,
+            &mut info,
+        );
+    }
+    let lwork = (size.re as usize).max(1);
+    let lrwork = (rsize as usize).max(1);
+    let liwork = (isize as usize).max(1);
+    let mut work = vec![ZERO; lwork];
+    let mut rwork = vec![0.0; lrwork];
+    let mut iwork = vec![0 as Int; liwork];
+    let int = |x: usize| Int::try_from(x).map_err(|_| DenseError::Eigen);
+    let (lw, lrw, liw) = (int(lwork)?, int(lrwork)?, int(liwork)?);
+    // SAFETY: as above, with workspaces of the queried sizes.
+    unsafe {
+        zheevd(
+            b"V".as_ptr(),
+            b"L".as_ptr(),
+            &ni,
+            v.as_ptr_mut(),
+            &ld,
+            w.as_mut_ptr(),
+            work.as_mut_ptr(),
+            &lw,
+            rwork.as_mut_ptr(),
+            &lrw,
+            iwork.as_mut_ptr(),
+            &liw,
+            &mut info,
+        );
+    }
+    if info != 0 {
+        return Err(DenseError::Eigen);
+    }
+    Ok((w, v))
 }

@@ -24,7 +24,7 @@ pub use nested_multi::{NestedMultiTerminal, SectorTransmissions};
 pub use smatrix::SMatrix;
 pub use two_terminal::{EndToEnd, Lead, SelfEnergyMethod, Sweeps, TwoTerminal};
 
-use caroli_dense::Lu;
+use caroli_dense::{Lu, Op, product};
 use caroli_model::{CMat, c64};
 
 /// Error of a Green's function computation.
@@ -69,4 +69,41 @@ pub fn broadening(sigma: &CMat) -> CMat {
 /// Trace of a square matrix.
 pub fn trace(m: &CMat) -> c64 {
     (0..m.nrows()).map(|i| m[(i, i)]).sum()
+}
+
+// Products of dense matrices go through caroli-dense (Accelerate on macOS, on the matrix units):
+// faer's `*` runs on the vector units only, several times slower at the sizes of lead slices.
+
+/// `a b`.
+pub(crate) fn mul(a: &CMat, b: &CMat) -> CMat {
+    product(a.as_ref(), Op::Plain, b.as_ref(), Op::Plain)
+}
+
+/// `a† b`.
+pub(crate) fn adj_mul(a: &CMat, b: &CMat) -> CMat {
+    product(a.as_ref(), Op::Adjoint, b.as_ref(), Op::Plain)
+}
+
+/// `a b†`.
+pub(crate) fn mul_adj(a: &CMat, b: &CMat) -> CMat {
+    product(a.as_ref(), Op::Plain, b.as_ref(), Op::Adjoint)
+}
+
+/// `v m v†`.
+pub(crate) fn sandwich(v: &CMat, m: &CMat) -> CMat {
+    mul_adj(&mul(v, m), v)
+}
+
+/// `v† m v`.
+pub(crate) fn sandwich_adj(v: &CMat, m: &CMat) -> CMat {
+    mul(&adj_mul(v, m), v)
+}
+
+/// Caroli trace `Tr[Γ_p G Γ_q G†]` for the block `G = G_pq`: with `A = Γ_p G` and `B = G Γ_q`,
+/// it is `Σ_ij A_ij conj(B_ij)` (two products instead of three).
+pub(crate) fn caroli_trace(gamma_p: &CMat, g: &CMat, gamma_q: &CMat) -> f64 {
+    let (a, b) = (mul(gamma_p, g), mul(g, gamma_q));
+    (0..a.ncols())
+        .map(|j| a.col_as_slice(j).iter().zip(b.col_as_slice(j)).map(|(x, y)| (x * y.conj()).re).sum::<f64>())
+        .sum()
 }

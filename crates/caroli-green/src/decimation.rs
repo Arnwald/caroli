@@ -5,7 +5,7 @@
 //! eigenvalue of the cell Hamiltonian (with `η = 1e-12`, `T` of a clean chain is wrong by 0.5 at
 //! `E = 1e-9`). Kept as an independent cross-check of [`crate::modes`].
 
-use crate::{GreenError, inverse, resolvent_matrix};
+use crate::{GreenError, inverse, mul, resolvent_matrix};
 use caroli_model::{CMat, c64};
 
 /// Surface Green's function of a semi-infinite lead at complex energy `z`. `h00` is the cell
@@ -20,13 +20,13 @@ pub fn surface_green(h00: &CMat, away: &CMat, z: c64) -> Result<CMat, GreenError
     let mut eps = h00.clone();
     for _ in 0..MAX_STEPS {
         let g = inverse(&resolvent_matrix(z, &eps));
-        let ag = &alpha * &g;
-        let bg = &beta * &g;
-        let agb = &ag * &beta;
+        let ag = mul(&alpha, &g);
+        let bg = mul(&beta, &g);
+        let agb = mul(&ag, &beta);
         eps_s += &agb;
-        eps += &agb + &bg * &alpha;
-        alpha = &ag * &alpha;
-        beta = &bg * &beta;
+        eps += &agb + mul(&bg, &alpha);
+        alpha = mul(&ag, &alpha);
+        beta = mul(&bg, &beta);
         let scale = 1.0 + eps.norm_max();
         if alpha.norm_max() < TOL * scale && beta.norm_max() < TOL * scale {
             return Ok(inverse(&resolvent_matrix(z, &eps_s)));

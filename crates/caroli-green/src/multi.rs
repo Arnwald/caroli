@@ -6,8 +6,8 @@
 //! are better served by [`crate::TwoTerminal`].
 
 use crate::gauge::Gauge;
-use crate::modes::{LeadModes, sigma_right};
-use crate::{GreenError, SelfEnergyMethod, broadening, decimation, inverse, trace};
+use crate::modes::{ModeSolver, sigma_right};
+use crate::{GreenError, SelfEnergyMethod, broadening, caroli_trace, decimation, inverse, sandwich};
 use caroli_lattice::{Cell, Region};
 use caroli_model::{CMat, Model, c64};
 
@@ -36,7 +36,12 @@ impl AttachedLead {
         if let SelfEnergyMethod::Decimation { .. } = method {
             return decimation::surface_green(&self.h00, &self.h01, z);
         }
-        let rest = sigma_right(&self.h01, &LeadModes::at(&self.h00, &self.h01, z)?);
+        self.surface_green_with(&ModeSolver::new(&self.h00, &self.h01), z)
+    }
+
+    /// Surface Green's function at `z` by mode matching, with the mode solver of this lead.
+    pub(crate) fn surface_green_with(&self, solver: &ModeSolver, z: c64) -> Result<CMat, GreenError> {
+        let rest = sigma_right(&self.h01, &solver.modes_at(z)?);
         let n = self.h00.nrows();
         Ok(inverse(&CMat::from_fn(n, n, |i, j| {
             (if i == j { z } else { c64::new(0.0, 0.0) }) - self.h00[(i, j)] - rest[(i, j)]
@@ -46,7 +51,7 @@ impl AttachedLead {
     /// Self-energy on the coupled device orbitals, `Σ = V g V†`.
     pub fn self_energy(&self, energy: f64, method: SelfEnergyMethod) -> Result<CMat, GreenError> {
         let g = self.surface_green(energy, method)?;
-        Ok(&self.coupling * g * self.coupling.adjoint())
+        Ok(sandwich(&self.coupling, &g))
     }
 }
 
@@ -180,7 +185,7 @@ impl MultiSolution {
     /// Transmission `T_pq = Tr[Γ_p G_pq Γ_q G_pq†]` from lead `q` to lead `p`.
     pub fn transmission(&self, sys: &MultiTerminal, p: usize, q: usize) -> f64 {
         let g = self.block(sys, p, q);
-        trace(&(broadening(&self.sigmas[p]) * &g * broadening(&self.sigmas[q]) * g.adjoint())).re
+        caroli_trace(&broadening(&self.sigmas[p]), &g, &broadening(&self.sigmas[q]))
     }
 }
 

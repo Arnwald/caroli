@@ -39,7 +39,9 @@ The dependencies only go downward: lattice ← model ← green ← caroli, and d
   matrices `faer::Mat<c64>` (`CMat`).
   - The kernels that dominate transport go through `caroli-dense`: `schur` with `partition`
     and `reorder`, `Lu` (solves with `a` and `a†`, pivots, a condition estimate), `svd`,
-    `orthonormal_columns`, `matmul` and `product`.
+    `hermitian_eigen`, `orthonormal_columns`, `matmul` and `product`. Products of lead-sized
+    matrices in `caroli-green` use them too (`mul`, `sandwich`, `caroli_trace`), never faer's
+    `*`.
   - On macOS they call Apple's Accelerate framework (feature `accelerate`, on by default):
     LAPACK 3.9+ (`$NEWLAPACK` symbols) and BLAS, which run on the matrix units of Apple silicon.
     It is part of the system, so nothing extra is installed, but it needs macOS 13.3 or later.
@@ -318,3 +320,14 @@ Golden cases with disorder use the same impurity configurations as the thesis.
     - Leaves of 16 orbitals instead of 64: a dense leaf of L sites costs L³, so the leaves
       cost N L² in all and outweighed the top separators. Square lattice at W = 256: 0.106 s
       per energy (was 0.134 s).
+    - Multi-core throughput (Mac mini, 56 energies, one BLAS thread per worker): Accelerate on
+      every core beats faer and any mix of the two (faer is 2–3× slower per call, so letting
+      some cores run it while others hold the matrix units loses). mimalloc and Accelerate's
+      own threads change nothing. 14 threads (10 performance and 4 efficiency cores) give
+      7–8× the throughput of one; 8–32 orbitals per leaf are equivalent.
+    - Profiling showed 40 % of the time in faer's `*` (vector units) and in a per-energy
+      eigendecomposition: self-energies, Caroli traces, S matrix and RGF products now go
+      through Accelerate, the Caroli trace takes two products instead of three, and a lead with
+      `H1 = c·1` computes the spectrum of its cell once (`ModeSolver`, kept by the solvers).
+      Square lattice at W = 256: 9.1 → 12.9 energies/s on one thread, 65 → 77 on 14
+      (graphene at W = 128 +12 % and +8 %, BHZ +6 % and +4 %).

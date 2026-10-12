@@ -23,8 +23,8 @@
 //! The elimination itself (`SiteTree`, `Tree`) also serves [`crate::NestedMultiTerminal`].
 
 use crate::gauge::Gauge;
-use crate::modes::{sigma_left, sigma_right};
-use crate::{GreenError, Lead, broadening, trace};
+use crate::modes::{ModeSolver, sigma_left, sigma_right};
+use crate::{GreenError, Lead, broadening, caroli_trace};
 use caroli_dense::{Accum, Lu, Op, matmul, product};
 use caroli_lattice::{Region, Site};
 use caroli_model::{CMat, Model, SparseMatrix, c64};
@@ -323,6 +323,9 @@ struct Block {
     tree: Tree,
     left: Lead,
     right: Lead,
+    /// The energy-independent part of the leads' mode problems.
+    left_modes: ModeSolver,
+    right_modes: ModeSolver,
     /// Device orbitals of the first and last slices, in the order of the lead cells.
     left_orbitals: Vec<usize>,
     right_orbitals: Vec<usize>,
@@ -481,10 +484,20 @@ impl NestedTwoTerminal {
                 let (kl, kr) = (pick(&left_orbitals), pick(&right_orbitals));
                 let restrict =
                     |m: &CMat, k: &[usize]| CMat::from_fn(k.len(), k.len(), |a, b| m[(k[a], k[b])]);
+                let block_left = Lead { h00: restrict(&left.h00, &kl), h01: restrict(&left.h01, &kl) };
+                let block_right = Lead { h00: restrict(&right.h00, &kr), h01: restrict(&right.h01, &kr) };
+                let left_modes = ModeSolver::new(&block_left.h00, &block_left.h01);
+                let right_modes = if same_lead(&block_left, &block_right) {
+                    left_modes.clone()
+                } else {
+                    ModeSolver::new(&block_right.h00, &block_right.h01)
+                };
                 Block {
                     tree: sites.tree(region, &h, mine),
-                    left: Lead { h00: restrict(&left.h00, &kl), h01: restrict(&left.h01, &kl) },
-                    right: Lead { h00: restrict(&right.h00, &kr), h01: restrict(&right.h01, &kr) },
+                    left: block_left,
+                    right: block_right,
+                    left_modes,
+                    right_modes,
                     left_orbitals: kl.iter().map(|&k| left_orbitals[k]).collect(),
                     right_orbitals: kr.iter().map(|&k| right_orbitals[k]).collect(),
                 }
@@ -526,11 +539,11 @@ impl NestedTwoTerminal {
             .blocks
             .par_iter()
             .map(|block| {
-                let ml = block.left.modes_at(z)?;
+                let ml = block.left_modes.modes_at(z)?;
                 let mr = if same_lead(&block.left, &block.right) {
                     ml.clone()
                 } else {
-                    block.right.modes_at(z)?
+                    block.right_modes.modes_at(z)?
                 };
                 Ok(BlockSelfEnergies {
                     left: block.left.clone(),
@@ -566,8 +579,7 @@ impl NestedTwoTerminal {
                     "self-energies of a system with other leads"
                 );
                 let g_lr = self.lead_green(block, z, &s.sigma_l, &s.sigma_r)?;
-                let t = broadening(&s.sigma_l) * &g_lr * broadening(&s.sigma_r) * g_lr.adjoint();
-                Ok(trace(&t).re)
+                Ok(caroli_trace(&broadening(&s.sigma_l), &g_lr, &broadening(&s.sigma_r)))
             })
             .collect();
         parts.into_iter().sum()

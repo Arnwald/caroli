@@ -24,7 +24,7 @@
 //! The modes are then computed at `E + δ`, with `δ` from 1e-9 to 1e-6 of the bandwidth (the limit
 //! from above), and [`LeadModes::energy`] records the energy used.
 
-use crate::{GreenError, solve_right};
+use crate::{GreenError, sandwich, solve_right};
 use caroli_dense::{Accum, Lu, Op, matmul, norm_1, product};
 use caroli_model::{CMat, c64};
 use faer::Side;
@@ -114,11 +114,7 @@ impl LeadModes {
     /// At a real energy, a Hermitian definite coupling (`H1 = ±P`, `P > 0`) takes a fast path: one
     /// Hermitian eigenproblem of size n. Everything else takes the general algorithm.
     pub fn at(h0: &CMat, h1: &CMat, z: c64) -> Result<Self, GreenError> {
-        let definite = if z.im == 0.0 { DefiniteCoupling::new(h0, h1) } else { None };
-        Self::shifted(h0, h1, z, |e, scale| match &definite {
-            Some(d) => d.modes(h0, e.re, scale),
-            None => Self::solve(h0, h1, e, scale),
-        })
+        ModeSolver::new(h0, h1).modes_at(z)
     }
 
     /// Modes at `z` by the general algorithm (the `2r` Schur decomposition), whatever the
@@ -465,7 +461,7 @@ impl LeadModes {
             return CMat::zeros(n, n);
         }
         let t = solve_right(&rows(&self.right, r..2 * r), &rows(&self.right, 0..r));
-        &self.u * t * self.u.adjoint()
+        sandwich(&self.u, &t)
     }
 
     /// `Σ_L = v Y_α Y_γ⁻¹ v†`.
@@ -475,7 +471,33 @@ impl LeadModes {
             return CMat::zeros(n, n);
         }
         let t = solve_right(&rows(&self.left, 0..r), &rows(&self.left, r..2 * r));
-        &self.v * t * self.v.adjoint()
+        sandwich(&self.v, &t)
+    }
+}
+
+/// The part of a lead's mode problem that does not depend on the energy, prepared once: whether
+/// the coupling is Hermitian definite (the fast path of [`LeadModes::at`]) and, when it is a
+/// multiple of the identity (square and cubic lattices), the eigenvectors of the cell. Solvers
+/// keep one per lead and reuse it at every energy.
+#[derive(Clone, Debug)]
+pub struct ModeSolver {
+    h0: CMat,
+    h1: CMat,
+    definite: Option<DefiniteCoupling>,
+}
+
+impl ModeSolver {
+    pub fn new(h0: &CMat, h1: &CMat) -> Self {
+        Self { h0: h0.clone(), h1: h1.clone(), definite: DefiniteCoupling::new(h0, h1) }
+    }
+
+    /// Modes at `z`, as [`LeadModes::at`].
+    pub fn modes_at(&self, z: c64) -> Result<LeadModes, GreenError> {
+        let definite = self.definite.as_ref().filter(|_| z.im == 0.0);
+        LeadModes::shifted(&self.h0, &self.h1, z, |e, scale| match definite {
+            Some(d) => d.modes(&self.h0, e.re, scale),
+            None => LeadModes::solve(&self.h0, &self.h1, e, scale),
+        })
     }
 }
 
@@ -493,10 +515,15 @@ impl LeadModes {
 /// - With the factors `u = s L`, `v = L` of the coupling, a mode is `(α, γ) ∝ (s y, λ y)`, so
 ///   the bases of right- and left-going modes are orthonormal as they stand, and `X_α`, `Y_γ`
 ///   are never singular.
+///
+/// With `P = c·1`, `L⁻¹ (H0 − E) L⁻† = (H0 − E) / c` has the eigenvectors of `H0` at every
+/// energy: they are computed once.
 #[derive(Clone, Debug)]
 struct DefiniteCoupling {
     s: f64,
     l: CMat,
+    /// With `P = c·1`: `c` and the eigenvalues and eigenvectors of `H0`.
+    cell: Option<(f64, Vec<f64>, CMat)>,
 }
 
 impl DefiniteCoupling {
@@ -523,7 +550,34 @@ impl DefiniteCoupling {
             let (lo, hi) = (0..n).fold((f64::INFINITY, 0.0f64), |(lo, hi), i| {
                 (lo.min(l[(i, i)].norm()), hi.max(l[(i, i)].norm()))
             });
-            (lo > Self::DEFINITE_TOL * hi).then_some(Self { s, l })
+            if lo <= Self::DEFINITE_TOL * hi {
+                return None;
+            }
+            // P = c·1: the spectrum of the cell serves every energy.
+            let c = p[(0, 0)].re;
+            let scalar = (0..n).all(|i| {
+                (0..n).all(|j| {
+                    (p[(i, j)] - if i == j { c64::new(c, 0.0) } else { c64::new(0.0, 0.0) }).norm()
+                        <= Self::HERMITIAN_TOL * c
+                })
+            });
+            let cell = scalar.then(|| {
+                let h = CMat::from_fn(n, n, |i, j| (h0[(i, j)] + h0[(j, i)].conj()) * 0.5);
+                caroli_dense::hermitian_eigen(h.as_ref()).ok().map(|(theta, y)| (c, theta, y))
+            });
+            match cell.flatten() {
+                Some(cell) => {
+                    let root = c.sqrt();
+                    let l =
+                        CMat::from_fn(
+                            n,
+                            n,
+                            |i, j| if i == j { c64::new(root, 0.0) } else { c64::new(0.0, 0.0) },
+                        );
+                    Some(Self { s, l, cell: Some(cell) })
+                }
+                None => Some(Self { s, l, cell: None }),
+            }
         })
     }
 
@@ -534,23 +588,30 @@ impl DefiniteCoupling {
         };
         let (n, s, l) = (h0.nrows(), self.s, &self.l);
         let par = faer::get_global_parallelism();
-        // M = L⁻¹ (H0 − E) L⁻†.
-        let mut b = CMat::from_fn(n, n, |i, j| {
-            (h0[(i, j)] + h0[(j, i)].conj()) * 0.5
-                - if i == j { c64::new(e, 0.0) } else { c64::new(0.0, 0.0) }
-        });
-        solve_lower_triangular_in_place(l.as_ref(), b.as_mut(), par);
-        let mut m = b.adjoint().to_owned();
-        solve_lower_triangular_in_place(l.as_ref(), m.as_mut(), par);
-        let m = CMat::from_fn(n, n, |i, j| (m[(i, j)] + m[(j, i)].conj()) * 0.5);
-        let evd = m.self_adjoint_eigen(Side::Lower).map_err(|_| GreenError::Eigen)?;
-        let (nu, y) = (evd.S(), evd.U());
+        // Eigenpairs (ν, y) of M = L⁻¹ (H0 − E) L⁻†.
+        let computed;
+        let (nu, y): (Vec<f64>, &CMat) = match &self.cell {
+            Some((c, theta, y)) => (theta.iter().map(|t| (t - e) / c).collect(), y),
+            None => {
+                let mut b = CMat::from_fn(n, n, |i, j| {
+                    (h0[(i, j)] + h0[(j, i)].conj()) * 0.5
+                        - if i == j { c64::new(e, 0.0) } else { c64::new(0.0, 0.0) }
+                });
+                solve_lower_triangular_in_place(l.as_ref(), b.as_mut(), par);
+                let mut m = b.adjoint().to_owned();
+                solve_lower_triangular_in_place(l.as_ref(), m.as_mut(), par);
+                let m = CMat::from_fn(n, n, |i, j| (m[(i, j)] + m[(j, i)].conj()) * 0.5);
+                let (w, v) = caroli_dense::hermitian_eigen(m.as_ref()).map_err(|_| GreenError::Eigen)?;
+                computed = v;
+                (w, &computed)
+            }
+        };
 
         // The right- and left-going root of each transverse mode.
         let (mut right, mut left, mut propagating) =
             (Vec::with_capacity(n), Vec::with_capacity(n), Vec::new());
-        for k in 0..n {
-            let mu = -s * nu[k].re;
+        for (k, &nu_k) in nu.iter().enumerate() {
+            let mu = -s * nu_k;
             if mu.abs() < 2.0 {
                 // J ∝ −s Im λ: the root with s Im λ < 0 goes right. Roots closer than the
                 // degeneracy tolerance form a Jordan block, as in the general algorithm.
@@ -573,7 +634,10 @@ impl DefiniteCoupling {
         }
         // Velocities J / ψ†ψ of the propagating modes, ψ = L⁻† y (P-normalised).
         let mut psi = CMat::from_fn(n, propagating.len(), |i, c| y[(i, propagating[c])]);
-        solve_upper_triangular_in_place(l.adjoint(), psi.as_mut(), par);
+        match &self.cell {
+            Some((c, _, _)) => psi.col_iter_mut().for_each(|col| col.iter_mut().for_each(|z| *z /= c.sqrt())),
+            None => solve_upper_triangular_in_place(l.adjoint(), psi.as_mut(), par),
+        }
         let (mut rv, mut lv) = (Vec::with_capacity(propagating.len()), Vec::with_capacity(propagating.len()));
         for (c, &k) in propagating.iter().enumerate() {
             let v = -2.0 * s * right[k].im / psi.col_as_slice(c).iter().map(|z| z.norm_sqr()).sum::<f64>();
