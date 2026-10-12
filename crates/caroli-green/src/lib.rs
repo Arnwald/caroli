@@ -15,7 +15,7 @@ pub mod nested;
 mod two_terminal;
 
 pub use multi::{AttachedLead, Interface, MultiSolution, MultiTerminal};
-pub use nested::NestedTwoTerminal;
+pub use nested::{LeadSelfEnergies, NestedTwoTerminal};
 pub use two_terminal::{EndToEnd, Lead, SelfEnergyMethod, Sweeps, TwoTerminal};
 
 use caroli_dense::Lu;

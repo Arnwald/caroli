@@ -96,3 +96,34 @@ fn long_strip_and_short_devices() {
         compare(&dirty, &lead, &Region::cuboid(lead.lattice(), [length, 6, 0]), &[-1.2, 0.7], "short device");
     }
 }
+
+/// Lead self-energies computed once serve other disorder configurations with the same leads:
+/// the transmission is the same as when each system solves its own leads.
+#[test]
+fn reused_self_energies() {
+    let clean = bhz(BhzParams::default());
+    let region = Region::cuboid(clean.lattice(), [12, 9, 0]);
+    let reference =
+        NestedTwoTerminal::from_model(&disordered(bhz(BhzParams::default()), 0.5, 4), &clean, &region, 0);
+    let other =
+        NestedTwoTerminal::from_model(&disordered(bhz(BhzParams::default()), 1.3, 4), &clean, &region, 0);
+    for e in [-0.2, 0.05, 0.4] {
+        let sigma = reference.self_energies(e).unwrap();
+        assert_eq!(sigma.energy(), e);
+        let (t, own) = (other.transmission_with(&sigma).unwrap(), other.transmission(e).unwrap());
+        assert!((t - own).abs() < 1e-12, "E = {e}: {t} vs {own}");
+        assert!(
+            (reference.transmission_with(&sigma).unwrap() - reference.transmission(e).unwrap()).abs() < 1e-12
+        );
+    }
+}
+
+#[test]
+#[should_panic(expected = "other leads")]
+fn self_energies_of_other_leads() {
+    let region = Region::cuboid(square().lattice(), [6, 5, 0]);
+    let sys = NestedTwoTerminal::from_model(&square(), &square(), &region, 0);
+    let shifted = square().onsite(0, scalar(0.3, 1));
+    let other = NestedTwoTerminal::from_model(&shifted, &shifted, &region, 0);
+    let _ = other.transmission_with(&sys.self_energies(0.4).unwrap());
+}

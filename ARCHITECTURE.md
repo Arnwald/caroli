@@ -109,6 +109,9 @@ The dependencies only go downward: lattice ← model ← green ← caroli, and d
     parent. This happens for a piece of a clean lattice at one of its eigenvalues. Independent
     branches run in parallel.
   - Both solvers split independent blocks of orbitals, such as the spin blocks of BHZ.
+  - `NestedTwoTerminal::self_energies` and `transmission_with` reuse the lead self-energies of
+    one energy for every disorder configuration with the same leads. For BHZ at W = 128 the
+    leads take 85 % of the time per energy, so a disorder average gets about 6× faster.
 - **Dev builds** optimise dependencies (`[profile.dev.package."*"] opt-level = 3`); faer is
   unusable unoptimised.
 

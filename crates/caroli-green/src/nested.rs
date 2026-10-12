@@ -54,6 +54,35 @@ struct Block {
     right_orbitals: Vec<usize>,
 }
 
+/// Lead self-energies of a [`NestedTwoTerminal`] at one energy, block by block (see
+/// [`NestedTwoTerminal::self_energies`]).
+#[derive(Clone, Debug)]
+pub struct LeadSelfEnergies {
+    energy: f64,
+    blocks: Vec<BlockSelfEnergies>,
+}
+
+impl LeadSelfEnergies {
+    /// Energy of the self-energies.
+    pub fn energy(&self) -> f64 {
+        self.energy
+    }
+}
+
+#[derive(Clone, Debug)]
+struct BlockSelfEnergies {
+    left: Lead,
+    right: Lead,
+    left_orbitals: Vec<usize>,
+    right_orbitals: Vec<usize>,
+    sigma_l: CMat,
+    sigma_r: CMat,
+}
+
+fn same_lead(a: &Lead, b: &Lead) -> bool {
+    a.h00 == b.h00 && a.h01 == b.h01
+}
+
 /// A two-terminal device solved by nested dissection (see the module documentation).
 #[derive(Clone, Debug)]
 pub struct NestedTwoTerminal {
@@ -204,10 +233,7 @@ impl NestedTwoTerminal {
 
     /// Caroli transmission `T(E) = Tr[Γ_L G_LR Γ_R G_LR†]`, with mode-matching self-energies.
     pub fn transmission(&self, energy: f64) -> Result<f64, GreenError> {
-        use rayon::prelude::*;
-        let parts: Vec<Result<f64, GreenError>> =
-            self.blocks.par_iter().map(|b| self.block_transmission(b, energy)).collect();
-        parts.into_iter().sum()
+        self.transmission_with(&self.self_energies(energy)?)
     }
 
     /// Transmissions at many energies, in parallel.
@@ -216,19 +242,67 @@ impl NestedTwoTerminal {
         energies.par_iter().map(|&e| self.transmission(e)).collect()
     }
 
-    fn block_transmission(&self, block: &Block, energy: f64) -> Result<f64, GreenError> {
+    /// Lead self-energies at `energy`, for each independent block. They serve every system with
+    /// the same leads and blocks: in a disorder average, the leads are solved once per energy
+    /// instead of once per configuration.
+    ///
+    /// ```ignore
+    /// let sigma = reference.self_energies(e)?;
+    /// let mean = configurations.iter().map(|sys| sys.transmission_with(&sigma)).sum::<Result<f64, _>>()?
+    ///     / configurations.len() as f64;
+    /// ```
+    pub fn self_energies(&self, energy: f64) -> Result<LeadSelfEnergies, GreenError> {
+        use rayon::prelude::*;
         let z = c64::new(energy, 0.0);
-        let ml = block.left.modes_at(z)?;
-        let mr = if block.left.h00 == block.right.h00 && block.left.h01 == block.right.h01 {
-            ml.clone()
-        } else {
-            block.right.modes_at(z)?
-        };
-        let sigma_l = sigma_left(&block.left.h01, &ml);
-        let sigma_r = sigma_right(&block.right.h01, &mr);
-        let g_lr = self.lead_green(block, z, &sigma_l, &sigma_r)?;
-        let t = broadening(&sigma_l) * &g_lr * broadening(&sigma_r) * g_lr.adjoint();
-        Ok(trace(&t).re)
+        let blocks = self
+            .blocks
+            .par_iter()
+            .map(|block| {
+                let ml = block.left.modes_at(z)?;
+                let mr = if same_lead(&block.left, &block.right) {
+                    ml.clone()
+                } else {
+                    block.right.modes_at(z)?
+                };
+                Ok(BlockSelfEnergies {
+                    left: block.left.clone(),
+                    right: block.right.clone(),
+                    left_orbitals: block.left_orbitals.clone(),
+                    right_orbitals: block.right_orbitals.clone(),
+                    sigma_l: sigma_left(&block.left.h01, &ml),
+                    sigma_r: sigma_right(&block.right.h01, &mr),
+                })
+            })
+            .collect::<Result<Vec<_>, GreenError>>()?;
+        Ok(LeadSelfEnergies { energy, blocks })
+    }
+
+    /// Transmission at the energy of `sigma`, with its lead self-energies, computed by
+    /// [`Self::self_energies`] on this system or on one with the same leads and blocks.
+    ///
+    /// Panics if the leads or the blocks differ.
+    pub fn transmission_with(&self, sigma: &LeadSelfEnergies) -> Result<f64, GreenError> {
+        use rayon::prelude::*;
+        assert_eq!(sigma.blocks.len(), self.blocks.len(), "self-energies of a system with other blocks");
+        let z = c64::new(sigma.energy, 0.0);
+        let parts: Vec<Result<f64, GreenError>> = self
+            .blocks
+            .par_iter()
+            .zip(&sigma.blocks)
+            .map(|(block, s)| {
+                assert!(
+                    same_lead(&block.left, &s.left)
+                        && same_lead(&block.right, &s.right)
+                        && block.left_orbitals == s.left_orbitals
+                        && block.right_orbitals == s.right_orbitals,
+                    "self-energies of a system with other leads"
+                );
+                let g_lr = self.lead_green(block, z, &s.sigma_l, &s.sigma_r)?;
+                let t = broadening(&s.sigma_l) * &g_lr * broadening(&s.sigma_r) * g_lr.adjoint();
+                Ok(trace(&t).re)
+            })
+            .collect();
+        parts.into_iter().sum()
     }
 
     /// `G_LR`, the block of `(z − H − Σ)⁻¹` between the first and last slices.
