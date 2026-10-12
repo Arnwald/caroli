@@ -22,18 +22,26 @@
 //! Writes `target/born_lines/self_energy.csv` (exact, per sample) and `born_masses.csv` (Born
 //! lines, published and corrected) for `plot_born_masses.py`.
 //!
-//! `cargo run --release -p caroli-validation --example born_self_energy`
+//! `cargo run --release -p caroli-validation --example born_self_energy -- [L [n [gaussian] [eta=η]]]`
+//!
+//! - `L`: size of the torus (default 160).
+//! - `n`: the SCBA k grid is max(256, n) × n (default 64, the thesis grid).
+//! - `gaussian`: replace the binary impurities with a Gaussian potential of the same mean and
+//!   variance on every site, which removes the higher cumulants that the SCBA leaves out.
+//! - `eta=η`: the imaginary part of the energy of the exact calculation (default 0.006).
+//!
+//! Other settings than the defaults run the two cases of `plot_born_masses.py` only and write
+//! `self_energy_L<L>_k<n>[_gauss][_eta<η>].csv` and the matching `born_masses_….csv`.
 
 use caroli_disorder::rng::Xoshiro256;
 use caroli_disorder::{MagneticImpurities, Moments};
 use caroli_kpm::interleave;
-use caroli_lattice::Region;
+use caroli_lattice::{Region, Site};
 use caroli_model::presets::{BhzParams, GFactors, bhz, bhz_spin};
-use caroli_model::{SparseMatrix, c64};
+use caroli_model::{SparseMatrix, c64, combine};
 use caroli_validation::thesis::{ScbaAnalytic, impurity_region};
 use rayon::prelude::*;
 
-const L: usize = 160;
 const ETA: f64 = 6e-3;
 const MASS: f64 = -0.137;
 const SEEDS: [i32; 2] = [2015, 4031];
@@ -115,25 +123,63 @@ fn resolvent(mu: &[c64], z: c64, centre: f64, half: f64) -> c64 {
     acc / s / half
 }
 
+/// Size of the torus, SCBA grid and kind of disorder.
+struct Setup {
+    l: usize,
+    born_n: usize,
+    gaussian: bool,
+    eta: f64,
+}
+
+impl Setup {
+    fn tag(&self) -> String {
+        if self.l == 160 && self.born_n == 64 && !self.gaussian && self.eta == ETA {
+            String::new()
+        } else {
+            let gauss = if self.gaussian { "_gauss" } else { "" };
+            let eta = if self.eta == ETA { String::new() } else { format!("_eta{}", self.eta) };
+            format!("_L{}_k{}{gauss}{eta}", self.l, self.born_n)
+        }
+    }
+}
+
 /// Exact `(M̄↑, μ̄↑, M̄↓, μ̄↓, Γ↑, Γ↓)` at `E_F + iη` for one sample.
-fn exact(anti: i32, conc: f64, j: f64, e: f64, seed: i32) -> [f64; 6] {
-    let n_imp = (conc * (L * L) as f64) as usize;
-    let imp = MagneticImpurities::generate(
-        &mut Xoshiro256::gfortran(seed),
-        &impurity_region(0, L, L),
-        n_imp,
-        Moments::Cone { theta0: 0.0 },
-    );
+fn exact(setup: &Setup, anti: i32, conc: f64, j: f64, e: f64, seed: i32) -> [f64; 6] {
+    let l = setup.l;
     let coupling = if anti == 1 { GFactors::Opposite } else { GFactors::Same };
-    let model = bhz(BhzParams::default()).with_onsite_term(imp.exchange(j, &bhz_spin(coupling)));
-    let region = Region::cuboid(model.lattice(), [L, L, 0]);
-    let period = L as i64;
+    let model = if setup.gaussian {
+        // Same mean (conc) and variance (conc·(1 − conc)) as the occupation of a site, M_z = 1.
+        let mut rng = Xoshiro256::gfortran(seed);
+        let x: Vec<f64> = (0..l * l)
+            .map(|_| {
+                let (u1, u2) = (1.0 - rng.uniform(), rng.uniform());
+                let normal = (-2.0 * u1.ln()).sqrt() * (2.0 * std::f64::consts::PI * u2).cos();
+                conc + (conc * (1.0 - conc)).sqrt() * normal
+            })
+            .collect();
+        let sz = bhz_spin(coupling)[2].clone();
+        bhz(BhzParams::default()).with_onsite_term(move |site: &Site| {
+            let idx = site.cell[0] as usize + l * site.cell[1] as usize;
+            Some(combine(&[(c64::new(j * x[idx], 0.0), &sz)]))
+        })
+    } else {
+        let n_imp = (conc * (l * l) as f64) as usize;
+        let imp = MagneticImpurities::generate(
+            &mut Xoshiro256::gfortran(seed),
+            &impurity_region(0, l, l),
+            n_imp,
+            Moments::Cone { theta0: 0.0 },
+        );
+        bhz(BhzParams::default()).with_onsite_term(imp.exchange(j, &bhz_spin(coupling)))
+    };
+    let region = Region::cuboid(model.lattice(), [l, l, 0]);
+    let period = l as i64;
     let h = model.sparse_bloch_hamiltonian(&region, &[[period, 0, 0], [0, period, 0]], &[0.0, 0.0]);
     let (lo, hi) = h.spectral_bounds();
     let (centre, half) = ((lo + hi) / 2.0, (hi - lo) / 2.0 * 1.01);
     let ht = h.rescaled(centre, half);
     // Enough terms for |t|^n < 1e-10 at the worst point of the window.
-    let z = c64::new(e, ETA);
+    let z = c64::new(e, setup.eta);
     let zt = (z - centre) / half;
     let t = {
         let s = (zt * zt - 1.0).sqrt();
@@ -143,8 +189,8 @@ fn exact(anti: i32, conc: f64, j: f64, e: f64, seed: i32) -> [f64; 6] {
     // k = 0 plane wave of each orbital (E↑, H↑, E↓, H↓), normalised.
     let starts: Vec<Vec<c64>> = (0..4)
         .map(|a| {
-            (0..4 * L * L)
-                .map(|i| if i % 4 == a { c64::new(1.0 / L as f64, 0.0) } else { c64::new(0.0, 0.0) })
+            (0..4 * l * l)
+                .map(|i| if i % 4 == a { c64::new(1.0 / l as f64, 0.0) } else { c64::new(0.0, 0.0) })
                 .collect()
         })
         .collect();
@@ -160,7 +206,17 @@ fn exact(anti: i32, conc: f64, j: f64, e: f64, seed: i32) -> [f64; 6] {
 }
 
 fn main() {
-    let jobs: Vec<(usize, f64, i32)> = CASES
+    let args: Vec<String> = std::env::args().collect();
+    let setup = Setup {
+        l: args.get(1).map_or(160, |a| a.parse().unwrap()),
+        born_n: args.get(2).map_or(64, |a| a.parse().unwrap()),
+        gaussian: args.iter().skip(3).any(|a| a == "gaussian"),
+        eta: args.iter().skip(3).find_map(|a| a.strip_prefix("eta=")).map_or(ETA, |v| v.parse().unwrap()),
+    };
+    let tag = setup.tag();
+    // Other settings than the defaults: the two cases of the figure only.
+    let cases = if tag.is_empty() { CASES.len() } else { 2 };
+    let jobs: Vec<(usize, f64, i32)> = CASES[..cases]
         .iter()
         .enumerate()
         .flat_map(|(c, case)| case.4.iter().flat_map(move |&j| SEEDS.iter().map(move |&s| (c, j, s))))
@@ -169,26 +225,33 @@ fn main() {
         .par_iter()
         .map(|&(c, j, s)| {
             let (_, anti, conc, e, _) = CASES[c];
-            exact(anti, conc, j, e, s)
+            exact(&setup, anti, conc, j, e, s)
         })
         .collect();
     use std::io::Write;
     let dir = caroli_validation::repo_root().join("target/born_lines");
     std::fs::create_dir_all(&dir).expect("output directory");
-    let mut exact_csv = std::fs::File::create(dir.join("self_energy.csv")).expect("self_energy.csv");
+    let mut exact_csv = std::fs::File::create(dir.join(format!("self_energy{tag}.csv"))).expect("self_energy csv");
     writeln!(exact_csv, "case,J_I,E_F,seed,M_up,mu_up,M_dn,mu_dn,gamma_up,gamma_dn").unwrap();
     for (&(c, j, s), r) in jobs.iter().zip(&results) {
         let e = CASES[c].3;
         writeln!(exact_csv, "{c},{j},{e},{s},{},{},{},{},{},{}", r[0], r[1], r[2], r[3], r[4], r[5]).unwrap();
     }
-    let mut born_csv = std::fs::File::create(dir.join("born_masses.csv")).expect("born_masses.csv");
+    let mut born_csv = std::fs::File::create(dir.join(format!("born_masses{tag}.csv"))).expect("born_masses csv");
     writeln!(born_csv, "case,J_I,E_F,version,M_up,mu_up,M_dn,mu_dn").unwrap();
-    println!("Exact renormalised parameters at k = 0 ({L} × {L} torus, η = {ETA}, {} samples)", SEEDS.len());
+    let (l, n) = (setup.l, setup.born_n);
+    let disorder = if setup.gaussian { "Gaussian disorder" } else { "binary impurities" };
+    println!(
+        "Exact renormalised parameters at k = 0 ({l} × {l} torus, {disorder}, η = {}, {} samples)",
+        setup.eta,
+        SEEDS.len()
+    );
     println!("against the Born program as published and corrected. Topological: M < 0 (B < 0).");
-    for (c, &(title, anti, conc, e, js)) in CASES.iter().enumerate() {
+    println!("SCBA on a {} × {n} k grid.", n.max(256));
+    for (c, &(title, anti, conc, e, js)) in CASES[..cases].iter().enumerate() {
         let born = ScbaAnalytic {
-            m: 256,
-            n: 64,
+            m: n.max(256),
+            n,
             conc,
             mz: 1.0,
             anti,

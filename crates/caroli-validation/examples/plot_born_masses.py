@@ -4,7 +4,10 @@ against the Born program as published and corrected, with the mean field for ref
 Needs the CSV files of
     cargo run --release -p caroli-validation --example born_self_energy
 
-    python3 crates/caroli-validation/examples/plot_born_masses.py [csv directory]
+    python3 crates/caroli-validation/examples/plot_born_masses.py [csv directory] [tag] [note]
+
+`tag` selects the files of a run with other settings (e.g. `_L256_k256`), and `note` is printed
+under the legend (the sizes of the run).
 """
 
 import csv
@@ -20,6 +23,8 @@ import numpy as np
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 DIR = sys.argv[1] if len(sys.argv) > 1 else os.path.join(HERE, "..", "..", "..", "target", "born_lines")
+TAG = sys.argv[2] if len(sys.argv) > 2 else ""
+NOTE = sys.argv[3] if len(sys.argv) > 3 else ""
 MASS = -0.137
 # (case index, title, conc, mean-field mass shift of spin up per unit J (opposite-g only))
 CASES = [
@@ -35,7 +40,7 @@ def rows(name):
 
 
 def main():
-    exact, born = rows("self_energy.csv"), rows("born_masses.csv")
+    exact, born = rows(f"self_energy{TAG}.csv"), rows(f"born_masses{TAG}.csv")
     fig, axes = plt.subplots(1, 2, figsize=(11, 4.6))
     for ax, (case, title, conc, opposite) in zip(axes, CASES):
         for key, label, colour in SPINS:
@@ -63,10 +68,12 @@ def main():
     axes[0].set_ylabel(r"renormalised mass $\bar m$ $(\varepsilon_0)$")
     handles, labels = axes[1].get_legend_handles_labels()
     fig.legend(handles, labels, loc="lower center", ncol=4, fontsize=9, frameon=False)
-    fig.subplots_adjust(bottom=0.27, top=0.92, wspace=0.18)
+    if NOTE:
+        fig.suptitle(NOTE, fontsize=9, style="italic", y=0.995)
+    fig.subplots_adjust(bottom=0.27, top=0.86 if NOTE else 0.92, wspace=0.18)
     for ext in ("png", "pdf"):
-        fig.savefig(os.path.join(DIR, f"born_masses.{ext}"), dpi=150, bbox_inches="tight")
-    print("written", os.path.abspath(os.path.join(DIR, "born_masses.png")))
+        fig.savefig(os.path.join(DIR, f"born_masses{TAG}.{ext}"), dpi=150, bbox_inches="tight")
+    print("written", os.path.abspath(os.path.join(DIR, f"born_masses{TAG}.png")))
 
 
 if __name__ == "__main__":

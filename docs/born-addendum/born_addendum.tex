@@ -528,10 +528,12 @@ the result with both versions of the SCBA.
 \begin{figure}[t]
 \centering
 \fig{born_masses}
-\caption{\label{f:masses}Renormalised masses: exact (circles, disorder-averaged Green's function,
-no Born approximation), published SCBA (dashed), corrected SCBA (solid), mean field (dotted).
-A block is topological for $\bar m<0$. Left: same-$g$, $n_I=0.2$, $E_F=0$. Right: opposite-$g$,
-$n_I=0.4$, $E_F=0.02$.}
+\caption{\label{f:masses}Renormalised masses: exact (circles), published SCBA (dashed),
+corrected SCBA (solid), mean field (dotted). A block is topological for $\bar m<0$. Left:
+same-$g$, $n_I=0.2$, $E_F=0$. Right: opposite-$g$, $n_I=0.4$, $E_F=0.02$. The exact masses come
+from the disorder-averaged Green's function of a $160\times160$ periodic sample (no edges),
+2 configurations, $\eta=0.006$, with no Born approximation. The SCBA curves use the grid of the
+thesis program, $256\times64$ points of the Brillouin zone, with $\eta=10^{-3}$.}
 \end{figure}
 
 \begin{table}[t]
@@ -568,7 +570,8 @@ same-$g$, $\bar m_\dn$, $E_F=-0.05$ & 0.8 & $-0.1790$ & $-0.0605$ & $-0.2084$\\
 \item \textbf{The inversion.} At opposite-$g$, the exact spin-up mass changes sign at
   $J_I=0.40$, where the corrected SCBA puts it. The published SCBA puts it at $0.30$.
 \item \textbf{Strong disorder.} The corrected SCBA remains close up to $J_I=0.6$. At same-$g$
-  the exact masses are even more topological (higher orders).
+  the two blocks drift apart from it in opposite directions. This is the third cumulant of the
+  binary disorder, which the SCBA leaves out (below).
 \item \textbf{The block that carries $G=1$.} At same-$g$ and $E_F=-0.05$, deep in the $G=1$
   plateau, the exact spin-down mass stays topological and its gap widens up to $J_I=1.5$. The
   broadening there stays below $0.005$: no state lies at $E_F$. The published SCBA inverts this
@@ -604,6 +607,59 @@ $J_I$ & $\bar m_\up$ & $\Gamma_\up$ & published $\bar m_\up$ & $\bar m_\dn$ & $\
 0.90 & $+1.176$ & 0.38 & $+0.113$ & $-0.188$ & 0.0007\\
 0.95 & $+0.552$ & 0.08 & $+0.124$ & $-0.192$ & 0.0008\\
 1.00 & $+0.369$ & 0.04 & $+0.132$ & $-0.197$ & 0.0008\\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\paragraph{Convergence.} Fig.~\ref{f:masses256} repeats Fig.~\ref{f:masses} with a
+$256\times256$ periodic sample, and with the SCBA on a $256\times256$ grid. Nothing moves:
+\begin{itemize}
+\item the exact masses change by at most $2\times10^{-3}$ (at $J_I=0.6$);
+\item the SCBA changes by at most $6\times10^{-4}$, and by at most $2\times10^{-3}$ when $\eta$ goes
+  from $10^{-3}$ to $6\times10^{-3}$;
+\item halving $\eta$ to $0.003$ changes the exact masses by at most $2\times10^{-3}$.
+\end{itemize}
+The remaining same-$g$ offset is therefore not numerical.
+
+\begin{figure}[t]
+\centering
+\fig{born_masses_L256_k256}
+\caption{\label{f:masses256}Fig.~\ref{f:masses} with a $256\times256$ periodic sample for the
+exact masses (2 configurations, $\eta=0.006$) and a $256\times256$ grid for the SCBA.}
+\end{figure}
+
+\paragraph{Where the same-$g$ offset comes from.} The SCBA keeps only the first two moments of
+the disorder (Step~2 of Sec.~\ref{s:derivation}). The impurity potential, present or absent on
+each site, also has a third cumulant,
+\begin{equation}
+\big\langle(\delta U)^3\big\rangle=\pm\,n_I(1-n_I)(1-2n_I)\,J_I^3 ,
+\end{equation}
+which enters the self-energy at third order.
+\begin{itemize}
+\item \textbf{Gaussian test.} We replaced the impurities by a Gaussian potential on every site,
+  with the same mean and variance, so all higher cumulants vanish. The exact masses then fall
+  onto the corrected SCBA, within $3\times10^{-3}$ up to $J_I=0.5$ (Table~\ref{t:gauss}).
+\item \textbf{Opposite signs for the two spins.} At same-$g$, spin up sees $+J_I$ and spin down
+  $-J_I$, so the third-order term changes sign with the spin. That is why the two blocks leave
+  the SCBA in opposite directions.
+\item \textbf{Why opposite-$g$ is so close.} Relative to the variance, the third cumulant scales
+  as $(1-2n_I)J_I$: $0.6\,J_I$ at $n_I=0.2$, but $0.2\,J_I$ at $n_I=0.4$.
+\end{itemize}
+
+\begin{table}[t]
+\centering
+\caption{\label{t:gauss}Same-$g$, $n_I=0.2$, $E_F=0$: exact masses with the binary impurities
+and with a Gaussian potential of the same mean and variance ($160\times160$ periodic sample,
+2 configurations, $\eta=0.006$), against the corrected SCBA.}
+\begin{tabular}{ccccccc}
+\toprule
+ & \multicolumn{3}{c}{$\bar m_\up$} & \multicolumn{3}{c}{$\bar m_\dn$}\\
+$J_I$ & binary & Gaussian & SCBA & binary & Gaussian & SCBA\\
+\midrule
+0.3 & $-0.1525$ & $-0.1491$ & $-0.1487$ & $-0.1448$ & $-0.1466$ & $-0.1465$\\
+0.4 & $-0.1720$ & $-0.1628$ & $-0.1597$ & $-0.1500$ & $-0.1541$ & $-0.1536$\\
+0.5 & $-0.2082$ & $-0.1777$ & $-0.1795$ & $-0.1560$ & $-0.1635$ & $-0.1625$\\
+0.6 & $-0.2432$ & $-0.1899$ & $-0.1989$ & $-0.1628$ & $-0.1759$ & $-0.1734$\\
 \bottomrule
 \end{tabular}
 \end{table}
