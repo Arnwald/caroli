@@ -103,6 +103,16 @@ Kwant, TBtrans and Quantica.jl on a Mac mini M4 Pro.
 
 The first campaign, against Kwant only: [results/report-2026-10-12-08246f7.md](results/report-2026-10-12-08246f7.md).
 
+Quantum walk: [results/walk-report-2026-10-12-c660c96.md](results/walk-report-2026-10-12-c660c96.md),
+Mac mini M4 Pro, against the paper's method in Python (the authors' code is not public).
+
+- n = 19 (2·10⁷ amplitudes, the paper's largest): 51 ms per step for U as a SciPy sparse
+  matrix, 5.3 ms for caroli in f64 on 14 threads (10×), 2.5 ms in f32 on the CPU or the GPU
+  (20×). caroli runs n = 25 (1.7·10⁹ amplitudes).
+- The scan of Fig. 21 (8192 walks of 2000 steps): 4.4 h in Python on one process, 6.7 min for
+  caroli in f64 (39×), 3.7 min in f32 with the GPU joining the 14 threads (70×). The memory
+  bandwidth is shared: the GPU brings as much as the CPU, and f32 is what halves the traffic.
+
 ## Quantum walk on a graph of spins (`walk/`)
 
 The model of K. Sellapillay and A. D. Verga (Phys. Rev. E 103, 032123 (2021)): a walker on a

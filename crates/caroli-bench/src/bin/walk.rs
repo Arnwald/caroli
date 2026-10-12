@@ -492,10 +492,23 @@ fn report(args: &[String]) {
             duration(f("caroli_f32_s")),
             python / f("caroli_f32_s")
         );
+        if s["caroli_hybrid_s"].is_f64() {
+            println!(
+                "| caroli, {} threads in f32 and the GPU ({}, {} of the walks) | {} | {:.0}× |",
+                s["threads"],
+                s["gpu"].as_str().unwrap_or("GPU"),
+                s["gpu_walks"],
+                duration(f("caroli_hybrid_s")),
+                python / f("caroli_hybrid_s")
+            );
+        }
         println!(
-            "\nLargest difference of the distance: Python against caroli {:.1e}, f32 against f64 {:.1e}.{}",
+            "\nLargest difference of the distance: Python against caroli {:.1e}, f32 against f64 {:.1e}, with the GPU {:.1e}; {} of the reduced-precision walks recomputed in f64 differ by at most {:.1e}.{}",
             f("max_dks"),
             f("max_dks_f32"),
+            f("max_dks_hybrid"),
+            s["checked"],
+            f("check_deviation"),
             if s["runner_busy"] == true { " A runner job was active during the scan." } else { "" }
         );
     }
