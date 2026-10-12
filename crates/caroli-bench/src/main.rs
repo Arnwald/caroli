@@ -553,6 +553,41 @@ fn report(args: &[String]) {
     }
 }
 
+/// Throughput of the nested-dissection transmission against the number of threads:
+/// `count` energies (the problem's, shifted slightly to make them all different) at once on
+/// pools of each size.
+fn scaling(name: &str, w: usize, count: usize, threads: &[usize]) {
+    let p = problem(name);
+    let l = length(&p, w);
+    let clean = clean_model(&p.model);
+    let n = clean.lattice().sublattices()[0].orbitals;
+    let subs = clean.lattice().sublattices().len();
+    let pot = disorder(&p, w);
+    let ((_, ny), (x0, y0)) = sample_box(&p, w);
+    let device = clean_model(&p.model).with_onsite_term(move |site: &Site| {
+        let (x, y) = ((site.cell[0] - x0) as usize, (site.cell[1] - y0) as usize);
+        pot.as_ref().map(|v| scalar(v[(x * ny + y) * subs + site.sub], n))
+    });
+    let region = Region::cuboid(clean.lattice(), [l, w, 0]);
+    let sys = NestedTwoTerminal::from_model(&device, &clean, &region, 0);
+    let energies: Vec<f64> =
+        (0..count).map(|k| p.energies[k % p.energies.len()] + 1e-3 * (k / p.energies.len()) as f64).collect();
+    let mut base = None;
+    for &t in threads {
+        let pool = rayon::ThreadPoolBuilder::new().num_threads(t).build().expect("thread pool");
+        let start = Instant::now();
+        let ts = pool.install(|| sys.transmissions(&energies));
+        let wall = start.elapsed().as_secs_f64();
+        assert!(ts.iter().all(|t| t.is_ok()));
+        let rate = count as f64 / wall;
+        let speedup = base.map_or(1.0, |b: f64| rate / b);
+        base.get_or_insert(rate);
+        println!(
+            "{name} W={w}: {t:2} threads, {count} energies in {wall:.3} s, {rate:.2} energies/s, ×{speedup:.2}"
+        );
+    }
+}
+
 /// Time of the lead modes against the whole nested-dissection transmission, at one energy.
 fn profile(name: &str, w: usize) {
     let p = problem(name);
@@ -582,6 +617,11 @@ fn main() {
     let args: Vec<String> = std::env::args().collect();
     match args.get(1).map(String::as_str) {
         Some("profile") => profile(&args[2], args[3].parse().expect("width")),
+        Some("scaling") => {
+            let count = args[4].parse().expect("energies");
+            let threads: Vec<usize> = args[5..].iter().map(|t| t.parse().expect("threads")).collect();
+            scaling(&args[2], args[3].parse().expect("width"), count, &threads)
+        }
         Some("prepare") => prepare(),
         Some("solve") => {
             solve(&args[2], args[3].parse().expect("width"), args.get(4).map_or("nd", String::as_str))

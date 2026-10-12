@@ -1,11 +1,14 @@
-//! Dense complex kernels for caroli: the Schur decomposition, its reordering, and matrix
-//! products. They dominate the lead modes and the nested-dissection fronts.
+//! Dense complex kernels for caroli: the Schur decomposition, its reordering, LU solves, QR and
+//! SVD, and matrix products. They dominate the lead modes and the nested-dissection fronts.
 //!
-//! On macOS, with the `accelerate` feature (on by default), the Schur decomposition and the
-//! products call Apple's Accelerate framework (LAPACK and BLAS, which run on the matrix units of
-//! Apple silicon). Elsewhere, or with the feature off, they use faer and an in-house QR algorithm.
-//! The reordering is in-house everywhere: adjacent swaps (LAPACK ztrexc) made in small windows,
-//! whose rotations reach the rest of the matrix as products.
+//! On macOS, with the `accelerate` feature (on by default), they can call Apple's Accelerate
+//! framework (LAPACK and BLAS, which run on the matrix units of Apple silicon); elsewhere, or
+//! with the feature off, they use faer and an in-house QR algorithm. The reordering is in-house
+//! everywhere: adjacent swaps (LAPACK ztrexc) made in small windows, whose rotations reach the
+//! rest of the matrix as products.
+//!
+//! [`set_backend`] chooses the library at run time (see [`Backend`]); the environment variable
+//! `CAROLI_DENSE_BACKEND` (`accelerate`, `faer`, `shared:N`) sets the initial choice.
 
 #[cfg(all(target_os = "macos", feature = "accelerate"))]
 mod accelerate;
@@ -13,6 +16,7 @@ mod schur;
 
 pub use faer::{Accum, Mat, MatMut, MatRef, c64};
 pub use schur::{partition, reorder};
+use std::sync::atomic::{AtomicUsize, Ordering};
 
 /// Errors of the dense kernels.
 #[derive(Debug, thiserror::Error)]
@@ -23,47 +27,147 @@ pub enum DenseError {
     Svd,
 }
 
-/// Backend of the Schur decomposition and of the products in this build.
+/// Libraries this build can use: `"accelerate"` (with faer) on macOS with the feature, else
+/// `"faer"`.
 pub const BACKEND: &str =
     if cfg!(all(target_os = "macos", feature = "accelerate")) { "accelerate" } else { "faer" };
+
+/// Which library runs the dense kernels. Without Accelerate in the build, every choice runs faer.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Backend {
+    /// Accelerate for every call.
+    Accelerate,
+    /// faer (and the in-house Schur decomposition) for every call.
+    Faer,
+    /// Accelerate for at most this many calls at a time, faer for the others. The matrix units
+    /// of Apple silicon are shared by each cluster of cores; the vector units of the other cores
+    /// then run faer instead of waiting.
+    Shared(usize),
+}
+
+/// `0`: not set yet; `1`: Accelerate; `2`: faer; `3 + n`: shared by `n`.
+static POLICY: AtomicUsize = AtomicUsize::new(0);
+/// Accelerate calls in progress (counted in shared mode only).
+static ACTIVE: AtomicUsize = AtomicUsize::new(0);
+
+fn encode(b: Backend) -> usize {
+    match b {
+        Backend::Accelerate => 1,
+        Backend::Faer => 2,
+        Backend::Shared(n) => 3 + n,
+    }
+}
+
+/// Chooses the library of the dense kernels for the whole process.
+pub fn set_backend(b: Backend) {
+    POLICY.store(encode(b), Ordering::Relaxed);
+}
+
+/// The current choice (from `CAROLI_DENSE_BACKEND` at the first call, Accelerate by default).
+pub fn backend() -> Backend {
+    let mut code = POLICY.load(Ordering::Relaxed);
+    if code == 0 {
+        let chosen = std::env::var("CAROLI_DENSE_BACKEND").ok().and_then(|v| match v.as_str() {
+            "accelerate" => Some(Backend::Accelerate),
+            "faer" => Some(Backend::Faer),
+            s => s.strip_prefix("shared:").and_then(|n| n.parse().ok()).map(Backend::Shared),
+        });
+        code = encode(chosen.unwrap_or(Backend::Accelerate));
+        // Keep a choice made meanwhile by set_backend.
+        code = match POLICY.compare_exchange(0, code, Ordering::Relaxed, Ordering::Relaxed) {
+            Ok(_) => code,
+            Err(current) => current,
+        };
+    }
+    match code {
+        1 => Backend::Accelerate,
+        2 => Backend::Faer,
+        n => Backend::Shared(n - 3),
+    }
+}
+
+/// Permission to call Accelerate, released when dropped.
+#[cfg_attr(not(all(target_os = "macos", feature = "accelerate")), allow(dead_code))]
+struct Slot {
+    counted: bool,
+}
+
+impl Drop for Slot {
+    fn drop(&mut self) {
+        if self.counted {
+            ACTIVE.fetch_sub(1, Ordering::Relaxed);
+        }
+    }
+}
+
+/// A slot for an Accelerate call, or `None` when faer must run it.
+#[cfg_attr(not(all(target_os = "macos", feature = "accelerate")), allow(dead_code))]
+fn accelerate_slot() -> Option<Slot> {
+    if !cfg!(all(target_os = "macos", feature = "accelerate")) {
+        return None;
+    }
+    match backend() {
+        Backend::Accelerate => Some(Slot { counted: false }),
+        Backend::Faer => None,
+        Backend::Shared(n) => {
+            let mut active = ACTIVE.load(Ordering::Relaxed);
+            loop {
+                if active >= n {
+                    return None;
+                }
+                match ACTIVE.compare_exchange_weak(active, active + 1, Ordering::Acquire, Ordering::Relaxed) {
+                    Ok(_) => return Some(Slot { counted: true }),
+                    Err(current) => active = current,
+                }
+            }
+        }
+    }
+}
 
 /// Complex Schur decomposition `a = q t q†`: `q` unitary, `t` upper triangular with exact zeros
 /// below the diagonal. Returns `(q, t)`.
 pub fn schur(a: MatRef<'_, c64>) -> Result<(Mat<c64>, Mat<c64>), DenseError> {
     assert_eq!(a.nrows(), a.ncols(), "schur: square matrix expected");
     #[cfg(all(target_os = "macos", feature = "accelerate"))]
-    return accelerate::schur(a);
-    #[cfg(not(all(target_os = "macos", feature = "accelerate")))]
-    return schur::schur(a);
+    if let Some(_slot) = accelerate_slot() {
+        return accelerate::schur(a);
+    }
+    schur::schur(a)
 }
 
 /// LU factorisation with partial pivoting of a square matrix.
 #[derive(Clone, Debug)]
 pub struct Lu {
+    inner: LuInner,
+}
+
+#[derive(Clone, Debug)]
+enum LuInner {
     #[cfg(all(target_os = "macos", feature = "accelerate"))]
-    inner: accelerate::Lu,
-    #[cfg(not(all(target_os = "macos", feature = "accelerate")))]
-    inner: faer::linalg::solvers::PartialPivLu<c64>,
+    Accelerate(accelerate::Lu),
+    Faer(faer::linalg::solvers::PartialPivLu<c64>),
 }
 
 impl Lu {
     pub fn new(a: MatRef<'_, c64>) -> Self {
         assert_eq!(a.nrows(), a.ncols(), "lu: square matrix expected");
         #[cfg(all(target_os = "macos", feature = "accelerate"))]
-        return Self { inner: accelerate::Lu::new(a) };
-        #[cfg(not(all(target_os = "macos", feature = "accelerate")))]
-        return Self { inner: a.partial_piv_lu() };
+        if let Some(_slot) = accelerate_slot() {
+            return Self { inner: LuInner::Accelerate(accelerate::Lu::new(a)) };
+        }
+        Self { inner: LuInner::Faer(a.partial_piv_lu()) }
     }
 
     /// Smallest and largest modulus of the pivots (the diagonal of `U`); `(∞, 0)` for an empty
     /// matrix.
     pub fn pivot_range(&self) -> (f64, f64) {
-        #[cfg(all(target_os = "macos", feature = "accelerate"))]
-        let diagonal: Vec<c64> = self.inner.diagonal().collect();
-        #[cfg(not(all(target_os = "macos", feature = "accelerate")))]
-        let diagonal: Vec<c64> = {
-            let u = self.inner.U();
-            (0..u.nrows()).map(|i| u[(i, i)]).collect()
+        let diagonal: Vec<c64> = match &self.inner {
+            #[cfg(all(target_os = "macos", feature = "accelerate"))]
+            LuInner::Accelerate(lu) => lu.diagonal().collect(),
+            LuInner::Faer(lu) => {
+                let u = lu.U();
+                (0..u.nrows()).map(|i| u[(i, i)]).collect()
+            }
         };
         diagonal.iter().fold((f64::INFINITY, 0.0f64), |(lo, hi), d| (lo.min(d.norm()), hi.max(d.norm())))
     }
@@ -79,20 +183,23 @@ impl Lu {
     }
 
     fn solve_with(&self, b: MatMut<'_, c64>, adjoint: bool) {
-        #[cfg(all(target_os = "macos", feature = "accelerate"))]
-        if let Err(mut b) = self.inner.solve_in_place(b, adjoint) {
-            // A stride LAPACK cannot take: solve a column-major copy.
-            let mut copy = b.to_owned();
-            let _ = self.inner.solve_in_place(copy.as_mut(), adjoint);
-            b.copy_from(&copy);
-        }
-        #[cfg(not(all(target_os = "macos", feature = "accelerate")))]
-        {
-            use faer::linalg::solvers::SolveCore;
-            if adjoint {
-                self.inner.solve_transpose_in_place_with_conj(faer::Conj::Yes, b);
-            } else {
-                self.inner.solve_in_place_with_conj(faer::Conj::No, b);
+        match &self.inner {
+            #[cfg(all(target_os = "macos", feature = "accelerate"))]
+            LuInner::Accelerate(lu) => {
+                if let Err(mut b) = lu.solve_in_place(b, adjoint) {
+                    // A stride LAPACK cannot take: solve a column-major copy.
+                    let mut copy = b.to_owned();
+                    let _ = lu.solve_in_place(copy.as_mut(), adjoint);
+                    b.copy_from(&copy);
+                }
+            }
+            LuInner::Faer(lu) => {
+                use faer::linalg::solvers::SolveCore;
+                if adjoint {
+                    lu.solve_transpose_in_place_with_conj(faer::Conj::Yes, b);
+                } else {
+                    lu.solve_in_place_with_conj(faer::Conj::No, b);
+                }
             }
         }
     }
@@ -116,12 +223,12 @@ impl Lu {
     }
 
     fn pivots_len(&self) -> usize {
-        #[cfg(all(target_os = "macos", feature = "accelerate"))]
-        return self.inner.diagonal().count();
-        #[cfg(not(all(target_os = "macos", feature = "accelerate")))]
-        return self.inner.U().nrows();
+        match &self.inner {
+            #[cfg(all(target_os = "macos", feature = "accelerate"))]
+            LuInner::Accelerate(lu) => lu.diagonal().count(),
+            LuInner::Faer(lu) => lu.U().nrows(),
+        }
     }
-
     /// Lower estimate of `‖a⁻¹‖₁` (LAPACK zlacn2, at most 5 iterations).
     fn inverse_norm_1(&self) -> f64 {
         let n = self.pivots_len();
@@ -187,9 +294,10 @@ pub fn norm_1(a: MatRef<'_, c64>) -> f64 {
 pub fn orthonormal_columns(a: MatRef<'_, c64>) -> Mat<c64> {
     assert!(a.nrows() >= a.ncols(), "orthonormal_columns: more columns than rows");
     #[cfg(all(target_os = "macos", feature = "accelerate"))]
-    return accelerate::orthonormal_columns(a);
-    #[cfg(not(all(target_os = "macos", feature = "accelerate")))]
-    return a.qr().compute_thin_Q();
+    if let Some(_slot) = accelerate_slot() {
+        return accelerate::orthonormal_columns(a);
+    }
+    a.qr().compute_thin_Q()
 }
 
 /// Thin singular value decomposition `a = u diag(s) v†`.
@@ -204,13 +312,12 @@ pub struct Svd {
 /// Thin singular value decomposition of `a`.
 pub fn svd(a: MatRef<'_, c64>) -> Result<Svd, DenseError> {
     #[cfg(all(target_os = "macos", feature = "accelerate"))]
-    return accelerate::svd(a);
-    #[cfg(not(all(target_os = "macos", feature = "accelerate")))]
-    {
-        let svd = a.thin_svd().map_err(|_| DenseError::Svd)?;
-        let s = (0..a.nrows().min(a.ncols())).map(|k| svd.S()[k].re).collect();
-        Ok(Svd { u: svd.U().to_owned(), s, v: svd.V().to_owned() })
+    if let Some(_slot) = accelerate_slot() {
+        return accelerate::svd(a);
     }
+    let svd = a.thin_svd().map_err(|_| DenseError::Svd)?;
+    let s = (0..a.nrows().min(a.ncols())).map(|k| svd.S()[k].re).collect();
+    Ok(Svd { u: svd.U().to_owned(), s, v: svd.V().to_owned() })
 }
 
 /// How a factor enters a product.
@@ -237,9 +344,12 @@ pub fn matmul(
     let ((ra, ka), (kb, cb)) = (shape(a, op_a), shape(b, op_b));
     assert!(ra == dst.nrows() && cb == dst.ncols() && ka == kb, "matmul: dimension mismatch");
     #[cfg(all(target_os = "macos", feature = "accelerate"))]
-    let dst = match accelerate::matmul(dst, accum, a, op_a, b, op_b, alpha) {
-        Ok(()) => return,
-        Err(dst) => dst, // strides BLAS cannot take
+    let dst = match accelerate_slot() {
+        Some(_slot) => match accelerate::matmul(dst, accum, a, op_a, b, op_b, alpha) {
+            Ok(()) => return,
+            Err(dst) => dst, // strides BLAS cannot take
+        },
+        None => dst,
     };
     faer_matmul(dst, accum, a, op_a, b, op_b, alpha);
 }
@@ -288,6 +398,34 @@ mod tests {
                 ((i * 3 + j * 5 + 2 * seed) % 11) as f64 / 11.0 - 0.5,
             )
         })
+    }
+
+    /// Every backend gives the same results (the build's libraries, and a shared mode with no
+    /// slot left).
+    #[test]
+    fn backends_agree() {
+        let a = test_matrix(60, 60, 3) + Mat::<c64>::identity(60, 60) * faer::Scale(c64::new(1.5, 0.2));
+        let b = test_matrix(60, 4, 4);
+        let run = || {
+            let x = Lu::new(a.as_ref()).solve(b.as_ref());
+            let p = product(a.as_ref(), Op::Adjoint, b.as_ref(), Op::Plain);
+            let s = svd(a.as_ref()).unwrap().s;
+            (x, p, s)
+        };
+        let saved = backend();
+        let reference = run();
+        for choice in [Backend::Accelerate, Backend::Faer, Backend::Shared(0), Backend::Shared(2)] {
+            set_backend(choice);
+            assert_eq!(backend(), choice);
+            let (x, p, s) = run();
+            assert!(
+                (&x - &reference.0).norm_max() < 1e-11 && (&p - &reference.1).norm_max() < 1e-11,
+                "{choice:?}"
+            );
+            assert!(s.iter().zip(&reference.2).all(|(u, v)| (u - v).abs() < 1e-11), "{choice:?}");
+        }
+        set_backend(saved);
+        assert_eq!(ACTIVE.load(Ordering::Relaxed), 0, "slots released");
     }
 
     /// LU solves against faer, with a strided right-hand side, and the pivots of a singular matrix.
