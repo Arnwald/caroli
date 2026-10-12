@@ -8,6 +8,7 @@ license.workspace = true
 repository.workspace = true
 
 [dependencies]
+caroli-dense.workspace = true
 caroli-lattice.workspace = true
 caroli-model.workspace = true
 faer.workspace = true

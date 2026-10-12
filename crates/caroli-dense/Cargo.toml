@@ -1,0 +1,18 @@
+[package]
+name = "caroli-dense"
+description = "Dense complex kernels for caroli: Schur decomposition and reordering, matrix products (Apple Accelerate on macOS, faer elsewhere)."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[features]
+default = ["accelerate"]
+# Apple's Accelerate framework (LAPACK and BLAS on the matrix units of Apple silicon). Only has an
+# effect on macOS; it needs macOS 13.3 or later.
+accelerate = []
+
+[dependencies]
+faer.workspace = true
+thiserror.workspace = true

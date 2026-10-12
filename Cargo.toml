@@ -20,6 +20,7 @@ caroli-torus = { path = "crates/caroli-torus" }
 caroli-kpm = { path = "crates/caroli-kpm" }
 caroli-dynamics = { path = "crates/caroli-dynamics" }
 caroli-gpu = { path = "crates/caroli-gpu" }
+caroli-dense = { path = "crates/caroli-dense" }
 faer = "0.24"
 num-complex = "0.4"
 thiserror = "2"

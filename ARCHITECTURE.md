@@ -8,6 +8,8 @@ crates/
   caroli-model        tight-binding models: on-site and hopping matrices, site-dependent terms,
                       dense / sparse (CSR) / Bloch Hamiltonians, transport blocks; BHZ Dirac
                       matrices and presets
+  caroli-dense        dense complex kernels: Schur decomposition and reordering, LU, products
+                      (Apple Accelerate on macOS, faer elsewhere)
   caroli-green        steady state: lead modes and self-energies, recursive Green's function,
                       nested dissection, Caroli transmission
   caroli-disorder     reproducible random streams (xoshiro256**, gfortran-compatible seeding),
@@ -28,12 +30,21 @@ crates/
   caroli-bench        (not published) benchmarks against other codes (`benchmarks/`)
 ```
 
-The dependencies only go downward: lattice ← model ← green ← caroli.
+The dependencies only go downward: lattice ← model ← green ← caroli, and dense ← green.
 
 ## Design choices
 
-- **Linear algebra: faer** (pure Rust, no system LAPACK). Complex scalars are `faer::c64`
-  (= `num_complex::Complex<f64>`), matrices `faer::Mat<c64>` (`CMat`).
+- **Linear algebra: faer.** Complex scalars are `faer::c64` (= `num_complex::Complex<f64>`),
+  matrices `faer::Mat<c64>` (`CMat`).
+  - The kernels that dominate transport go through `caroli-dense`: the Schur decomposition, LU
+    solves and inverses, and matrix products.
+  - On macOS they call Apple's Accelerate framework (feature `accelerate`, on by default):
+    LAPACK 3.9+ (`$NEWLAPACK` symbols) and BLAS, which run on the matrix units of Apple silicon.
+    It is part of the system, so nothing extra is installed, but it needs macOS 13.3 or later.
+  - Elsewhere, or with the feature off, they use faer and the in-house QR algorithm.
+  - Measured on an M5, one thread, n = 512: Accelerate's products are 5× faster than faer's.
+    Its Schur decomposition (zhseqr) takes 0.35 s on a lead pencil. faer's multishift QR is
+    1.8× faster for the eigenvalues alone, but it is private (`pub(crate)`).
 - **Orbital layout** is fixed by the `Region`: site `i` occupies orbitals
   `offset(i) .. offset(i) + orbitals(i)`. `Region::cuboid` orders the sites with the first axis
   varying slowest, so the slices along x are contiguous.
@@ -48,11 +59,18 @@ The dependencies only go downward: lattice ← model ← green ← caroli.
     regular 2r pencil in `x = (u†ψ_{j−1}, v†ψ_j)`, stabilised by `i(uu† + vv†)` so that it holds
     even when `H0 − E` is singular. Low-rank couplings (graphene cut along a slanted direction)
     give small, well-conditioned problems.
-  - Invariant subspaces come from a complex Schur decomposition with reordering (`schur.rs`).
-    faer's Hessenberg reduction is followed by our own single-shift QR, because faer's QZ is slow
-    near n = 80 and its standard Schur is private. Eigenvectors are not used for the evanescent
-    modes: for strongly decaying modes they are nearly dependent (inverse condition 1e-15 in a
-    100-wide ribbon).
+  - Invariant subspaces come from a complex Schur decomposition with reordering
+    (`caroli-dense`). Eigenvectors are not used for the evanescent modes: for strongly decaying
+    modes they are nearly dependent (inverse condition 1e-15 in a 100-wide ribbon).
+    - The decomposition is Accelerate's on macOS. Elsewhere, faer's Hessenberg reduction is
+      followed by our own single-shift QR, because faer's QZ is slow near n = 80 and its
+      standard Schur is private.
+    - The reordering moves eigenvalues by adjacent swaps (as LAPACK ztrexc), in windows of 64:
+      the rotations of a window reach the rest of the matrix as one product (Kressner's block
+      algorithm). Moving half the spectrum of a 512 matrix to the front takes 17 ms, against
+      145 ms swap by swap and 181 ms with Accelerate's ztrsen.
+    - The propagating eigenvectors are back-substituted in the Schur form, then transformed,
+      projected and multiplied by `H1` as matrix products over all the modes at once.
   - Propagating modes are split by velocity sign. The current is diagonalised within each
     degenerate group.
   - `Σ_R = u X_γ X_α⁻¹ u†` and `Σ_L = v Y_α Y_γ⁻¹ v†`, from orthonormal bases of the right- and
@@ -181,7 +199,8 @@ Golden cases with disorder use the same impurity configurations as the thesis.
     - **Faster double path, to do first.** Two changes:
       - the coupling between slices is diagonal site by site, so two of the three products per
         slice become O(n²);
-      - dense algebra through Accelerate (AMX).
+      - dense algebra through Accelerate (AMX). Done for the inversions (`caroli-dense`): the
+        square lattice at W = 256 went from 4.9 s to 3.5 s per energy on the M5.
 11. Examples: the two thesis studies (TI with magnetic impurities: G maps, local currents, Born
     phase diagram; graphene under a field: current, pair creation, DOS).
 13. Speed: the fastest code of its kind, measured against the reference codes. Kwant comes
@@ -195,3 +214,10 @@ Golden cases with disorder use the same impurity configurations as the thesis.
       a CI job running on the machine: 1.6 s at W = 256 (square; Kwant 1.1 s) and 2.8 s for BHZ
       at W = 128 (Kwant 5.2 s), with far less memory. At that size the lead modes take most of
       the time (1.25 of 1.43 s).
+    - Dense kernels (`caroli-dense`), measured on the M5, one thread, square lattice, mean per
+      energy: `NestedTwoTerminal` went from 1.35 s to 0.47 s at W = 256, and from 0.17 s to
+      0.08 s at W = 128.
+      - Lead modes at W = 256 (pencil of 512): 1.25 s → 0.47 s. The propagating modes went
+        from 228 ms to 19 ms with batched products.
+      - What remains: the Schur decomposition (0.35 s), the orthonormal bases with their
+        condition checks (47 ms), and the elimination (0.11 s).

@@ -12,15 +12,14 @@ pub mod decimation;
 pub mod modes;
 pub mod multi;
 pub mod nested;
-mod schur;
 mod two_terminal;
 
 pub use multi::{AttachedLead, Interface, MultiSolution, MultiTerminal};
 pub use nested::NestedTwoTerminal;
 pub use two_terminal::{EndToEnd, Lead, SelfEnergyMethod, Sweeps, TwoTerminal};
 
+use caroli_dense::Lu;
 use caroli_model::{CMat, c64};
-use faer::linalg::solvers::{DenseSolveCore, Solve};
 
 /// Error of a Green's function computation.
 #[derive(Debug, thiserror::Error, PartialEq)]
@@ -39,13 +38,14 @@ pub enum GreenError {
 
 /// Inverse of a square matrix (partial-pivoting LU).
 pub(crate) fn inverse(m: &CMat) -> CMat {
-    m.partial_piv_lu().inverse()
+    let n = m.nrows();
+    Lu::new(m.as_ref()).solve(CMat::identity(n, n).as_ref())
 }
 
 /// `x` solving `x · a = b`.
 pub(crate) fn solve_right(b: &CMat, a: &CMat) -> CMat {
-    let xt = a.transpose().partial_piv_lu().solve(b.transpose());
-    xt.transpose().to_owned()
+    let at = a.transpose().to_owned();
+    Lu::new(at.as_ref()).solve(b.transpose()).transpose().to_owned()
 }
 
 /// `z·1 − h`.

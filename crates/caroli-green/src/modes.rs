@@ -25,9 +25,9 @@
 //! from above), and [`LeadModes::energy`] records the energy used.
 
 use crate::{GreenError, solve_right};
+use caroli_dense::{Accum, Lu, Op, matmul, product};
 use caroli_model::{CMat, c64};
 use faer::Side;
-use faer::linalg::solvers::Solve;
 
 /// Singular values of `H1` below this fraction of the largest are dropped.
 const RANK_TOL: f64 = 1e-12;
@@ -69,6 +69,15 @@ fn row_norm(m: &CMat) -> f64 {
 
 fn rows(m: &CMat, range: std::ops::Range<usize>) -> CMat {
     CMat::from_fn(range.len(), m.ncols(), |i, j| m[(range.start + i, j)])
+}
+
+/// Stable partition of the Schur form `(t, q)` and of its keys: selected keys first.
+fn partition_by(t: &mut CMat, q: &mut CMat, keys: &mut Vec<usize>, select: impl Fn(usize) -> bool) {
+    let flags: Vec<bool> = keys.iter().map(|&k| select(k)).collect();
+    caroli_dense::partition(t, q, &flags);
+    let (mut first, rest): (Vec<usize>, Vec<usize>) = keys.iter().copied().partition(|&k| select(k));
+    first.extend(rest);
+    *keys = first;
 }
 
 /// Smallest over largest singular value (0 for an empty or zero matrix).
@@ -134,7 +143,7 @@ impl LeadModes {
         let stab = &u * u.adjoint() + &v * v.adjoint();
         let a = CMat::from_fn(n, n, |p, q| h0[(p, q)] - if p == q { z } else { zero } + i * stab[(p, q)]);
         let rhs = CMat::from_fn(n, 2 * r, |p, k| if k < r { u[(p, k)] } else { v[(p, k - r)] });
-        let g = a.partial_piv_lu().solve(&rhs);
+        let g = Lu::new(a.as_ref()).solve(rhs.as_ref());
         let gu = CMat::from_fn(n, r, |p, k| g[(p, k)]);
         let gv = CMat::from_fn(n, r, |p, k| g[(p, r + k)]);
         if gu.norm_max().is_nan() || gv.norm_max().is_nan() {
@@ -161,11 +170,8 @@ impl LeadModes {
         // A standard eigenproblem with the same invariant subspaces: L⁻¹R (eigenvalue λ) or R⁻¹L
         // (1/λ) when one of them is well conditioned, else (R − σL)⁻¹L (λ = σ + 1/μ) with σ off
         // the unit circle.
-        let pivot_ratio = |d: faer::MatRef<'_, c64>| {
-            let (lo, hi) = (0..d.nrows()).fold((f64::INFINITY, 0.0f64), |(l, h), p| {
-                let x = d[(p, p)].norm();
-                (l.min(x), h.max(x))
-            });
+        let pivot_ratio = |lu: &Lu| {
+            let (lo, hi) = lu.pivot_range();
             if hi > 0.0 { lo / hi } else { 0.0 }
         };
         #[derive(Clone, Copy)]
@@ -174,21 +180,21 @@ impl LeadModes {
             Inverse,
             Mobius(c64),
         }
-        let (lu_l, lu_r) = (lmat.partial_piv_lu(), rmat.partial_piv_lu());
-        let (pl, pr) = (pivot_ratio(lu_l.U()), pivot_ratio(lu_r.U()));
+        let (lu_l, lu_r) = (Lu::new(lmat.as_ref()), Lu::new(rmat.as_ref()));
+        let (pl, pr) = (pivot_ratio(&lu_l), pivot_ratio(&lu_r));
         let (c, map) = if pl >= pr && pl > 1e-10 {
-            (lu_l.solve(&rmat), Map::Direct)
+            (lu_l.solve(rmat.as_ref()), Map::Direct)
         } else if pr > 1e-10 {
-            (lu_r.solve(&lmat), Map::Inverse)
+            (lu_r.solve(lmat.as_ref()), Map::Inverse)
         } else {
             let mut best: Option<(f64, c64, CMat)> = None;
             for k in 0..8 {
                 let sigma = c64::from_polar(if k % 2 == 0 { 0.5 } else { 2.0 }, 0.3 + 0.9 * k as f64);
                 let m = &rmat - CMat::from_fn(2 * r, 2 * r, |p, q| sigma * lmat[(p, q)]);
-                let lu = m.partial_piv_lu();
-                let ratio = pivot_ratio(lu.U());
+                let lu = Lu::new(m.as_ref());
+                let ratio = pivot_ratio(&lu);
                 if best.as_ref().is_none_or(|b| ratio > b.0) {
-                    best = Some((ratio, sigma, lu.solve(&lmat)));
+                    best = Some((ratio, sigma, lu.solve(lmat.as_ref())));
                 }
             }
             let (ratio, sigma, c) = best.expect("candidates");
@@ -200,7 +206,7 @@ impl LeadModes {
 
         // Schur form and classes: right-evanescent, propagating, left-evanescent (with λ = ∞).
         let m2 = 2 * r;
-        let (q0, t0) = crate::schur::schur(&c)?;
+        let (q0, t0) = caroli_dense::schur(c.as_ref()).map_err(|_| GreenError::Eigen)?;
         let mu_max = (0..m2).map(|k| t0[(k, k)].norm()).fold(0.0, f64::max);
         let to_lambda = |mu: c64| -> Option<c64> {
             match map {
@@ -244,79 +250,91 @@ impl LeadModes {
             keys[k] = 1 + ids.binary_search(&group[a]).expect("group id");
         }
 
-        // Ordering A: right-evanescent, then the propagating groups.
+        // Ordering A: right-evanescent, then the propagating groups (blocked partitions, then
+        // the few swaps that make each group contiguous).
         let (mut qa, mut ta) = (q0.clone(), t0.clone());
         let mut keys_a = keys.clone();
-        crate::schur::reorder(&mut ta, &mut qa, &mut keys_a);
+        partition_by(&mut ta, &mut qa, &mut keys_a, |k| k == RIGHT);
+        partition_by(&mut ta, &mut qa, &mut keys_a, |k| k != LEFT);
+        caroli_dense::reorder(&mut ta, &mut qa, &mut keys_a);
         let n_re = keys_a.iter().filter(|&&k| k == RIGHT).count();
         let (mut right, mut left): (Vec<Vec<c64>>, Vec<Vec<c64>>) =
             ((0..n_re).map(|k| (0..m2).map(|p| qa[(p, k)]).collect()).collect(), Vec::new());
         let (mut rv, mut lv) = (Vec::new(), Vec::new());
-        let dot = |x: &[c64], y: &[c64]| x.iter().zip(y).map(|(a, b)| a.conj() * b).sum::<c64>();
+
+        // Propagating modes, in groups of (nearly) equal λ. Each member keeps its own eigenvalue.
+        // A numerically scalar group block (a true degeneracy) takes the Schur basis e_k on the
+        // group; otherwise each eigenvector is back-substituted within the group too, and a Jordan
+        // block (subband edge) shows up as nearly parallel vectors.
+        let tnorm = ta.norm_max();
+        let mut groups: Vec<(usize, usize, bool)> = Vec::new();
         let mut g0 = n_re;
         while g0 < m2 && keys_a[g0] != LEFT {
             let mut g1 = g0 + 1;
             while g1 < m2 && keys_a[g1] == keys_a[g0] {
                 g1 += 1;
             }
-            let m = g1 - g0;
-            // Each member keeps its own eigenvalue. A numerically scalar group block (a true
-            // degeneracy) takes the Schur basis e_k on the group; otherwise each eigenvector is
-            // back-substituted within the group too, and a Jordan block (subband edge) shows up as
-            // nearly parallel vectors.
-            let tnorm = ta.norm_max();
             let off = (g0..g1)
                 .flat_map(|a| (a + 1..g1).map(move |b| (a, b)))
                 .map(|(a, b)| ta[(a, b)].norm())
                 .fold(0.0, f64::max);
-            let scalar = off <= 1e-8 * tnorm;
-            let mut lams_g: Vec<c64> = Vec::with_capacity(m);
-            let mut xs: Vec<Vec<c64>> = Vec::with_capacity(m);
-            let mut phis: Vec<Vec<c64>> = Vec::with_capacity(m);
+            groups.push((g0, g1, off <= 1e-8 * tnorm));
+            g0 = g1;
+        }
+        let np = g0 - n_re;
+        // Eigenvectors of the Schur form (the columns of y), by column-oriented back-substitution.
+        let mut y = CMat::zeros(m2, np);
+        let mut lams: Vec<c64> = Vec::with_capacity(np);
+        let mut acc: Vec<c64> = Vec::with_capacity(m2);
+        for &(g0, g1, scalar) in &groups {
             for k in g0..g1 {
                 let mu = ta[(k, k)];
-                let lam = to_lambda(mu).ok_or(GreenError::Singular(z.re))?;
-                let mut y = vec![zero; g1];
-                y[k] = one;
+                lams.push(to_lambda(mu).ok_or(GreenError::Singular(z.re))?);
+                let col = y.col_as_slice_mut(k - n_re);
+                col[k] = one;
                 let start = if scalar { g0 } else { k };
-                for i in (0..start).rev() {
-                    let s: c64 = (i + 1..g1).map(|j| ta[(i, j)] * y[j]).sum();
-                    let d = ta[(i, i)] - mu;
+                acc.clear();
+                acc.extend(ta.col_as_slice(k)[..start].iter().map(|t| -t));
+                for j in (0..start).rev() {
+                    let d = ta[(j, j)] - mu;
                     if d == zero {
                         return Err(GreenError::Singular(z.re));
                     }
-                    y[i] = -s / d;
+                    let yj = acc[j] / d;
+                    col[j] = yj;
+                    for (a, t) in acc[..j].iter_mut().zip(&ta.col_as_slice(j)[..j]) {
+                        *a -= yj * t;
+                    }
                 }
-                let x: Vec<c64> = (0..m2).map(|p| (0..g1).map(|j| qa[(p, j)] * y[j]).sum()).collect();
-                let norm = x.iter().map(|z| z.norm_sqr()).sum::<f64>().sqrt();
-                if !(norm.is_finite() && norm > 0.0) {
-                    return Err(GreenError::Singular(z.re));
-                }
-                let x: Vec<c64> = x.iter().map(|z| z / norm).collect();
-                // φ = G̃(−v α + i v γ + λ(i u α − u γ)).
-                let (al, ga) = (&x[..r], &x[r..]);
-                let bb: Vec<c64> = (0..r).map(|q| -al[q] + i * ga[q]).collect();
-                let cc: Vec<c64> = (0..r).map(|q| lam * (i * al[q] - ga[q])).collect();
-                let phi: Vec<c64> =
-                    (0..n).map(|p| (0..r).map(|q| gv[(p, q)] * bb[q] + gu[(p, q)] * cc[q]).sum()).collect();
-                lams_g.push(lam);
-                xs.push(x);
-                phis.push(phi);
             }
-            // Current J_ab = i(λ_b φ_a† H1 φ_b − λ_a* φ_a† H1† φ_b) in the metric of the (α, γ)
-            // vectors; its inertia gives the right- and left-going modes.
-            let h1phi: Vec<Vec<c64>> = phis
-                .iter()
-                .map(|f| (0..n).map(|p| (0..n).map(|q| h1[(p, q)] * f[q]).sum()).collect())
-                .collect();
-            let h1dphi: Vec<Vec<c64>> = phis
-                .iter()
-                .map(|f| (0..n).map(|p| (0..n).map(|q| h1[(q, p)].conj() * f[q]).sum()).collect())
-                .collect();
-            let gram = CMat::from_fn(m, m, |p, q| dot(&xs[p], &xs[q]));
-            let cur = CMat::from_fn(m, m, |p, q| {
-                i * (lams_g[q] * dot(&phis[p], &h1phi[q]) - lams_g[p].conj() * dot(&phis[p], &h1dphi[q]))
-            });
+        }
+        // x = Q y, normalised, and φ = G̃(−v α + i v γ + λ(i u α − u γ)) with (α, γ) = x.
+        let mut x = product(qa.as_ref(), Op::Plain, y.as_ref(), Op::Plain);
+        for p in 0..np {
+            let col = x.col_as_slice_mut(p);
+            let norm = col.iter().map(|z| z.norm_sqr()).sum::<f64>().sqrt();
+            if !(norm.is_finite() && norm > 0.0) {
+                return Err(GreenError::Singular(z.re));
+            }
+            col.iter_mut().for_each(|z| *z /= norm);
+        }
+        let bb = CMat::from_fn(r, np, |q, p| -x[(q, p)] + i * x[(r + q, p)]);
+        let cc = CMat::from_fn(r, np, |q, p| lams[p] * (i * x[(q, p)] - x[(r + q, p)]));
+        let mut phis = CMat::zeros(n, np);
+        matmul(phis.as_mut(), Accum::Replace, gv.as_ref(), Op::Plain, bb.as_ref(), Op::Plain, one);
+        matmul(phis.as_mut(), Accum::Add, gu.as_ref(), Op::Plain, cc.as_ref(), Op::Plain, one);
+        let h1phi = product(h1.as_ref(), Op::Plain, phis.as_ref(), Op::Plain);
+        let h1dphi = product(h1.as_ref(), Op::Adjoint, phis.as_ref(), Op::Plain);
+        // Current J_ab = i(λ_b φ_a† H1 φ_b − λ_a* φ_a† H1† φ_b) of each group, in the metric of the
+        // (α, γ) vectors; its inertia gives the right- and left-going modes.
+        for &(g0, g1, _) in &groups {
+            let (p0, m) = (g0 - n_re, g1 - g0);
+            let (xg, fg) = (x.as_ref().subcols(p0, m), phis.as_ref().subcols(p0, m));
+            let gram = product(xg, Op::Adjoint, xg, Op::Plain);
+            let a = product(fg, Op::Adjoint, h1phi.as_ref().subcols(p0, m), Op::Plain);
+            let b = product(fg, Op::Adjoint, h1dphi.as_ref().subcols(p0, m), Op::Plain);
+            let cur =
+                CMat::from_fn(m, m, |p, q| i * (lams[p0 + q] * a[(p, q)] - lams[p0 + p].conj() * b[(p, q)]));
             let llt = gram.llt(Side::Lower).map_err(|_| GreenError::Singular(z.re))?;
             let lch = llt.L().to_owned();
             if inverse_condition(&lch) < DEFECTIVE_TOL {
@@ -328,30 +346,29 @@ impl LeadModes {
             let evd = jh.self_adjoint_eigen(Side::Lower).map_err(|_| GreenError::Eigen)?;
             let (vel, w) = (evd.S(), evd.U());
             let coeffs = linv.adjoint() * w;
+            let (phi_k, x_k) = (
+                product(fg, Op::Plain, coeffs.as_ref(), Op::Plain),
+                product(xg, Op::Plain, coeffs.as_ref(), Op::Plain),
+            );
             for k in 0..m {
-                let phi: Vec<c64> =
-                    (0..n).map(|p| (0..m).map(|q| phis[q][p] * coeffs[(q, k)]).sum()).collect();
-                let vk = vel[k].re / phi.iter().map(|z| z.norm_sqr()).sum::<f64>();
+                let vk = vel[k].re / phi_k.col_as_slice(k).iter().map(|z| z.norm_sqr()).sum::<f64>();
                 if vk.is_nan() || vk.abs() < VELOCITY_TOL * scale {
                     return Err(GreenError::Singular(z.re)); // subband edge
                 }
-                let x: Vec<c64> = (0..m2).map(|p| (0..m).map(|q| xs[q][p] * coeffs[(q, k)]).sum()).collect();
                 if vk > 0.0 {
-                    right.push(x);
+                    right.push(x_k.col_as_slice(k).to_vec());
                     rv.push(vk);
                 } else {
-                    left.push(x);
+                    left.push(x_k.col_as_slice(k).to_vec());
                     lv.push(vk);
                 }
             }
-            g0 = g1;
         }
 
         // Ordering B: left-evanescent first.
         let (mut qb, mut tb) = (q0, t0);
-        let mut keys_b: Vec<usize> = keys.iter().map(|&k| if k == LEFT { 0 } else { 1 }).collect();
-        crate::schur::reorder(&mut tb, &mut qb, &mut keys_b);
-        let n_le = keys_b.iter().filter(|&&k| k == 0).count();
+        let left_evanescent: Vec<bool> = keys.iter().map(|&k| k == LEFT).collect();
+        let n_le = caroli_dense::partition(&mut tb, &mut qb, &left_evanescent);
         left.extend((0..n_le).map(|k| (0..m2).map(|p| qb[(p, k)]).collect::<Vec<c64>>()));
 
         if right.len() != r || left.len() != r {

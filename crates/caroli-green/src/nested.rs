@@ -22,9 +22,9 @@
 
 use crate::modes::{sigma_left, sigma_right};
 use crate::{GreenError, Lead, broadening, trace};
+use caroli_dense::{Accum, Lu, Op, matmul};
 use caroli_lattice::Region;
 use caroli_model::{CMat, Model, SparseMatrix, c64};
-use faer::linalg::solvers::Solve;
 
 /// Domains with at most this many orbitals are not split further.
 const LEAF_ORBITALS: usize = 64;
@@ -105,7 +105,8 @@ impl NestedTwoTerminal {
 
         // Geometric tree over the interior sites (all but the two lead slices).
         let ends = [first.sites()[0].cell[axis], last.sites()[0].cell[axis]];
-        let interior: Vec<usize> = (0..region.len()).filter(|&i| !ends.contains(&region.sites()[i].cell[axis])).collect();
+        let interior: Vec<usize> =
+            (0..region.len()).filter(|&i| !ends.contains(&region.sites()[i].cell[axis])).collect();
         let mut range = [1i64; 3];
         for hop in device.hoppings() {
             for (d, r) in range.iter_mut().enumerate() {
@@ -159,9 +160,11 @@ impl NestedTwoTerminal {
             .iter()
             .map(|&label| {
                 let mine = |o: usize| roots[o] == label;
-                let pick = |orbs: &[usize]| -> Vec<usize> { (0..orbs.len()).filter(|&k| mine(orbs[k])).collect() };
+                let pick =
+                    |orbs: &[usize]| -> Vec<usize> { (0..orbs.len()).filter(|&k| mine(orbs[k])).collect() };
                 let (kl, kr) = (pick(&left_orbitals), pick(&right_orbitals));
-                let restrict = |m: &CMat, k: &[usize]| CMat::from_fn(k.len(), k.len(), |a, b| m[(k[a], k[b])]);
+                let restrict =
+                    |m: &CMat, k: &[usize]| CMat::from_fn(k.len(), k.len(), |a, b| m[(k[a], k[b])]);
                 let block_orbitals = |sites: &[usize]| -> Vec<usize> {
                     let mut v: Vec<usize> = sites
                         .iter()
@@ -173,7 +176,11 @@ impl NestedTwoTerminal {
                 };
                 let mut nodes: Vec<Node> = site_nodes
                     .iter()
-                    .map(|(sites, children)| Node { eliminate: block_orbitals(sites), boundary: Vec::new(), children: children.clone() })
+                    .map(|(sites, children)| Node {
+                        eliminate: block_orbitals(sites),
+                        boundary: Vec::new(),
+                        children: children.clone(),
+                    })
                     .collect();
                 symbolic(&h, &mut nodes);
                 Block {
@@ -198,7 +205,8 @@ impl NestedTwoTerminal {
     /// Caroli transmission `T(E) = Tr[Γ_L G_LR Γ_R G_LR†]`, with mode-matching self-energies.
     pub fn transmission(&self, energy: f64) -> Result<f64, GreenError> {
         use rayon::prelude::*;
-        let parts: Vec<Result<f64, GreenError>> = self.blocks.par_iter().map(|b| self.block_transmission(b, energy)).collect();
+        let parts: Vec<Result<f64, GreenError>> =
+            self.blocks.par_iter().map(|b| self.block_transmission(b, energy)).collect();
         parts.into_iter().sum()
     }
 
@@ -265,9 +273,10 @@ impl NestedTwoTerminal {
         extend_add(&mut f, &pos, &kids);
         let s = if nd > 0 { schur(&f, nd).ok_or(GreenError::Singular(z.re))? } else { f };
         // Columns of the right slice of S⁻¹, rows of the left slice.
-        let rhs = CMat::from_fn(s.nrows(), nr, |i, j| if i == r0 - nd + j { c64::new(1.0, 0.0) } else { c64::new(0.0, 0.0) });
-        let lu = s.partial_piv_lu();
-        let x = lu.solve(&rhs);
+        let rhs = CMat::from_fn(s.nrows(), nr, |i, j| {
+            if i == r0 - nd + j { c64::new(1.0, 0.0) } else { c64::new(0.0, 0.0) }
+        });
+        let x = Lu::new(s.as_ref()).solve(rhs.as_ref());
         if !x.norm_max().is_finite() {
             return Err(GreenError::Singular(z.re));
         }
@@ -337,7 +346,12 @@ impl NestedTwoTerminal {
 
 /// Builds the elimination tree over `sites` (indices in `region`) in post-order: each node is
 /// `(sites eliminated, children)`. Returns the root of the subtree, if any.
-fn split(region: &Region, sites: Vec<usize>, range: &[i64; 3], nodes: &mut Vec<(Vec<usize>, Vec<usize>)>) -> Option<usize> {
+fn split(
+    region: &Region,
+    sites: Vec<usize>,
+    range: &[i64; 3],
+    nodes: &mut Vec<(Vec<usize>, Vec<usize>)>,
+) -> Option<usize> {
     if sites.is_empty() {
         return None;
     }
@@ -350,7 +364,10 @@ fn split(region: &Region, sites: Vec<usize>, range: &[i64; 3], nodes: &mut Vec<(
         });
         (lo, hi)
     };
-    let (d, (lo, hi)) = (0..dim).map(|d| (d, extent(d))).max_by_key(|&(d, (lo, hi))| (hi - lo, std::cmp::Reverse(d))).unwrap();
+    let (d, (lo, hi)) = (0..dim)
+        .map(|d| (d, extent(d)))
+        .max_by_key(|&(d, (lo, hi))| (hi - lo, std::cmp::Reverse(d)))
+        .unwrap();
     if orbitals <= LEAF_ORBITALS || hi - lo < range[d] {
         nodes.push((sites, Vec::new()));
         return Some(nodes.len() - 1);
@@ -367,7 +384,8 @@ fn split(region: &Region, sites: Vec<usize>, range: &[i64; 3], nodes: &mut Vec<(
             b.push(i);
         }
     }
-    let children: Vec<usize> = [split(region, a, range, nodes), split(region, b, range, nodes)].into_iter().flatten().collect();
+    let children: Vec<usize> =
+        [split(region, a, range, nodes), split(region, b, range, nodes)].into_iter().flatten().collect();
     nodes.push((sep, children));
     Some(nodes.len() - 1)
 }
@@ -404,7 +422,8 @@ fn symbolic(h: &SparseMatrix, nodes: &mut [Node]) {
 /// Adds the children's Schur complements into the front `f` (variables at `pos`).
 fn extend_add(f: &mut CMat, pos: &Positions, kids: &[(Vec<usize>, CMat)]) {
     for (vars, u) in kids {
-        let map: Vec<usize> = vars.iter().map(|&o| pos.get(o).expect("child variable in the parent front")).collect();
+        let map: Vec<usize> =
+            vars.iter().map(|&o| pos.get(o).expect("child variable in the parent front")).collect();
         for (b, &pb) in map.iter().enumerate() {
             for (a, &pa) in map.iter().enumerate() {
                 f[(pa, pb)] += u[(a, b)];
@@ -419,9 +438,8 @@ fn schur(f: &CMat, ne: usize) -> Option<CMat> {
     let n = f.nrows();
     let f11 = f.as_ref().submatrix(0, 0, ne, ne);
     let scale = f11.norm_max();
-    let lu = f11.partial_piv_lu();
-    let u = lu.U();
-    let small = (0..ne).map(|i| u[(i, i)].norm()).fold(f64::INFINITY, f64::min);
+    let lu = Lu::new(f11);
+    let (small, _) = lu.pivot_range();
     let stable = small > PIVOT_TOL * scale; // false for NaN
     if !stable {
         return None;
@@ -432,6 +450,15 @@ fn schur(f: &CMat, ne: usize) -> Option<CMat> {
     }
     let x = lu.solve(f.as_ref().submatrix(0, ne, ne, nb));
     let mut s = f.as_ref().submatrix(ne, ne, nb, nb).to_owned();
-    s -= f.as_ref().submatrix(ne, 0, nb, ne) * &x;
+    let minus_one = c64::new(-1.0, 0.0);
+    matmul(
+        s.as_mut(),
+        Accum::Add,
+        f.as_ref().submatrix(ne, 0, nb, ne),
+        Op::Plain,
+        x.as_ref(),
+        Op::Plain,
+        minus_one,
+    );
     Some(s)
 }

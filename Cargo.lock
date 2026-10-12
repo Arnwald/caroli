@@ -109,6 +109,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "caroli-dense"
+version = "0.1.0"
+dependencies = [
+ "faer",
+ "thiserror 2.0.21",
+]
+
+[[package]]
 name = "caroli-disorder"
 version = "0.1.0"
 dependencies = [
@@ -147,6 +155,7 @@ dependencies = [
 name = "caroli-green"
 version = "0.1.0"
 dependencies = [
+ "caroli-dense",
  "caroli-lattice",
  "caroli-model",
  "faer",
