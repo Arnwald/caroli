@@ -462,7 +462,18 @@ impl NestedMultiTerminal {
     /// Spectral bond currents `2 Re Tr[H_ij G^<_ji]` between every pair of coupled sites, from
     /// the scattering states and the lead occupations `f` (one per lead).
     pub fn bond_currents(&self, states: &ScatteringStates, f: &[f64]) -> Vec<BondCurrent> {
-        crate::nested::bond_currents(&self.h, &self.region, states, f)
+        crate::nested::bond_currents(&self.h, &self.region, states, f, None)
+    }
+
+    /// Bond currents of an on-site operator `O` (see
+    /// [`crate::NestedTwoTerminal::operator_currents`]).
+    pub fn operator_currents(&self, states: &ScatteringStates, f: &[f64], op: &CMat) -> Vec<BondCurrent> {
+        crate::nested::bond_currents(&self.h, &self.region, states, f, Some(op))
+    }
+
+    /// Spectral density `Σ_p f_p ψ_p† O ψ_p / 2π` of every site (`O = 1` for `None`).
+    pub fn site_densities(&self, states: &ScatteringStates, f: &[f64], op: Option<&CMat>) -> Vec<f64> {
+        crate::nested::site_densities(&self.region, states, f, op)
     }
 
     /// The device region (orbital layout of the scattering states).

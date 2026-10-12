@@ -149,7 +149,10 @@ The dependencies only go downward: lattice ← model ← green ← caroli, and d
     Keldysh conventions (`G^< = i Σ_p f_p ψ_p ψ_p†`), which match `caroli-keldysh`'s recursive
     `Lesser` to 1e-10 (square, BHZ, graphene, field). `NestedMultiTerminal::scattering_states`
     does the same for any number of leads: in a cross, the current out of each arm is `T_pq`
-    and Kirchhoff's law holds at every inner site, with or without a field.
+    and Kirchhoff's law holds at every inner site, with or without a field. With an on-site
+    operator `O` (`site_densities`, `operator_currents`: `Re Tr[(O H_ij + H_ij O) G^<_ji]`) they
+    give spin densities and spin currents: in a BHZ ribbon with a Zeeman term, the `s_z`
+    current through every cut is `T↑ − T↓`.
   - `NestedMultiTerminal::sector_transmissions`: transmissions between the sectors of a
     conservation law in the leads (spin, electrons and holes), with `Γ_{p,a} = V P_a γ_p P_a V†`;
     within one lead they are reflection probabilities between sectors, such as Andreev

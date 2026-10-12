@@ -78,6 +78,7 @@ A lead must be the same from cell to cell. The constructors check it, and in a u
 | `kwant.wave_function(fsys, E)` | `sys.scattering_states(E)`: `ψ_p = G W_p`, `W_p W_p† = Γ_p` |
 | `kwant.ldos(fsys, E)` | `states.occupation(&[1.0; leads])` |
 | `kwant.operator.Current(fsys)(ψ)` | `sys.bond_currents(&states, &occupations)` |
+| `kwant.operator.Density/Current(fsys, onsite=σ_z)` | `sys.site_densities(&states, &f, Some(&op))`, `sys.operator_currents(&states, &f, &op)` |
 | `lead.modes(E)` | `Lead::modes(E)` (channels, velocities) |
 | `kwant.physics.Bands(lead)` | `Lead::bands(k)` |
 | `kwant.kpm.conductivity` | `caroli::kpm::kubo::{kubo_moments, kubo_bastin}` with `Model::sparse_velocity` |

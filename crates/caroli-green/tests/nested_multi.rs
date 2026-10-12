@@ -409,3 +409,66 @@ fn scattering_matrix() {
         assert!(s.blocks[0][0].norm_max() < 1e-9, "E = {e}: no reflection");
     }
 }
+
+/// Operators on the site orbitals: with `O = 1` they give the charge currents and densities; in
+/// a disordered BHZ ribbon with a Zeeman term (spin conserved, `T↑ ≠ T↓`), the `s_z` spin
+/// current through every cross-section is `(T↑ − T↓)(f_L − f_R)`.
+#[test]
+fn spin_currents() {
+    use caroli_model::pauli::{kron, s0, sz};
+    let clean = bhz(BhzParams::default()).onsite(
+        0,
+        &bhz(BhzParams::default()).onsite_matrix(&Site { cell: [0, 0, 0], sub: 0 })
+            + kron(&sz(), &s0()) * faer::Scale(c64::new(0.04, 0.0)),
+    );
+    let device = disordered(
+        bhz(BhzParams::default()).onsite(0, clean.onsite_matrix(&Site { cell: [0, 0, 0], sub: 0 })),
+        0.6,
+        4,
+    );
+    let region = Region::cuboid(clean.lattice(), [10, 7, 0]);
+    let slices = region.slices(0);
+    let interfaces = [
+        Interface { slice: slices[0].clone(), outward: [-1, 0, 0] },
+        Interface { slice: slices[9].clone(), outward: [1, 0, 0] },
+    ];
+    let sys = NestedMultiTerminal::from_model(&device, &clean, &region, &interfaces);
+    let spin = kron(&sz(), &s0());
+    let identity = CMat::identity(4, 4);
+    for e in [-0.25, 0.4, 0.7] {
+        let states = sys.scattering_states(e).unwrap();
+        let f = [1.0, 0.0];
+        // O = 1: the charge observables.
+        let (charge, plain) = (sys.operator_currents(&states, &f, &identity), sys.bond_currents(&states, &f));
+        assert!(charge.iter().zip(&plain).all(|(a, b)| (a.current - b.current).abs() < 1e-12));
+        let per_orbital = states.occupation(&f);
+        let per_site = sys.site_densities(&states, &f, None);
+        for (i, rho) in per_site.iter().enumerate() {
+            let o = sys.region().offset(i);
+            assert!((rho - per_orbital[o..o + 4].iter().sum::<f64>()).abs() < 1e-12);
+        }
+        // Spin current through each cut against the spin-resolved transmissions.
+        let sectors = sys.sector_transmissions(e, &[Some(vec![0, 0, 1, 1]), Some(vec![0, 0, 1, 1])]).unwrap();
+        let t = |p: (usize, usize), q: (usize, usize)| {
+            let (a, b) = (
+                sectors.labels.iter().position(|&l| l == p).unwrap(),
+                sectors.labels.iter().position(|&l| l == q).unwrap(),
+            );
+            sectors.t[a][b]
+        };
+        let polarisation = t((1, 0), (0, 0)) - t((1, 1), (0, 1));
+        assert!(polarisation.abs() > 1e-3, "E = {e}: no spin polarisation to test");
+        let spin_currents = sys.operator_currents(&states, &f, &spin);
+        for x in 0..9 {
+            let through: f64 = spin_currents
+                .iter()
+                .map(|b| match (b.from.cell[0] <= x, b.to.cell[0] <= x) {
+                    (true, false) => b.current,
+                    (false, true) => -b.current,
+                    _ => 0.0,
+                })
+                .sum();
+            assert!((through - polarisation).abs() < 1e-9, "E = {e}, cut {x}: {through} vs {polarisation}");
+        }
+    }
+}

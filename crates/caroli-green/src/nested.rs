@@ -755,7 +755,19 @@ impl NestedTwoTerminal {
     /// the scattering states and the lead occupations `f` (`G^< = i Σ_p f_p ψ_p ψ_p†`). Each bond
     /// appears once, from the site of lower index in the region.
     pub fn bond_currents(&self, states: &ScatteringStates, f: &[f64]) -> Vec<BondCurrent> {
-        bond_currents(&self.h, &self.region, states, f)
+        bond_currents(&self.h, &self.region, states, f, None)
+    }
+
+    /// Bond currents of an on-site operator `O` (a spin current for `O = s_z`):
+    /// `Re Tr[(O H_ij + H_ij O) G^<_ji]`, `2 Re Tr[H_ij G^<_ji]` for `O = 1`.
+    pub fn operator_currents(&self, states: &ScatteringStates, f: &[f64], op: &CMat) -> Vec<BondCurrent> {
+        bond_currents(&self.h, &self.region, states, f, Some(op))
+    }
+
+    /// Spectral density `Σ_p f_p ψ_p† O ψ_p / 2π` of every site (`O = 1` for `None`): the occupied
+    /// density, or a spin density.
+    pub fn site_densities(&self, states: &ScatteringStates, f: &[f64], op: Option<&CMat>) -> Vec<f64> {
+        site_densities(&self.region, states, f, op)
     }
 
     /// The device region (orbital layout of the scattering states).
@@ -764,14 +776,16 @@ impl NestedTwoTerminal {
     }
 }
 
-/// Spectral bond currents `2 Re Tr[H_ij G^<_ji]` between every pair of coupled sites of `region`,
-/// with `G^< = i Σ_p f_p ψ_p ψ_p†` from the scattering states. Each bond appears once, from the
-/// site of lower index in the region.
+/// Spectral bond currents between every pair of coupled sites of `region`, with
+/// `G^< = i Σ_p f_p ψ_p ψ_p†` from the scattering states: `2 Re Tr[H_ij G^<_ji]`, or with an
+/// on-site operator `O` (spin...), `Re Tr[(O H_ij + H_ij O) G^<_ji]`. Each bond appears once,
+/// from the site of lower index in the region.
 pub(crate) fn bond_currents(
     h: &SparseMatrix,
     region: &Region,
     states: &ScatteringStates,
     f: &[f64],
+    op: Option<&CMat>,
 ) -> Vec<BondCurrent> {
     assert_eq!(f.len(), states.leads.len(), "one occupation per lead");
     // Rows of ψ_p as contiguous vectors: (ψ_p ψ_p†)_ba = Σ_k ψ_bk ψ_ak*.
@@ -788,20 +802,77 @@ pub(crate) fn bond_currents(
         owner[region.offset(i)..region.offset(i) + region.site_orbitals(i)].fill(i);
     }
     let mut currents: std::collections::BTreeMap<(usize, usize), c64> = Default::default();
-    for a in 0..h.n {
-        for (b, hab) in h.row(a) {
-            let (i, j) = (owner[a], owner[b]);
-            if i < j {
-                *currents.entry((i, j)).or_default() += hab * lesser(b, a);
+    match op {
+        None => {
+            for a in 0..h.n {
+                for (b, hab) in h.row(a) {
+                    let (i, j) = (owner[a], owner[b]);
+                    if i < j {
+                        *currents.entry((i, j)).or_default() += hab * lesser(b, a) * 2.0;
+                    }
+                }
+            }
+        }
+        Some(o) => {
+            // Blocks H_ij, then Tr[(O H_ij + H_ij O) G^<_ji].
+            let mut blocks: std::collections::BTreeMap<(usize, usize), CMat> = Default::default();
+            for a in 0..h.n {
+                for (b, hab) in h.row(a) {
+                    let (i, j) = (owner[a], owner[b]);
+                    if i < j {
+                        let (ni, nj) = (region.site_orbitals(i), region.site_orbitals(j));
+                        assert!(
+                            o.nrows() == ni && o.nrows() == nj,
+                            "the operator acts on the orbitals of a site"
+                        );
+                        let block = blocks.entry((i, j)).or_insert_with(|| CMat::zeros(ni, nj));
+                        block[(a - region.offset(i), b - region.offset(j))] += hab;
+                    }
+                }
+            }
+            for ((i, j), hij) in blocks {
+                let (oi, oj) = (region.offset(i), region.offset(j));
+                let g = CMat::from_fn(hij.ncols(), hij.nrows(), |b, a| lesser(oj + b, oi + a)); // G^<_ji
+                let weighted = o * &hij + &hij * o;
+                let acc: c64 = (0..weighted.nrows())
+                    .flat_map(|a| (0..weighted.ncols()).map(move |b| (a, b)))
+                    .map(|(a, b)| weighted[(a, b)] * g[(b, a)])
+                    .sum();
+                currents.insert((i, j), acc);
             }
         }
     }
     currents
         .into_iter()
-        .map(|((i, j), acc)| BondCurrent {
-            from: region.sites()[i],
-            to: region.sites()[j],
-            current: 2.0 * acc.re,
+        .map(|((i, j), acc)| BondCurrent { from: region.sites()[i], to: region.sites()[j], current: acc.re })
+        .collect()
+}
+
+/// Spectral densities of every site of `region`, `Σ_p f_p ψ_p† O ψ_p / 2π` on its orbitals (`O = 1`
+/// without an operator): the occupied density, or a spin density.
+pub(crate) fn site_densities(
+    region: &Region,
+    states: &ScatteringStates,
+    f: &[f64],
+    op: Option<&CMat>,
+) -> Vec<f64> {
+    assert_eq!(f.len(), states.leads.len(), "one occupation per lead");
+    (0..region.len())
+        .map(|i| {
+            let (o0, n) = (region.offset(i), region.site_orbitals(i));
+            let mut acc = c64::new(0.0, 0.0);
+            for (m, fp) in states.leads.iter().zip(f) {
+                for k in 0..m.ncols() {
+                    for a in 0..n {
+                        let left = m[(o0 + a, k)].conj();
+                        acc += match op {
+                            None => left * m[(o0 + a, k)] * *fp,
+                            Some(o) => (0..n).map(|b| left * o[(a, b)] * m[(o0 + b, k)]).sum::<c64>() * *fp,
+                        };
+                    }
+                }
+            }
+            acc.re / (2.0 * std::f64::consts::PI)
         })
         .collect()
 }
