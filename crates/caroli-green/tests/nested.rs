@@ -153,3 +153,25 @@ fn transmission_eigenvalues_and_shot_noise() {
         assert!(tunnel.fano_factor(e).unwrap() > 0.99, "E = {e}: tunnel barrier");
     }
 }
+
+/// Three dimensions: a disordered cubic wire (cross-section 6 × 5) and a slab cut along its
+/// thin direction, against the recursive Green's function.
+#[test]
+fn cubic_samples() {
+    let cubic = || {
+        Model::new(Lattice::cubic(1.0, 1))
+            .hopping(0, 0, [1, 0, 0], scalar(-1.0, 1))
+            .hopping(0, 0, [0, 1, 0], scalar(-1.0, 1))
+            .hopping(0, 0, [0, 0, 1], scalar(-1.0, 1))
+    };
+    for (extent, axis) in [([14, 6, 5], 0), ([4, 9, 8], 0), ([7, 10, 6], 2)] {
+        let region = Region::cuboid(cubic().lattice(), extent);
+        let device = disordered(cubic(), 2.5, 1);
+        let nested = NestedTwoTerminal::from_model(&device, &cubic(), &region, axis);
+        let rgf = TwoTerminal::from_model(&device, &cubic(), &region, axis);
+        for e in [-4.1, -1.3, 0.0, 2.2] {
+            let (t, t2) = (nested.transmission(e).unwrap(), rgf.transmission(e).unwrap());
+            assert!((t - t2).abs() < 1e-9 * (1.0 + t2), "{extent:?} along {axis}, E = {e}: {t} vs {t2}");
+        }
+    }
+}
