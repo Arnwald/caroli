@@ -202,3 +202,28 @@ fn two_terminal_scattering_matrix() {
         }
     }
 }
+
+/// Bond disorder (a site-dependent hopping term): nested dissection and the recursive Green's
+/// function agree.
+#[test]
+fn bond_disorder() {
+    let factor = |a: &Site, b: &Site| {
+        let (p, q) = if a < b { (a, b) } else { (b, a) };
+        let k = (p.cell[0] * 7919 + p.cell[1] * 104_729 + q.cell[0] * 31 + q.cell[1] * 977) as u64;
+        1.0 + 0.6 * (((k.wrapping_mul(6_364_136_223_846_793_005) >> 11) as f64 / (1u64 << 53) as f64) - 0.5)
+    };
+    let region = Region::cuboid(square().lattice(), [12, 7, 0]);
+    // Bond disorder inside the device only: the leads stay clean.
+    let device = square().with_hopping_term(move |from: &Site, to: &Site, t: &CMat| {
+        let inside = |s: &Site| (1..11).contains(&s.cell[0]);
+        (inside(from) && inside(to)).then(|| CMat::from_fn(1, 1, |_, _| t[(0, 0)] * factor(from, to)))
+    });
+    let (nested, rgf) = (
+        NestedTwoTerminal::from_model(&device, &square(), &region, 0),
+        TwoTerminal::from_model(&device, &square(), &region, 0),
+    );
+    for e in [-2.4, -0.5, 0.0, 1.9] {
+        let (t, t2) = (nested.transmission(e).unwrap(), rgf.transmission(e).unwrap());
+        assert!((t - t2).abs() < 1e-10, "E = {e}: {t} vs {t2}");
+    }
+}

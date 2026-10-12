@@ -52,7 +52,9 @@ The dependencies only go downward: lattice ← model ← green ← caroli, and d
   `offset(i) .. offset(i) + orbitals(i)`. `Region::cuboid` orders the sites with the first axis
   varying slowest, so the slices along x are contiguous.
 - **Model** = on-site matrix per sublattice + hoppings `⟨(R, a)| H |(R + offset, b)⟩` (their
-  conjugates are implied) + site-dependent terms (`OnSite` trait: disorder, potentials).
+  conjugates are implied) + site-dependent terms (`OnSite` trait: disorder, potentials) +
+  site-dependent hopping terms (`HoppingTerm`, Kwant's value functions for hoppings: bond
+  disorder, strain; the reverse hop is the conjugate, so `H` stays Hermitian).
   The Bloch convention is `H(k) = Σ_n H_{0n} e^{i k·n}`.
 - **Continuum models** (`caroli_model::continuum`): `Continuum::parse` reads a k·p Hamiltonian
   (numbers, parameters, `k_x k_y k_z`, Pauli matrices, `kron`, `+ − * / ^`) into a polynomial in

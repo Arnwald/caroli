@@ -107,6 +107,20 @@ impl<F: Fn(&Site) -> Option<CMat> + Send + Sync> OnSite for F {
     }
 }
 
+/// Site-dependent hopping term (Kwant's value functions for hoppings): the matrix
+/// `⟨(R, from)| H |(R + offset, to)⟩` of a hopping between two given sites, from the model's
+/// matrix `t`; `None` keeps `t`. The reverse hop is its conjugate, so the Hamiltonian stays
+/// Hermitian. Bond disorder, strain, spatially varying parameters.
+pub trait HoppingTerm: Send + Sync {
+    fn matrix(&self, from: &Site, to: &Site, t: &CMat) -> Option<CMat>;
+}
+
+impl<F: Fn(&Site, &Site, &CMat) -> Option<CMat> + Send + Sync> HoppingTerm for F {
+    fn matrix(&self, from: &Site, to: &Site, t: &CMat) -> Option<CMat> {
+        self(from, to, t)
+    }
+}
+
 /// Peierls phase of the hopping `⟨i| H |j⟩`: `φ(r_i, r_j) = ∫ A · dl` from `r_j` to `r_i`, in
 /// radians (charge and ħ absorbed in `A`). It must be antisymmetric: `φ(a, b) = −φ(b, a)`.
 pub trait Peierls: Send + Sync {
@@ -166,6 +180,7 @@ pub struct Model {
     onsite: Vec<CMat>,
     hoppings: Vec<Hopping>,
     extra: Vec<Box<dyn OnSite>>,
+    hopping_terms: Vec<Box<dyn HoppingTerm>>,
     peierls: Option<Box<dyn Peierls>>,
     /// Uniform field set by [`Model::with_field`].
     field: Option<f64>,
@@ -175,7 +190,15 @@ impl Model {
     /// Model with zero on-site matrices and no hopping.
     pub fn new(lattice: Lattice) -> Self {
         let onsite = lattice.sublattices().iter().map(|s| CMat::zeros(s.orbitals, s.orbitals)).collect();
-        Self { lattice, onsite, hoppings: Vec::new(), extra: Vec::new(), peierls: None, field: None }
+        Self {
+            lattice,
+            onsite,
+            hoppings: Vec::new(),
+            extra: Vec::new(),
+            hopping_terms: Vec::new(),
+            peierls: None,
+            field: None,
+        }
     }
 
     pub fn lattice(&self) -> &Lattice {
@@ -210,6 +233,30 @@ impl Model {
     pub fn with_onsite_term(mut self, term: impl OnSite + 'static) -> Self {
         self.extra.push(Box::new(term));
         self
+    }
+
+    /// Adds a site-dependent hopping term (see [`HoppingTerm`]); terms apply in the order they
+    /// were added, each to the result of the previous ones.
+    pub fn with_hopping_term(mut self, term: impl HoppingTerm + 'static) -> Self {
+        self.hopping_terms.push(Box::new(term));
+        self
+    }
+
+    /// The matrix of `hop` between the sites `from` (its `from` sublattice) and `to`, after the
+    /// hopping terms.
+    fn hopping_matrix<'a>(&self, hop: &'a Hopping, from: &Site, to: &Site) -> std::borrow::Cow<'a, CMat> {
+        let mut m = std::borrow::Cow::Borrowed(&hop.matrix);
+        for term in &self.hopping_terms {
+            if let Some(v) = term.matrix(from, to, &m) {
+                assert_eq!(
+                    (v.nrows(), v.ncols()),
+                    (hop.matrix.nrows(), hop.matrix.ncols()),
+                    "hopping term of the wrong size"
+                );
+                m = std::borrow::Cow::Owned(v);
+            }
+        }
+        m
     }
 
     /// Multiplies every hopping `⟨i| H |j⟩` by `exp(i φ(r_i, r_j))`: a vector potential through
@@ -325,7 +372,12 @@ impl Model {
                         let phase: f64 = n.iter().zip(phases).map(|(n, k)| *n as f64 * k).sum();
                         let (s, cs) = phase.sin_cos();
                         let factor = self.phased(c64::new(cs, s), site, &partner);
-                        h.block(region.offset(i), region.offset(j), &hop.matrix, factor, adjoint);
+                        let m = if adjoint {
+                            self.hopping_matrix(hop, &partner, site)
+                        } else {
+                            self.hopping_matrix(hop, site, &partner)
+                        };
+                        h.block(region.offset(i), region.offset(j), &m, factor, adjoint);
                     }
                 }
             }
@@ -371,7 +423,12 @@ impl Model {
                     let along: f64 = (0..3).map(|c| (rj[c] - ri[c]) * direction[c]).sum();
                     let (s, cs) = phase.sin_cos();
                     let factor = self.phased(c64::new(cs, s), site, &partner) * c64::new(0.0, along);
-                    t.block(region.offset(i), region.offset(j), &hop.matrix, factor, adjoint);
+                    let m = if adjoint {
+                        self.hopping_matrix(hop, &partner, site)
+                    } else {
+                        self.hopping_matrix(hop, site, &partner)
+                    };
+                    t.block(region.offset(i), region.offset(j), &m, factor, adjoint);
                 }
             }
         }
@@ -394,26 +451,16 @@ impl Model {
                 if hop.from == site.sub {
                     let partner = shifted(site, hop.offset, 1, hop.to);
                     if let Some(j) = b.index_of(&partner) {
-                        h.block(
-                            a.offset(i),
-                            b.offset(j),
-                            &hop.matrix,
-                            self.phased(factor, site, &partner),
-                            false,
-                        );
+                        let m = self.hopping_matrix(hop, site, &partner);
+                        h.block(a.offset(i), b.offset(j), &m, self.phased(factor, site, &partner), false);
                     }
                 }
                 // Backward: site is `to`, partner is `from` at -offset; block is matrix†.
                 if hop.to == site.sub {
                     let partner = shifted(site, hop.offset, -1, hop.from);
                     if let Some(j) = b.index_of(&partner) {
-                        h.block(
-                            a.offset(i),
-                            b.offset(j),
-                            &hop.matrix,
-                            self.phased(factor, site, &partner),
-                            true,
-                        );
+                        let m = self.hopping_matrix(hop, &partner, site);
+                        h.block(a.offset(i), b.offset(j), &m, self.phased(factor, site, &partner), true);
                     }
                 }
             }

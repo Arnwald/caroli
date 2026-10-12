@@ -19,6 +19,7 @@ use caroli::prelude::*;
 | `syst[...] = value` (uniform) | `Model::new(lattice).onsite(sublattice, value)` |
 | `syst[kwant.builder.HoppingKind(δ, a, b)] = t` | `.hopping(a, b, -δ, t)` |
 | value functions of the site | `.with_onsite_term(\|site\| Some(matrix))` |
+| value functions of a hopping | `.with_hopping_term(\|from, to, t\| Some(matrix))` |
 | Peierls phases, `kwant.physics.magnetic_gauge` | `.with_peierls(φ)`, or `.with_field(b)` for a uniform field |
 | `kwant.continuum.discretize("k_x**2 + ...")` | `Continuum::parse("k_x^2 + ...", &params)?.discretize(a)` |
 
@@ -114,5 +115,6 @@ let hall = v[3] - v[2]; // ±h/(ν e²) on the plateaus
 
 ## Not yet in caroli
 
-Symmetry analysis (qsymm), position-dependent coefficients in continuum models (only
-constant ones for now; add potentials with `with_onsite_term`), and plotting.
+Symmetry analysis (qsymm), position-dependent coefficients inside continuum expressions (add
+potentials with `with_onsite_term` and varying hoppings with `with_hopping_term` on the
+discretised model), and plotting.
