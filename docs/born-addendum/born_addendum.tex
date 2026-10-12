@@ -58,6 +58,8 @@ with the antiferromagnetic conductance map is a finite-width effect of the 64-si
 \section{Summary}
 
 \begin{itemize}
+\item \textbf{The derivation} (Sec.~\ref{s:derivation}). Every step of the SCBA, from the
+  Hamiltonian to the program; the error is in \hyperref[st:identify]{Step~7}.
 \item \textbf{The error.} The mass equations of the SCBA carry the wrong sign
   (Sec.~\ref{s:error}). The chemical-potential equations are right.
 \item \textbf{Where it comes from.} The derivation, as printed in Ref.~\cite{g2g1} and in
@@ -166,10 +168,259 @@ A replica written for this note reproduces the published Born data of runs 00--0
 $10^{-14}$. The code is therefore a faithful implementation of the printed equations.
 
 %======================================================================
+\section{The self-consistent Born approximation, step by step}\label{s:derivation}
+
+This section rederives the SCBA of Ref.~\cite{g2g1} from the Hamiltonian, with every
+intermediate step, in the paper's notation. It departs from the printed equations in two places:
+the identification of the renormalised mass (\hyperref[st:identify]{Step~7}) and the weight $v_z$
+(\hyperref[st:disorder]{Step~2}). Both are flagged where they occur. Spins are labelled $\sigma=+1$ ($\up$)
+and $\sigma=-1$ ($\dn$), and $\bar\sigma=-\sigma$.
+
+\subsection{Step 1: the clean model in \texorpdfstring{$\bm k$}{k} space}\label{st:clean}
+
+Each site carries four orbitals, $(E\up, H\up, E\dn, H\dn)$. The Pauli matrices $\bm\sigma$ act on
+the spin and $\bm\tau$ on the E/H orbitals. After a Fourier transform on the square lattice, the
+clean Hamiltonian is block diagonal in spin, $H_0(\bm k)=\mathrm{diag}[h_\up(\bm k),h_\dn(\bm k)]$, with
+\begin{equation}
+h_\sigma(\bm k) = -D_{\bm k}\,\tau_0 + (m-B_{\bm k})\,\tau_z + A\,(\sigma\sin k_x\,\tau_x - \sin k_y\,\tau_y),
+\qquad B_{\bm k}=B\,(4-2\cos k_x-2\cos k_y),
+\label{e:hk}
+\end{equation}
+and the same for $D_{\bm k}$. Two properties of the $\tau_x$, $\tau_y$ terms are used below:
+\begin{itemize}
+\item they are odd in $\bm k$;
+\item their squares add up to $A^2(\sin^2k_x+\sin^2k_y)$.
+\end{itemize}
+The chemical potential enters as $H_0-\mu$, so Green's functions are $[E+\mu-H]^{-1}$. In this
+form the mass appears with a plus sign ($+m\,\tau_z$) and the chemical potential with a minus
+sign ($-\mu\,\tau_0$). This difference is what \hyperref[st:identify]{Step~7} is about.
+
+\subsection{Step 2: the disorder and its first two moments}\label{st:disorder}
+
+Each site $\bm r$ is occupied by an impurity with probability $n_I$, independently of the other
+sites: $\eta_{\bm r}\in\{0,1\}$, $\langle\eta_{\bm r}\rangle=n_I$. An impurity carries a classical unit
+moment $\bm S_{\bm r}$, independent of $\eta$, with
+\begin{itemize}
+\item a uniform azimuth, so $\langle S_x\rangle=\langle S_y\rangle=0$ and $\langle S_aS_b\rangle=0$ for $a\ne b$;
+\item $S_z$ uniform in $[2M_z-1,1]$ (the polarised moments of the thesis), so $\langle S_z\rangle=M_z$
+  and $\langle S_z^2\rangle = M_z^2+(1-M_z)^2/3$;
+\item $\langle S_x^2\rangle=\langle S_y^2\rangle=(1-\langle S_z^2\rangle)/2$, since $|\bm S|=1$.
+\end{itemize}
+The potential on site $\bm r$ is
+\begin{equation}
+U_{\bm r} = J_I\,\eta_{\bm r}\,(\bm S_{\bm r}\cdot\bm\sigma)\,\tau_\alpha = J_I\sum_{a=x,y,z}X^{\bm r}_a\,\sigma_a\tau_\alpha,
+\qquad X_a=\eta\,S_a .
+\end{equation}
+Its mean is $\langle X_a\rangle = n_I\langle S_a\rangle$, so
+\begin{equation}
+\langle U\rangle = n_I J_I M_z\,\sigma_z\tau_\alpha .
+\end{equation}
+Its covariances follow from $\eta^2=\eta$:
+$C_{ab}=\langle X_aX_b\rangle-\langle X_a\rangle\langle X_b\rangle = n_I\langle S_aS_b\rangle-n_I^2\langle S_a\rangle\langle S_b\rangle$. Only the
+diagonal ones survive:
+\begin{equation}
+C_{zz} = n_I\big(\langle S_z^2\rangle-n_IM_z^2\big)\equiv n_I\,v_z,\qquad
+C_{xx}=C_{yy}=\tfrac{n_I}{2}\big(1-\langle S_z^2\rangle\big)\equiv \tfrac{n_I}{2}\,v_\perp ,
+\end{equation}
+\begin{equation}
+v_z=(1-n_I)M_z^2+\tfrac13(1-M_z)^2,\qquad v_\perp=\tfrac23(1-M_z)(1+2M_z).
+\label{e:weights}
+\end{equation}
+Ref.~\cite{g2g1} writes $v_z=\langle S_z^2\rangle-n_I^2M_z^2$: the factor $n_I$ is taken out twice
+(Sec.~\ref{s:vz}). $v_\perp$ agrees.
+
+\subsection{Step 3: averaged Green's function, mean field and self-energy}\label{st:dyson}
+
+For one configuration, $G=[z+\mu-H_0-V]^{-1}$, with $z=E+\I0^+$ and $V=\sum_{\bm r}U_{\bm r}$. The disorder
+average restores translation invariance, so $\langle G\rangle$ is diagonal in $\bm k$. The self-energy is
+defined by the Dyson equation:
+\begin{equation}
+\langle G\rangle(\bm k) = \big[z+\mu-H_0(\bm k)-\langle V\rangle-\Sigma(\bm k,z)\big]^{-1}.
+\label{e:dyson}
+\end{equation}
+The mean field $\langle V\rangle=\langle U\rangle$ is uniform. As in the paper, it goes into the unperturbed
+Green's function, $g(\bm k)=[z+\mu-H_0(\bm k)-\langle V\rangle]^{-1}$. Block by block:
+\begin{itemize}
+\item same-$g$ ($\tau_\alpha=\tau_0$): $\langle V\rangle_\sigma=\sigma n_IJ_IM_z\,\tau_0$, so $\mu_\sigma=\mu-\sigma n_IJ_IM_z$ and
+  $m_\sigma=m$;
+\item opposite-$g$ ($\tau_\alpha=\tau_z$): $\langle V\rangle_\sigma=\sigma n_IJ_IM_z\,\tau_z$, so $\mu_\sigma=\mu$ and
+  $m_\sigma=m+\sigma n_IJ_IM_z$.
+\end{itemize}
+Then $g_\sigma(\bm k)=[z+\mu_\sigma-h_\sigma(\bm k;m_\sigma)]^{-1}$, where $h_\sigma(\bm k;m_\sigma)$ is
+Eq.~(\ref{e:hk}) with $m$ replaced by $m_\sigma$.
+
+\subsection{Step 4: second order, the Born approximation}\label{st:born}
+
+Write $\delta U_{\bm r}=U_{\bm r}-\langle U\rangle$ and expand: $G=g+g\,\delta V g+g\,\delta Vg\,\delta Vg+\dots$ Since
+$\langle\delta V\rangle=0$,
+\begin{equation}
+\langle G\rangle = g + g\,\langle\delta V g\,\delta V\rangle\,g + O(\delta V^3)
+\quad\Longrightarrow\quad \Sigma=\langle\delta V g\,\delta V\rangle + O(\delta V^3).
+\end{equation}
+On the sites, $(\delta Vg\,\delta V)_{\bm r\bm r'}=\delta U_{\bm r}\,g_{\bm r\bm r'}\,\delta U_{\bm r'}$. Different sites are independent
+and $\delta U$ has zero mean, so the average vanishes unless $\bm r=\bm r'$:
+\begin{equation}
+\Sigma_{\bm r\bm r'}=\delta_{\bm r\bm r'}\,\langle\delta U\,g_{\mathrm{loc}}\,\delta U\rangle,\qquad
+g_{\mathrm{loc}}=g_{\bm r\bm r}=\frac1{N_k}\sum_{\bm k}g(\bm k).
+\end{equation}
+The self-energy is local, hence independent of $\bm k$. $N_k$ is the number of $\bm k$ points
+($N^2$ in the paper). The self-consistent version replaces $g$ by $\langle G\rangle$ itself, which resums
+all the non-crossing diagrams:
+\begin{equation}
+\Sigma=\langle\delta U\,\langle G\rangle_{\mathrm{loc}}\,\delta U\rangle,\qquad
+\langle G\rangle_{\mathrm{loc}}=\frac1{N_k}\sum_{\bm k}\big[z+\mu-H_0(\bm k)-\langle V\rangle-\Sigma\big]^{-1}.
+\label{e:scba}
+\end{equation}
+
+\subsection{Step 5: the vertex algebra}\label{st:vertex}
+
+With the covariances of \hyperref[st:disorder]{Step~2},
+\begin{equation}
+\Sigma = J_I^2\sum_{ab}C_{ab}\,(\sigma_a\tau_\alpha)\langle G\rangle_{\mathrm{loc}}(\sigma_b\tau_\alpha)
+= n_IJ_I^2\Big[v_z\,(\sigma_z\tau_\alpha)\langle G\rangle_{\mathrm{loc}}(\sigma_z\tau_\alpha)
++\frac{v_\perp}{2}\sum_{a=x,y}(\sigma_a\tau_\alpha)\langle G\rangle_{\mathrm{loc}}(\sigma_a\tau_\alpha)\Big].
+\end{equation}
+Take $\langle G\rangle$ block diagonal in spin; Eq.~(\ref{e:scba}) then keeps it so. For a
+block-diagonal matrix,
+\begin{equation}
+\sigma_z\,\mathrm{diag}(P,Q)\,\sigma_z=\mathrm{diag}(P,Q),\qquad
+\sigma_x\,\mathrm{diag}(P,Q)\,\sigma_x=\sigma_y\,\mathrm{diag}(P,Q)\,\sigma_y=\mathrm{diag}(Q,P).
+\end{equation}
+Longitudinal fluctuations keep the spin and transverse ones exchange the blocks:
+\begin{equation}
+\Sigma_\sigma = n_IJ_I^2\big[v_z\,\tau_\alpha\langle G_\sigma\rangle_{\mathrm{loc}}\tau_\alpha+v_\perp\,\tau_\alpha\langle G_{\bar\sigma}\rangle_{\mathrm{loc}}\tau_\alpha\big].
+\end{equation}
+\hyperref[st:local]{Step~6} shows that $\langle G_\sigma\rangle_{\mathrm{loc}}$ has only $\tau_0$ and $\tau_z$ components. These
+commute with $\tau_z$, so $\tau_\alpha$ drops out for both couplings:
+\begin{equation}
+\Sigma_\sigma = n_IJ_I^2\big[v_z\,\langle G_\sigma\rangle_{\mathrm{loc}}+v_\perp\,\langle G_{\bar\sigma}\rangle_{\mathrm{loc}}\big].
+\label{e:sigmablock}
+\end{equation}
+At this order the two couplings differ only through the mean field of \hyperref[st:dyson]{Step~3}.
+
+\subsection{Step 6: the local Green's function of a block}\label{st:local}
+
+By Eq.~(\ref{e:sigmablock}), $\Sigma_\sigma=\Sigma^0_\sigma\tau_0+\Sigma^z_\sigma\tau_z$. The averaged block is then
+\begin{equation}
+\langle G_\sigma\rangle(\bm k)=\big[a_\sigma(\bm k)-\bm d_\sigma(\bm k)\cdot\bm\tau\big]^{-1},\qquad
+a_\sigma=z+\mu_\sigma+D_{\bm k}-\Sigma^0_\sigma,\quad
+d^z_\sigma=m_\sigma-B_{\bm k}+\Sigma^z_\sigma,
+\end{equation}
+with $d^x_\sigma=\sigma A\sin k_x$ and $d^y_\sigma=-A\sin k_y$. Since $(\bm d\cdot\bm\tau)^2=\bm d\cdot\bm d$,
+\begin{equation}
+\big[a-\bm d\cdot\bm\tau\big]^{-1}=\frac{a+\bm d\cdot\bm\tau}{a^2-\bm d\cdot\bm d},\qquad
+\Delta_\sigma(\bm k)=a_\sigma^2-\bm d_\sigma\cdot\bm d_\sigma .
+\end{equation}
+The sum over $\bm k$ removes the odd components $d^x$, $d^y$:
+\begin{equation}
+\langle G_\sigma\rangle_{\mathrm{loc}}=\frac1{N_k}\sum_{\bm k}\frac{a_\sigma(\bm k)\,\tau_0+d^z_\sigma(\bm k)\,\tau_z}{\Delta_\sigma(\bm k)} .
+\label{e:gloc}
+\end{equation}
+
+\subsection{Step 7: the renormalised parameters}\label{st:identify}
+
+The barred parameters are defined so that the averaged block is a clean block with new
+parameters, $a_\sigma=z+\bar\mu_\sigma+D_{\bm k}$ and $d^z_\sigma=\bar m_\sigma-B_{\bm k}$:
+\begin{equation}
+\bar\mu_\sigma=\mu_\sigma-\Sigma^0_\sigma,\qquad \bar m_\sigma=m_\sigma+\Sigma^z_\sigma,
+\qquad\text{i.e.}\qquad
+\mathrm{Re}\,\Sigma_\sigma=(\bar m_\sigma-m_\sigma)\,\tau_z-(\bar\mu_\sigma-\mu_\sigma)\,\tau_0 .
+\end{equation}
+\textbf{This is where the printed equations go wrong.} Eq.~(\ref{e:def}) puts a minus sign in
+front of both terms, i.e.\ $\bar m_\sigma=m_\sigma-\Sigma^z_\sigma$. The chemical potential enters
+$z+\mu-h$ with a plus sign, and the mass enters through $-h$, i.e.\ with a minus sign. Their
+self-energy corrections therefore have opposite signs. With the barred parameters,
+$\Delta_\sigma=(z+\bar\mu_\sigma+D_{\bm k})^2-(\bar m_\sigma-B_{\bm k})^2-A^2(\sin^2k_x+\sin^2k_y)$, the
+paper's determinant.
+
+\subsection{Step 8: the four self-consistent equations}\label{st:equations}
+
+Inserting Eq.~(\ref{e:gloc}) into Eq.~(\ref{e:sigmablock}), component by component:
+\begin{align}
+\Sigma^0_\sigma&=\frac{n_IJ_I^2}{N_k}\sum_{\bm k}\Big[\frac{v_z}{\Delta_\sigma}(z+\bar\mu_\sigma+D_{\bm k})
+ +\frac{v_\perp}{\Delta_{\bar\sigma}}(z+\bar\mu_{\bar\sigma}+D_{\bm k})\Big],\\
+\Sigma^z_\sigma&=\frac{n_IJ_I^2}{N_k}\sum_{\bm k}\Big[\frac{v_z}{\Delta_\sigma}(\bar m_\sigma-B_{\bm k})
+ +\frac{v_\perp}{\Delta_{\bar\sigma}}(\bar m_{\bar\sigma}-B_{\bm k})\Big].
+\end{align}
+Then $\bar\mu_\sigma=\mu_\sigma-\Sigma^0_\sigma$, which is Eq.~(\ref{e:mu}) as printed, and
+$\bar m_\sigma=m_\sigma+\Sigma^z_\sigma$, which is Eq.~(\ref{e:mok}) and differs from the printed Eq.~(\ref{e:m}) by the
+sign. These are four equations for the four complex unknowns $(\bar\mu_\up,\bar\mu_\dn,\bar m_\up,\bar m_\dn)$
+at each $(J_I,E_F)$, with $z=E_F+\I\eta$. For $M_z=1$, $v_\perp=0$ and the two blocks decouple.
+
+\subsection{Step 9: band edges and topology, the lines of Fig.~4}\label{st:lines}
+
+The renormalised block has its gap at $\bm k=0$, where $D_{\bm k}=B_{\bm k}=\sin k=0$: its bands start at
+$E=-\bar\mu_\sigma\pm\bar m_\sigma$ (real parts). Hence:
+\begin{itemize}
+\item the band edges are $E_F=-\bar\mu_\sigma\pm\bar m_\sigma$. Since the parameters depend on $E_F$
+  through $z$, each line of Fig.~4 is the zero contour of $E_F+\bar\mu_\sigma\mp\bar m_\sigma$ on the
+  $(J_I,E_F)$ grid;
+\item $E_F$ lies in the gap of block $\sigma$ when $|E_F+\bar\mu_\sigma|<|\bar m_\sigma|$;
+\item block $\sigma$ is topological when $\bar m_\sigma/B>0$, a band inversion at $\Gamma$ (on the lattice,
+  for $0<\bar m_\sigma/B<4$). The line $\bar m_\sigma=0$ is its topological transition.
+\end{itemize}
+
+\subsection{Step 10: lowest order, the logarithm and the sign of the mass correction}\label{st:log}
+
+Put the mean-field parameters on the right-hand side of \hyperref[st:equations]{Step~8} and go to the
+continuum, $N_k^{-1}\sum_{\bm k}\to\int_{|\bm k|<k_*}d^2k/(2\pi)^2$ with $k_*=\pi$:
+\begin{equation}
+\Sigma^z_\sigma\simeq n_IJ_I^2v_z\int\!\frac{d^2k}{(2\pi)^2}\,\frac{m_\sigma-Bk^2}{\Delta_\sigma(\bm k)},\qquad
+\Delta_\sigma(\bm k)=(E_F+\mu_\sigma+Dk^2)^2-(m_\sigma-Bk^2)^2-A^2k^2 .
+\end{equation}
+At large $k$, $\Delta_\sigma\simeq-(B^2-D^2)k^4$ and the integrand tends to $B/[(B^2-D^2)k^2]$. Its integral
+is logarithmic:
+\begin{equation}
+\int_{k_0}^{k_*}\frac{k\,dk}{2\pi}\,\frac{B}{(B^2-D^2)k^2}=\frac{B}{2\pi(B^2-D^2)}\,\ln\frac{k_*}{k_0}.
+\end{equation}
+It is cut off at small $k$, where $(B^2-D^2)k_0^4\simeq|\Delta_\sigma(E_F,0)|$. Hence
+\begin{equation}
+\mathrm{Re}\,\Sigma^z_\sigma\simeq\frac{n_IJ_I^2v_z}{8\pi}\,\frac{B}{B^2-D^2}\,
+\ln\Big|\frac{(B^2-D^2)k_*^4}{\Delta_\sigma(E_F,0)}\Big| ,
+\end{equation}
+and in the same way $\mathrm{Re}\,\Sigma^0_\sigma\simeq-\frac{n_IJ_I^2v_z}{8\pi}\frac{D}{B^2-D^2}\ln|\dots|$. This is
+Eq.~(\ref{e:reS}) of Sec.~\ref{s:error}, the paper's lowest-order result.
+
+\paragraph{Sign.} $B^2-D^2>0$, and the logarithm is large and positive when $E_F$ is in the gap, so
+$\mathrm{Re}\,\Sigma^z$ has the sign of $B$. With \hyperref[st:identify]{Step~7}, $\bar m_\sigma-m_\sigma=\mathrm{Re}\,\Sigma^z_\sigma$:
+the mass moves away from zero on the topological side. With the printed sign, it moves towards
+the trivial side.
+
+\paragraph{Numbers.} Take same-$g$, $n_I=0.2$, $J_I=0.3$, $E_F=0$ and spin up, so
+$\mu_\up=-0.06$. Then $B/(B^2-D^2)=-6.0$, the logarithm is $6.0$ and $\mathrm{Re}\,\Sigma^z\simeq-0.021$.
+\begin{itemize}
+\item Corrected sign: $\bar m_\up\simeq-0.158$, against $-0.149$ for the full corrected SCBA and
+  $-0.153$ for the exact mass (Table~\ref{t:masses}).
+\item Printed sign: $\bar m_\up\simeq-0.112$, against $-0.123$ for the published SCBA.
+\end{itemize}
+
+\subsection{Step 11: the numerical solution in the program}\label{st:program}
+
+\texttt{self\_born.f90} solves \hyperref[st:equations]{Step~8} at each point of a $64\times64$ grid of
+$(J_I,E_F)$:
+\begin{itemize}
+\item the $\bm k$ sum runs over a $256\times64$ grid of the Brillouin zone, with
+  \texttt{norm} $=n_IJ_I^2/(256\cdot64)$, \texttt{kc} $=4-2\cos k_x-2\cos k_y$ and
+  \texttt{ks} $=\sin^2k_x+\sin^2k_y$;
+\item $z=E_F+\I\eta$ with $\eta=10^{-3}$;
+\item the unknowns are \texttt{Mu}, \texttt{Md} ($\bar m_\up$, $\bar m_\dn$) and \texttt{Muu},
+  \texttt{Mud} ($\bar\mu_\up$, $\bar\mu_\dn$). They start from the mean field,
+  \texttt{Mu0 = mass + anti*J\_I*conc*Mz} and \texttt{Muu0 = -(1-anti)*J\_I*conc*Mz}, with
+  \texttt{anti} $=1$ for opposite-$g$;
+\item the iteration is a damped fixed point, $X\leftarrow pF(X)+(1-p)X$: first with $p=0.15$
+  down to a tolerance $10^{-4}$ (at most 500 iterations), then with $p=0.8$ down to $10^{-6}$;
+\item the program writes the real parts of $\bar m_\sigma$ and $\bar\mu_\sigma$.
+\end{itemize}
+The replica in \texttt{caroli} (\texttt{ScbaAnalytic}) reproduces it to $10^{-14}$.
+\texttt{ScbaAnalytic::point\_corrected} changes only the sign of \hyperref[st:identify]{Step~7} and the
+weight of \hyperref[st:disorder]{Step~2}.
+
+%======================================================================
 \section{The error}\label{s:error}
 
 \subsection{Derivation}
 
+Sec.~\ref{s:derivation} gives every step; here is the one that matters (\hyperref[st:identify]{Step~7}).
 The averaged Green's function is
 $\langle G\rangle = [E+\mu-H_0-\langle V\rangle-\Sigma]^{-1}$. The renormalised parameters
 are defined by writing it as the Green's function of a clean block with barred parameters:
@@ -211,6 +462,7 @@ At lowest order, Ref.~\cite{g2g1} obtains
 \begin{equation}
 \mathrm{Re}\,\Sigma = \frac{n_I J_I^2}{8\pi}\,\frac{B\tau_z-D\tau_0}{B^2-D^2}
 \Big[v_z\log\Big|\frac{(B^2-D^2)k_*^4}{\Delta(E_F,0)}\Big| + \dots\Big],
+\label{e:reS}
 \end{equation}
 with a large positive logarithm when $E_F$ is in the gap. With Eq.~(\ref{e:defok}), the mass
 correction $\bar m-m=\mathrm{Re}\,\Sigma_{\tau_z}$ has the sign of $B$. It moves $\bar m$ away from
@@ -224,7 +476,7 @@ and $\tau_z$ disorder (opposite-$g$) give the same $\langle VgV\rangle$ once the
 summed out, since $\tau_z(a+b\tau_z)\tau_z=a+b\tau_z$. Both are the scalar disorder of the topological
 Anderson insulator.
 
-\subsection{A second, smaller correction}
+\subsection{A second, smaller correction}\label{s:vz}
 
 The longitudinal weight is printed as $v_z = \langle S_z^2\rangle - n_I^2M_z^2 = (1-n_I^2)M_z^2+(1-M_z)^2/3$.
 The prefactor $n_I$ of Eq.~(\ref{e:sigma}) is already factored out of the second cumulant of
