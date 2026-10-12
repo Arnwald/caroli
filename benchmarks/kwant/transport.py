@@ -1,9 +1,10 @@
 """Kwant runner for the shared transport problems of `benchmarks/transport.toml`.
 
-The system is rebuilt from the files written by `caroli-bench prepare`: the on-site and
-hopping matrices of the model, and the on-site disorder. Every code therefore solves the same
-Hamiltonian. caroli's hopping matrix is <R|H|R + offset>, which is the value of the Kwant
-hopping kind -offset.
+The system is rebuilt from the files written by `caroli-bench prepare`: the lattice (vectors
+and sublattice positions), the on-site and hopping matrices of the model, and the on-site
+disorder. Every code therefore solves the same Hamiltonian. caroli's hopping matrix is
+<(R, from)|H|(R + offset, to)>, which is the value of the Kwant hopping kind
+(-offset, from, to).
 
 Kwant's fastest path is used: the MUMPS solver, only the lead 0 -> lead 1 block of the
 scattering matrix, and no Hermiticity check. The script prints one JSON line.
@@ -31,28 +32,30 @@ def main():
         spec = json.load(f)
     n = spec["orbitals"]
     length = spec["length"] or width
-    onsite = matrix(spec["onsite"])
-    hoppings = [(tuple(-k for k in h["offset"]), matrix(h["matrix"])) for h in spec["hoppings"]]
+    subs = spec["sublattices"]
+    onsites = [matrix(s["onsite"]) for s in subs]
+    hoppings = [(h["from"], h["to"], tuple(-k for k in h["offset"]), matrix(h["matrix"])) for h in spec["hoppings"]]
     pot = None
     if spec["anderson"]:
-        pot = np.fromfile(f"{data}/{name}/disorder_W{width}.f64", dtype="<f8").reshape(length, width)
+        pot = np.fromfile(f"{data}/{name}/disorder_W{width}.f64", dtype="<f8").reshape(length, width, len(subs))
     eye = np.eye(n)
 
     t0 = time.perf_counter()
-    lat = kwant.lattice.square(1, norbs=n)
+    lat = kwant.lattice.general(spec["vectors"], [s["offset"] for s in subs], norbs=n)
+    fams = lat.sublattices
     syst = kwant.Builder()
-    if pot is None:
-        syst[(lat(x, y) for x in range(length) for y in range(width))] = onsite
-    else:
-        for x in range(length):
-            for y in range(width):
-                syst[lat(x, y)] = onsite + pot[x, y] * eye
-    for delta, m in hoppings:
-        syst[kwant.builder.HoppingKind(delta, lat, lat)] = m
-    lead = kwant.Builder(kwant.TranslationalSymmetry((-1, 0)))
-    lead[(lat(0, y) for y in range(width))] = onsite
-    for delta, m in hoppings:
-        lead[kwant.builder.HoppingKind(delta, lat, lat)] = m
+    for x in range(length):
+        for y in range(width):
+            for k, fam in enumerate(fams):
+                syst[fam(x, y)] = onsites[k] if pot is None else onsites[k] + pot[x, y, k] * eye
+    for a, b, delta, m in hoppings:
+        syst[kwant.builder.HoppingKind(delta, fams[a], fams[b])] = m
+    lead = kwant.Builder(kwant.TranslationalSymmetry(lat.vec((-1, 0))))
+    for y in range(width):
+        for k, fam in enumerate(fams):
+            lead[fam(0, y)] = onsites[k]
+    for a, b, delta, m in hoppings:
+        lead[kwant.builder.HoppingKind(delta, fams[a], fams[b])] = m
     syst.attach_lead(lead)
     syst.attach_lead(lead.reversed())
     fsys = syst.finalized()

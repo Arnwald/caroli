@@ -76,6 +76,12 @@ fn clean_model(name: &str) -> Model {
             scalar(-1.0, 1),
         ),
         "bhz" => bhz(BhzParams::default()),
+        // Honeycomb lattice, t = 1: the transport axis is a zigzag direction, and the coupling
+        // between slices has half the rank of the slice.
+        "graphene" => Model::new(Lattice::honeycomb(1.0, 1))
+            .hopping(0, 1, [0, 0, 0], scalar(-1.0, 1))
+            .hopping(0, 1, [0, -1, 0], scalar(-1.0, 1))
+            .hopping(0, 1, [1, -1, 0], scalar(-1.0, 1)),
         _ => panic!("unknown model {name}"),
     }
 }
@@ -88,11 +94,13 @@ fn length(p: &Problem, w: usize) -> usize {
     p.length.unwrap_or(w)
 }
 
-/// On-site disorder of a (problem, width): `length × width` values, x slowest.
+/// On-site disorder of a (problem, width): one value per site, index `(x · width + y) ·
+/// sublattices + sublattice`.
 fn disorder(p: &Problem, w: usize) -> Option<Vec<f64>> {
     let strength = p.anderson?;
+    let subs = clean_model(&p.model).lattice().sublattices().len();
     let mut rng = Xoshiro256::seed_from_u64(p.seed.unwrap_or(0) * 1_000_003 + w as u64);
-    Some(rng.uniforms(length(p, w) * w).into_iter().map(|u| strength * (u - 0.5)).collect())
+    Some(rng.uniforms(length(p, w) * w * subs).into_iter().map(|u| strength * (u - 0.5)).collect())
 }
 
 fn matrix_json(m: &CMat) -> Value {
@@ -110,19 +118,31 @@ fn prepare() {
         std::fs::create_dir_all(&dir).expect("data directory");
         let model = clean_model(&p.model);
         let lattice = model.lattice();
-        assert_eq!(lattice.sublattices().len(), 1, "the export handles one site per cell");
-        let orbitals = lattice.sublattices()[0].orbitals;
-        let onsite = model.onsite_matrix(&Site { cell: [0, 0, 0], sub: 0 });
+        let subs = lattice.sublattices();
+        let orbitals = subs[0].orbitals;
+        assert!(subs.iter().all(|s| s.orbitals == orbitals), "the export takes equal orbital counts");
+        let sublattices: Vec<Value> = subs
+            .iter()
+            .enumerate()
+            .map(|(k, s)| {
+                let onsite = model.onsite_matrix(&Site { cell: [0, 0, 0], sub: k });
+                json!({"offset": [s.offset[0], s.offset[1]], "onsite": matrix_json(&onsite)})
+            })
+            .collect();
+        let vectors: Vec<Value> = lattice.vectors().iter().map(|v| json!([v[0], v[1]])).collect();
         let hoppings: Vec<Value> = model
             .hoppings()
             .iter()
-            .map(|h| json!({"offset": [h.offset[0], h.offset[1]], "matrix": matrix_json(&h.matrix)}))
+            .map(|h| {
+                json!({"from": h.from, "to": h.to, "offset": [h.offset[0], h.offset[1]],
+                       "matrix": matrix_json(&h.matrix)})
+            })
             .collect();
         let spec = json!({
             "name": p.name, "model": p.model, "orbitals": orbitals, "length": p.length,
             "anderson": p.anderson, "energies": p.energies,
-            "onsite": matrix_json(&onsite), "hoppings": hoppings,
-            "convention": "hopping matrix = <R|H|R + offset>",
+            "vectors": vectors, "sublattices": sublattices, "hoppings": hoppings,
+            "convention": "hopping matrix = <(R, from)|H|(R + offset, to)>; disorder index (x W + y) S + s",
         });
         std::fs::write(dir.join("problem.json"), serde_json::to_string_pretty(&spec).unwrap()).unwrap();
         for &w in &p.widths {
@@ -131,7 +151,7 @@ fn prepare() {
                 std::fs::write(dir.join(format!("disorder_W{w}.f64")), bytes).unwrap();
             }
         }
-        println!("{}: {orbitals} orbitals, widths {:?}", p.name, p.widths);
+        println!("{}: {} × {orbitals} orbitals per cell, widths {:?}", p.name, subs.len(), p.widths);
     }
 }
 
@@ -143,8 +163,10 @@ fn solve(name: &str, w: usize, solver: &str) {
     let n = clean.lattice().sublattices()[0].orbitals;
     let pot = disorder(&p, w);
     let t0 = Instant::now();
+    let subs = clean.lattice().sublattices().len();
     let device = clean_model(&p.model).with_onsite_term(move |site: &Site| {
-        pot.as_ref().map(|v| scalar(v[site.cell[0] as usize * w + site.cell[1] as usize], n))
+        let k = (site.cell[0] as usize * w + site.cell[1] as usize) * subs + site.sub;
+        pot.as_ref().map(|v| scalar(v[k], n))
     });
     let region = Region::cuboid(clean.lattice(), [l, w, 0]);
     // Independent blocks (e.g. the spin blocks of BHZ) are solved on their own by both solvers.
