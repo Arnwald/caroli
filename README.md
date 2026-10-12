@@ -16,10 +16,10 @@ calculation of a tunnelling current.
 > Quantica.jl (`benchmarks/`). See [ARCHITECTURE.md](ARCHITECTURE.md) for the design and the
 > roadmap, and [docs/kwant-to-caroli.md](docs/kwant-to-caroli.md) if you come from Kwant.
 
-**How it is made.** caroli is written by Claude (Anthropic's AI model, in Claude Code) under the
-supervision of Arnaud Demion. He sets the scope from his PhD thesis, decides between the options
-and validates every result against the thesis codes. The story, the roles and the choice of Rust
-are in [docs/development.md](docs/development.md).
+**How it is made.** caroli is written by Claude (Anthropic's AI model, in Claude Code) under my
+supervision: I set the scope from my PhD thesis, decide between the options and validate every
+result against my thesis codes. The story, the roles and the choice of Rust are in
+[docs/development.md](docs/development.md). — Arnaud Demion
 
 ```rust
 use caroli::prelude::*;

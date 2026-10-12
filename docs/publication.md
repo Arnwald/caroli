@@ -18,9 +18,9 @@ JOSS accepts software written with generative AI, under conditions
   notification).
 
 caroli's disclosure will say what [How caroli is made](development.md) says: the code, tests,
-documentation and benchmarks are written by Claude (Claude Opus 5.5, in Claude Code) under the
-supervision of Arnaud Demion, who sets the scope and the goals, decides between the options,
-validates the results against his thesis and has the last word.
+documentation and benchmarks are written by Claude (Claude Opus 5.5, in Claude Code) under my
+supervision; I set the scope and the goals, decide between the options, validate the results
+against my thesis and have the last word.
 
 ## Requirements
 
