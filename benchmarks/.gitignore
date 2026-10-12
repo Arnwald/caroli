@@ -4,3 +4,7 @@
 envs/
 # Inputs written by `caroli-bench prepare`.
 data/
+# Julia packages (Quantica.jl), install logs and scratch runs.
+.julia/
+logs/
+work/

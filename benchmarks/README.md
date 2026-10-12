@@ -51,6 +51,15 @@ export MAMBA_ROOT_PREFIX=$PWD/.mamba
 ./.tools/bin/micromamba create -y -p $PWD/envs/kwant -c conda-forge python=3.12 kwant python-mumps numpy scipy
 ```
 
+TBtrans (SIESTA 5.4.2, with sisl) and Kwant on Accelerate, from conda-forge, and Quantica.jl:
+
+```bash
+./.tools/bin/micromamba create -y -p $PWD/envs/tbtrans -c conda-forge python=3.12 "siesta=5.4.2=nompi*" sisl netcdf4 numpy scipy
+./.tools/bin/micromamba create -y -p $PWD/envs/kwant-accelerate -c conda-forge python=3.12 kwant python-mumps numpy scipy "libblas=*=*newaccelerate" "liblapack=*=*newaccelerate" "libcblas=*=*newaccelerate"
+# Julia 1.13.1 (official build) in .tools, packages in .julia (quantica/Project.toml, Manifest.toml)
+JULIA_DEPOT_PATH=$PWD/.julia ./.tools/julia-1.13.1/bin/julia --project=quantica -e 'using Pkg; Pkg.instantiate()'
+```
+
 ## Running
 
 ```bash

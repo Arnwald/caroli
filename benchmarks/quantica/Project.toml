@@ -1,0 +1,4 @@
+[deps]
+AppleAccelerate = "13e28ba4-7ad8-5781-acae-3021b1ed3924"
+JSON = "682c06a0-de6a-54ab-a142-c8b1cf79cde6"
+Quantica = "ae5ea0c6-3f5e-46a2-bc28-a7c4c7a4773c"
