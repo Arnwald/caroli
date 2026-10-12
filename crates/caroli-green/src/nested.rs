@@ -993,9 +993,21 @@ fn extend_add(f: &mut CMat, pos: &Positions, kids: Vec<Front>) -> Vec<Factor> {
     for kid in kids {
         let map: Vec<usize> =
             kid.vars.iter().map(|&o| pos.get(o).expect("child variable in the parent front")).collect();
+        // Runs of consecutive positions `(first in the child, first in the parent, length)`:
+        // the variables are sorted on both sides, so a few runs cover a column.
+        let mut runs: Vec<(usize, usize, usize)> = Vec::new();
+        for (a, &pa) in map.iter().enumerate() {
+            match runs.last_mut() {
+                Some((a0, p0, len)) if *a0 + *len == a && *p0 + *len == pa => *len += 1,
+                _ => runs.push((a, pa, 1)),
+            }
+        }
         for (b, &pb) in map.iter().enumerate() {
-            for (a, &pa) in map.iter().enumerate() {
-                f[(pa, pb)] += kid.s[(a, b)];
+            let (src, dst) = (kid.s.col_as_slice(b), f.col_as_slice_mut(pb));
+            for &(a0, p0, len) in &runs {
+                for (d, s) in dst[p0..p0 + len].iter_mut().zip(&src[a0..a0 + len]) {
+                    *d += s;
+                }
             }
         }
         factors.extend(kid.factor);

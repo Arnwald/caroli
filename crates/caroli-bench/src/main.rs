@@ -3,13 +3,17 @@
 //! - `caroli-bench prepare`: writes, for every problem, the model (on-site and hopping
 //!   matrices) and the disorder of every width to `benchmarks/data/`. The other codes build
 //!   their systems from these files, so all of them solve the same Hamiltonian.
-//! - `caroli-bench run [--code caroli|kwant|all] [--problem NAME] [--width W] [--threads N]`:
+//! - `caroli-bench run [--code CODE] [--problem NAME] [--width W] [--threads N] [--count N]`:
 //!   runs each (problem, width, code) in its own process under `/usr/bin/time -l`, and appends
 //!   one JSON line per run to `benchmarks/results/<machine>.jsonl`. The line includes the peak
-//!   memory, and flags a GitHub runner job that was busy during the run.
-//! - `caroli-bench solve PROBLEM WIDTH [nd|rgf]`: the caroli runner for one case (one JSON
-//!   line), by nested dissection (`caroli`, default) or recursive Green's function
-//!   (`caroli-rgf`).
+//!   memory, and flags a GitHub runner job that was busy during the run. `CODE` is `caroli`,
+//!   `caroli-rgf`, `kwant`, `tbtrans`, `quantica`, `all` (the first three, the default) or
+//!   `competitors` (TBtrans and Quantica.jl).
+//!   - With `--count N`: throughput instead of latency. N energies (the problem's, shifted by
+//!     1e-3 per round) on all the threads: caroli's rayon pool, or a pool of Kwant processes.
+//! - `caroli-bench solve PROBLEM WIDTH [nd|rgf] [COUNT]`: the caroli runner for one case (one
+//!   JSON line), by nested dissection (`caroli`, default) or recursive Green's function
+//!   (`caroli-rgf`); with `COUNT`, the throughput run.
 //! - `caroli-bench report [FILE]`: agreement between the codes, and timing tables.
 //!
 //! Times are wall-clock seconds. `times_s` holds one entry per energy, computed one after the
@@ -198,8 +202,14 @@ fn prepare() {
     }
 }
 
-/// caroli on one (problem, width): one JSON line on stdout.
-fn solve(name: &str, w: usize, solver: &str) {
+/// The problem's energies, shifted by 1e-3 per round to make `count` different ones.
+fn shifted_energies(p: &Problem, count: usize) -> Vec<f64> {
+    (0..count).map(|k| p.energies[k % p.energies.len()] + 1e-3 * (k / p.energies.len()) as f64).collect()
+}
+
+/// caroli on one (problem, width): one JSON line on stdout. With `count`, all of `count`
+/// energies at once on the thread pool (throughput), and no single-energy times.
+fn solve(name: &str, w: usize, solver: &str, count: Option<usize>) {
     let p = problem(name);
     let l = length(&p, w);
     let clean = clean_model(&p.model);
@@ -255,6 +265,20 @@ fn solve(name: &str, w: usize, solver: &str) {
         }
     };
     let build = t0.elapsed().as_secs_f64();
+    if let Some(count) = count {
+        let energies = shifted_energies(&p, count);
+        let t = Instant::now();
+        let ts: Vec<f64> = energies.par_iter().map(|&e| transmission(e)).collect::<Vec<_>>().concat();
+        let parallel = t.elapsed().as_secs_f64();
+        let line = json!({
+            "code": "caroli", "version": env!("CARGO_PKG_VERSION"),
+            "problem": p.name, "width": w, "length": l, "orbitals": n, "threads": rayon::current_num_threads(),
+            "blocks": block_count, "mode": "throughput", "build_s": build, "parallel_s": parallel,
+            "total_s": build + parallel, "energies": energies, "transmissions": ts,
+        });
+        println!("{line}");
+        return;
+    }
     let (mut times, mut ts) = (Vec::new(), Vec::new());
     for &e in &p.energies {
         let t = Instant::now();
@@ -295,13 +319,35 @@ fn runner_busy() -> bool {
 /// The RGF costs O(L W³): beyond this width it takes minutes per energy, and the smaller widths
 /// already show its scaling.
 const RGF_MAX_WIDTH: usize = 256;
+/// TBtrans (block tridiagonal, O(L W³)) and Quantica.jl are several times slower than Kwant:
+/// their largest samples would take hours.
+const COMPETITOR_MAX_WIDTH: usize = 256;
+
+/// Whether a code can run a problem: TBtrans and Quantica.jl have two-terminal runners only,
+/// and TBtrans needs a real Hamiltonian (BHZ is complex).
+fn supports(code: &str, p: &Problem, w: usize) -> bool {
+    match code {
+        "caroli-rgf" => w <= RGF_MAX_WIDTH && !is_cross(p),
+        "tbtrans" => w <= COMPETITOR_MAX_WIDTH && !is_cross(p) && p.model != "bhz",
+        "quantica" => w <= COMPETITOR_MAX_WIDTH && !is_cross(p),
+        _ => true,
+    }
+}
+
+/// The Python of the Kwant runs: the environment on Accelerate when it exists.
+fn kwant_python() -> PathBuf {
+    let accelerate = bench_dir().join("envs/kwant-accelerate/bin/python");
+    if accelerate.exists() { accelerate } else { bench_dir().join("envs/kwant/bin/python") }
+}
 
 fn run(args: &[String]) {
     let opt = |flag: &str| args.iter().position(|a| a == flag).and_then(|i| args.get(i + 1)).cloned();
     let codes: Vec<String> = match opt("--code").as_deref() {
         None | Some("all") => vec!["caroli".into(), "caroli-rgf".into(), "kwant".into()],
+        Some("competitors") => vec!["tbtrans".into(), "quantica".into()],
         Some(c) => vec![c.to_string()],
     };
+    let count = opt("--count").map(|c| c.parse::<usize>().expect("--count"));
     let threads = opt("--threads").unwrap_or_else(|| "1".into());
     let machine = shell("hostname", &["-s"]);
     let cpu = shell("sysctl", &["-n", "machdep.cpu.brand_string"]);
@@ -310,8 +356,9 @@ fn run(args: &[String]) {
     std::fs::create_dir_all(&out).unwrap();
     let file = out.join(format!("{machine}.jsonl"));
     let exe = std::env::current_exe().unwrap();
-    let python = bench_dir().join("envs/kwant/bin/python");
-    let script = bench_dir().join("kwant/transport.py");
+    let python = kwant_python();
+    let kwant_dir = bench_dir().join("kwant");
+    let julia = bench_dir().join(".tools/julia-1.13.1/bin/julia");
     for p in problems() {
         if opt("--problem").is_some_and(|n| n != p.name) {
             continue;
@@ -321,7 +368,9 @@ fn run(args: &[String]) {
                 continue;
             }
             for code in &codes {
-                if code == "caroli-rgf" && (w > RGF_MAX_WIDTH || is_cross(&p)) {
+                if !supports(code, &p, w)
+                    || (count.is_some() && !["caroli", "kwant"].contains(&code.as_str()))
+                {
                     continue;
                 }
                 for attempt in 0..3 {
@@ -337,15 +386,38 @@ fn run(args: &[String]) {
                     let busy_before = false;
                     let mut cmd = Command::new("/usr/bin/time");
                     cmd.arg("-l");
-                    match code.as_str() {
-                        "caroli" => cmd.arg(&exe).args(["solve", &p.name, &w.to_string(), "nd"]),
-                        "caroli-rgf" => cmd.arg(&exe).args(["solve", &p.name, &w.to_string(), "rgf"]),
-                        "kwant" => cmd.arg(&python).arg(&script).args([
-                            data_dir(&p).parent().unwrap().to_str().unwrap(),
+                    let data = data_dir(&p).parent().unwrap().to_str().unwrap().to_string();
+                    let width = w.to_string();
+                    match (code.as_str(), count) {
+                        ("caroli", None) => cmd.arg(&exe).args(["solve", &p.name, &width, "nd"]),
+                        ("caroli", Some(c)) => {
+                            cmd.arg(&exe).args(["solve", &p.name, &width, "nd", &c.to_string()])
+                        }
+                        ("caroli-rgf", _) => cmd.arg(&exe).args(["solve", &p.name, &width, "rgf"]),
+                        ("kwant", None) => cmd
+                            .arg(&python)
+                            .arg(kwant_dir.join("transport.py"))
+                            .args([&data, &p.name, &width]),
+                        ("kwant", Some(c)) => cmd.arg(&python).arg(kwant_dir.join("throughput.py")).args([
+                            &data,
                             &p.name,
-                            &w.to_string(),
+                            &width,
+                            &threads,
+                            &c.to_string(),
                         ]),
-                        other => panic!("unknown code {other}"),
+                        ("tbtrans", _) => cmd
+                            .arg(bench_dir().join("envs/tbtrans/bin/python"))
+                            .arg("-I")
+                            .arg(bench_dir().join("tbtrans/transport.py"))
+                            .args([&data, &p.name, &width]),
+                        ("quantica", _) => cmd
+                            .arg(&julia)
+                            .args(["-t", "1"])
+                            .arg(format!("--project={}", bench_dir().join("quantica").display()))
+                            .arg(bench_dir().join("quantica/transport.jl"))
+                            .args([&data, &p.name, &width])
+                            .env("JULIA_DEPOT_PATH", bench_dir().join(".julia")),
+                        (other, _) => panic!("unknown code {other}"),
                     };
                     for var in [
                         "OMP_NUM_THREADS",
@@ -370,6 +442,8 @@ fn run(args: &[String]) {
                         .and_then(|l| l.split_whitespace().next())
                         .and_then(|x| x.parse::<f64>().ok())
                         .unwrap_or(f64::NAN);
+                    // TBtrans runs in a child of its Python driver: the larger of the two.
+                    let rss = rss.max(v["children_peak_mb"].as_f64().unwrap_or(0.0) * 1048576.0);
                     let busy = busy_before || runner_busy();
                     if busy && attempt < 2 {
                         eprintln!(
@@ -397,13 +471,16 @@ fn run(args: &[String]) {
                     use std::io::Write;
                     let mut f = std::fs::OpenOptions::new().create(true).append(true).open(&file).unwrap();
                     writeln!(f, "{line}").unwrap();
-                    let times: Vec<f64> =
-                        v["times_s"].as_array().unwrap().iter().filter_map(|x| x.as_f64()).collect();
+                    let times: Vec<f64> = v["times_s"]
+                        .as_array()
+                        .map(|a| a.iter().filter_map(|x| x.as_f64()).collect())
+                        .unwrap_or_default();
                     println!(
-                        "{code:7} {:16} W={w:<5} build {:8.3} s, median per energy {:9.4} s, peak {:8.1} MB",
+                        "{code:8} {:17} W={w:<5} build {:8.3} s, median per energy {:9.4} s, total {:9.3} s, peak {:8.1} MB",
                         p.name,
                         v["build_s"].as_f64().unwrap_or(f64::NAN),
                         median(&times),
+                        v["total_s"].as_f64().unwrap_or(f64::NAN),
                         rss / 1048576.0
                     );
                     break;
@@ -420,33 +497,36 @@ fn median(v: &[f64]) -> f64 {
     if s.is_empty() { f64::NAN } else { s[s.len() / 2] }
 }
 
-/// Latest run of every (problem, width, code, threads) in a results file: a summary of caroli
-/// against Kwant (median time per energy, speed-up, memory, agreement), then every run.
+/// Latest run of every (problem, width, code, threads, mode) in a results file: caroli against
+/// the other codes on one thread (median time per energy, speed-up over the fastest other code,
+/// memory, agreement), the throughput on all the cores, then every run.
 fn report(args: &[String]) {
     let file = args
         .first()
         .map(PathBuf::from)
         .unwrap_or_else(|| bench_dir().join("results").join(format!("{}.jsonl", shell("hostname", &["-s"]))));
     let text = std::fs::read_to_string(&file).expect("results file");
-    let mut latest: BTreeMap<(String, u64, String, u64), Value> = BTreeMap::new();
+    // (problem, width, code, threads, throughput) → latest run.
+    type Key = (String, u64, String, u64, bool);
+    let mut latest: BTreeMap<Key, Value> = BTreeMap::new();
     for line in text.lines().filter(|l| !l.trim().is_empty()) {
         let v: Value = serde_json::from_str(line).unwrap();
-        let key = (
-            v["problem"].as_str().unwrap().to_string(),
-            v["width"].as_u64().unwrap(),
-            v["code"].as_str().unwrap().to_string(),
-            v["threads"].as_u64().unwrap_or(1),
-        );
+        let mut code = v["code"].as_str().unwrap().to_string();
         // Runs before the nested-dissection solver were the recursive one.
-        let key = if key.2 == "caroli"
+        if code == "caroli"
             && v["blocks"].is_u64()
             && v.get("solver").is_none()
             && v["caroli_commit"] == "1807a24"
         {
-            (key.0, key.1, "caroli-rgf".to_string(), key.3)
-        } else {
-            key
-        };
+            code = "caroli-rgf".to_string();
+        }
+        let key = (
+            v["problem"].as_str().unwrap().to_string(),
+            v["width"].as_u64().unwrap(),
+            code,
+            v["threads"].as_u64().unwrap_or(1),
+            v["mode"].as_str() == Some("throughput"),
+        );
         latest.insert(key, v);
     }
     let numbers = |v: &Value, field: &str| -> Vec<f64> {
@@ -455,76 +535,130 @@ fn report(args: &[String]) {
     let per_energy = |v: &Value| median(&numbers(v, "times_s"));
     let peak = |v: &Value| v["peak_rss_mb"].as_f64().unwrap_or(f64::NAN);
     let busy = |v: &Value| if v["runner_busy"].as_bool() == Some(true) { " (busy)" } else { "" };
+    fn name(code: &str) -> &str {
+        match code {
+            "kwant" => "Kwant",
+            "tbtrans" => "TBtrans",
+            "quantica" => "Quantica.jl",
+            other => other,
+        }
+    }
 
-    // Header: machine and commits.
-    let first = latest.values().next();
+    // Header: machine, commits and versions.
     let mut commits: Vec<String> = latest
         .iter()
-        .filter(|((_, _, code, _), _)| code.starts_with("caroli"))
+        .filter(|(k, _)| k.2.starts_with("caroli"))
         .filter_map(|(_, v)| v["caroli_commit"].as_str().map(str::to_string))
         .collect();
     commits.sort();
     commits.dedup();
-    if let Some(v) = first {
+    if let Some(v) = latest.values().next() {
         let text = |field: &str| v[field].as_str().unwrap_or("?").to_string();
         println!("Machine: {} ({}). caroli commits: {}.", text("machine"), text("cpu"), commits.join(", "));
         println!();
     }
-    let kwant_version = latest.iter().find(|((_, _, code, _), _)| code == "kwant").map(|(_, v)| {
-        format!("{} ({})", v["version"].as_str().unwrap_or("?"), v["solver"].as_str().unwrap_or("?"))
-    });
-    if let Some(k) = kwant_version {
-        println!("Kwant {k}, one thread. Times are medians over the energies of each problem.");
-        println!();
+    let others = ["kwant", "tbtrans", "quantica"];
+    for code in others {
+        if let Some((_, v)) = latest.iter().rev().find(|(k, _)| k.2 == code && !k.4) {
+            let env = v["env"].as_str().map(|e| format!(", environment {e}")).unwrap_or_default();
+            println!(
+                "- {} {} ({}{env})",
+                name(code),
+                v["version"].as_str().unwrap_or("?"),
+                v["solver"].as_str().unwrap_or("?")
+            );
+        }
+    }
+    println!();
+
+    // (problem, width) → (code, threads, throughput) → run.
+    type Runs<'a> = BTreeMap<(String, u64, bool), &'a Value>;
+    let mut cases: BTreeMap<(String, u64), Runs> = BTreeMap::new();
+    for ((p, w, code, threads, throughput), v) in &latest {
+        cases.entry((p.clone(), *w)).or_default().insert((code.clone(), *threads, *throughput), v);
     }
 
-    // Summary: one row per (problem, width).
-    // (problem, width) → (code, threads) → run.
-    type Runs<'a> = BTreeMap<(String, u64), &'a Value>;
-    let mut cases: BTreeMap<(String, u64), Runs> = BTreeMap::new();
-    for ((p, w, code, threads), v) in &latest {
-        cases.entry((p.clone(), *w)).or_default().insert((code.clone(), *threads), v);
-    }
+    // One thread, per energy.
+    println!("One thread, median time per energy (s):");
+    println!();
     println!(
-        "| problem | W | caroli (s) | Kwant (s) | speed-up | caroli RGF (s) | memory caroli / Kwant (MB) | caroli, all energies, most threads (s) | max ΔT |"
+        "| problem | W | caroli | Kwant | TBtrans | Quantica.jl | fastest other | caroli speed-up | memory caroli / fastest (MB) | max ΔT: Kwant, TBtrans, Quantica.jl |"
     );
-    println!("|---|---|---|---|---|---|---|---|---|");
+    println!("|---|---|---|---|---|---|---|---|---|---|");
     for ((p, w), runs) in &cases {
-        let get = |code: &str| runs.get(&(code.to_string(), 1)).copied();
-        let (caroli, kwant, rgf) = (get("caroli"), get("kwant"), get("caroli-rgf"));
-        let parallel = runs
-            .iter()
-            .filter(|((code, threads), _)| code == "caroli" && *threads > 1)
-            .max_by_key(|((_, threads), _)| *threads)
-            .map(|((_, threads), v)| {
-                format!("{:.3} ({threads} threads)", v["parallel_s"].as_f64().unwrap_or(f64::NAN))
-            })
-            .unwrap_or_else(|| "—".into());
+        let get = |code: &str| runs.get(&(code.to_string(), 1, false)).copied();
+        let caroli = get("caroli");
         let time = |v: Option<&Value>| v.map_or("—".into(), |v| format!("{:.4}{}", per_energy(v), busy(v)));
-        let speedup = match (caroli, kwant) {
-            (Some(c), Some(k)) => format!("{:.1}×", per_energy(k) / per_energy(c)),
+        let fastest = others
+            .iter()
+            .filter_map(|&c| get(c).map(|v| (c, v)))
+            .min_by(|a, b| per_energy(a.1).total_cmp(&per_energy(b.1)));
+        let (best, speedup, memory) = match (caroli, fastest) {
+            (Some(c), Some((code, v))) => (
+                name(code).to_string(),
+                format!("{:.1}×", per_energy(v) / per_energy(c)),
+                format!("{:.0} / {:.0}", peak(c), peak(v)),
+            ),
+            _ => ("—".into(), "—".into(), "—".into()),
+        };
+        let reference = caroli.map(|c| numbers(c, "transmissions"));
+        let delta = |code: &str| match (&reference, get(code)) {
+            (Some(r), Some(v)) => {
+                let t = numbers(v, "transmissions");
+                if t.len() == r.len() {
+                    format!("{:.0e}", t.iter().zip(r).map(|(a, b)| (a - b).abs()).fold(0.0, f64::max))
+                } else {
+                    "?".into()
+                }
+            }
             _ => "—".into(),
         };
-        let memory = match (caroli, kwant) {
-            (Some(c), Some(k)) => format!("{:.0} / {:.0}", peak(c), peak(k)),
-            (Some(c), None) => format!("{:.0} / —", peak(c)),
-            _ => "—".into(),
-        };
-        let agreement = caroli.map(|c| numbers(c, "transmissions")).map_or("—".into(), |reference| {
-            let worst = runs
-                .values()
-                .map(|v| numbers(v, "transmissions"))
-                .filter(|t| t.len() == reference.len())
-                .map(|t| t.iter().zip(&reference).map(|(a, b)| (a - b).abs()).fold(0.0, f64::max))
-                .fold(0.0, f64::max);
-            format!("{worst:.0e}")
-        });
         println!(
-            "| {p} | {w} | {} | {} | {speedup} | {} | {memory} | {parallel} | {agreement} |",
+            "| {p} | {w} | {} | {} | {} | {} | {best} | {speedup} | {memory} | {}, {}, {} |",
             time(caroli),
-            time(kwant),
-            time(rgf)
+            time(get("kwant")),
+            time(get("tbtrans")),
+            time(get("quantica")),
+            delta("kwant"),
+            delta("tbtrans"),
+            delta("quantica"),
         );
+    }
+
+    // Throughput on all the cores.
+    let throughput: Vec<_> = cases
+        .iter()
+        .filter_map(|((p, w), runs)| {
+            let pick = |code: &str| {
+                runs.iter()
+                    .filter(|((c, _, t), _)| c == code && *t)
+                    .max_by_key(|((_, threads, _), _)| *threads)
+                    .map(|((_, threads, _), v)| (*threads, *v))
+            };
+            pick("caroli").map(|c| (p, w, c, pick("kwant")))
+        })
+        .collect();
+    if !throughput.is_empty() {
+        println!();
+        println!("All the cores: total time for N energies, builds included (s):");
+        println!();
+        println!(
+            "| problem | W | N | caroli (threads) | Kwant (processes) | caroli speed-up | caroli energies/s |"
+        );
+        println!("|---|---|---|---|---|---|---|");
+        for (p, w, (ct, c), kwant) in throughput {
+            let total = |v: &Value| v["total_s"].as_f64().unwrap_or(f64::NAN);
+            let n = numbers(c, "energies").len();
+            let (k, speedup) = match kwant {
+                Some((kt, k)) => (format!("{:.3} ({kt})", total(k)), format!("{:.1}×", total(k) / total(c))),
+                None => ("—".into(), "—".into()),
+            };
+            println!(
+                "| {p} | {w} | {n} | {:.3} ({ct}) | {k} | {speedup} | {:.1} |",
+                total(c),
+                n as f64 / total(c)
+            );
+        }
     }
 
     // Every run.
@@ -536,11 +670,16 @@ fn report(args: &[String]) {
     );
     println!("|---|---|---|---|---|---|---|---|---|---|");
     for ((p, w), runs) in &cases {
-        for ((code, threads), v) in runs {
+        for ((code, threads, throughput), v) in runs {
             let times = numbers(v, "times_s");
-            let all = v["parallel_s"].as_f64().unwrap_or(times.iter().sum());
+            let all = v["total_s"].as_f64().or(v["parallel_s"].as_f64()).unwrap_or(times.iter().sum());
+            let mode = if *throughput {
+                format!(", {} energies", numbers(v, "energies").len())
+            } else {
+                String::new()
+            };
             println!(
-                "| {p} | {w} | {} | {code}{} | {threads} | {:.3} | {:.4} | {:.3} | {:.0} | {} |",
+                "| {p} | {w} | {} | {code}{}{mode} | {threads} | {:.3} | {:.4} | {:.3} | {:.0} | {} |",
                 v["orbitals"],
                 busy(v),
                 v["build_s"].as_f64().unwrap_or(f64::NAN),
@@ -623,13 +762,16 @@ fn main() {
             scaling(&args[2], args[3].parse().expect("width"), count, &threads)
         }
         Some("prepare") => prepare(),
-        Some("solve") => {
-            solve(&args[2], args[3].parse().expect("width"), args.get(4).map_or("nd", String::as_str))
-        }
+        Some("solve") => solve(
+            &args[2],
+            args[3].parse().expect("width"),
+            args.get(4).map_or("nd", String::as_str),
+            args.get(5).map(|c| c.parse().expect("count")),
+        ),
         Some("run") => run(&args[2..]),
         Some("report") => report(&args[2..]),
         _ => eprintln!(
-            "usage: caroli-bench prepare | run [--code C] [--problem P] [--width W] [--threads N] | solve P W | report [FILE]"
+            "usage: caroli-bench prepare | run [--code C] [--problem P] [--width W] [--threads N] [--count N] | solve P W [nd|rgf] [COUNT] | report [FILE] | scaling P W N T..."
         ),
     }
 }
