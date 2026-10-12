@@ -420,8 +420,8 @@ fn median(v: &[f64]) -> f64 {
     if s.is_empty() { f64::NAN } else { s[s.len() / 2] }
 }
 
-/// Latest run of every (problem, width, code, threads) in a results file: agreement with
-/// caroli and timings.
+/// Latest run of every (problem, width, code, threads) in a results file: a summary of caroli
+/// against Kwant (median time per energy, speed-up, memory, agreement), then every run.
 fn report(args: &[String]) {
     let file = args
         .first()
@@ -449,38 +449,105 @@ fn report(args: &[String]) {
         };
         latest.insert(key, v);
     }
-    let mut cases: BTreeMap<(String, u64), Vec<(&str, &Value)>> = BTreeMap::new();
-    for ((p, w, code, _), v) in &latest {
-        cases.entry((p.clone(), *w)).or_default().push((code.as_str(), v));
+    let numbers = |v: &Value, field: &str| -> Vec<f64> {
+        v[field].as_array().map(|a| a.iter().filter_map(|x| x.as_f64()).collect()).unwrap_or_default()
+    };
+    let per_energy = |v: &Value| median(&numbers(v, "times_s"));
+    let peak = |v: &Value| v["peak_rss_mb"].as_f64().unwrap_or(f64::NAN);
+    let busy = |v: &Value| if v["runner_busy"].as_bool() == Some(true) { " (busy)" } else { "" };
+
+    // Header: machine and commits.
+    let first = latest.values().next();
+    let mut commits: Vec<String> = latest
+        .iter()
+        .filter(|((_, _, code, _), _)| code.starts_with("caroli"))
+        .filter_map(|(_, v)| v["caroli_commit"].as_str().map(str::to_string))
+        .collect();
+    commits.sort();
+    commits.dedup();
+    if let Some(v) = first {
+        let text = |field: &str| v[field].as_str().unwrap_or("?").to_string();
+        println!("Machine: {} ({}). caroli commits: {}.", text("machine"), text("cpu"), commits.join(", "));
+        println!();
+    }
+    let kwant_version = latest.iter().find(|((_, _, code, _), _)| code == "kwant").map(|(_, v)| {
+        format!("{} ({})", v["version"].as_str().unwrap_or("?"), v["solver"].as_str().unwrap_or("?"))
+    });
+    if let Some(k) = kwant_version {
+        println!("Kwant {k}, one thread. Times are medians over the energies of each problem.");
+        println!();
+    }
+
+    // Summary: one row per (problem, width).
+    // (problem, width) → (code, threads) → run.
+    type Runs<'a> = BTreeMap<(String, u64), &'a Value>;
+    let mut cases: BTreeMap<(String, u64), Runs> = BTreeMap::new();
+    for ((p, w, code, threads), v) in &latest {
+        cases.entry((p.clone(), *w)).or_default().insert((code.clone(), *threads), v);
     }
     println!(
-        "| problem | W | orbitals | code | threads | build (s) | per energy (s) | all energies (s) | peak (MB) | max |ΔT| vs caroli |"
+        "| problem | W | caroli (s) | Kwant (s) | speed-up | caroli RGF (s) | memory caroli / Kwant (MB) | caroli, all energies, most threads (s) | max ΔT |"
+    );
+    println!("|---|---|---|---|---|---|---|---|---|");
+    for ((p, w), runs) in &cases {
+        let get = |code: &str| runs.get(&(code.to_string(), 1)).copied();
+        let (caroli, kwant, rgf) = (get("caroli"), get("kwant"), get("caroli-rgf"));
+        let parallel = runs
+            .iter()
+            .filter(|((code, threads), _)| code == "caroli" && *threads > 1)
+            .max_by_key(|((_, threads), _)| *threads)
+            .map(|((_, threads), v)| {
+                format!("{:.3} ({threads} threads)", v["parallel_s"].as_f64().unwrap_or(f64::NAN))
+            })
+            .unwrap_or_else(|| "—".into());
+        let time = |v: Option<&Value>| v.map_or("—".into(), |v| format!("{:.4}{}", per_energy(v), busy(v)));
+        let speedup = match (caroli, kwant) {
+            (Some(c), Some(k)) => format!("{:.1}×", per_energy(k) / per_energy(c)),
+            _ => "—".into(),
+        };
+        let memory = match (caroli, kwant) {
+            (Some(c), Some(k)) => format!("{:.0} / {:.0}", peak(c), peak(k)),
+            (Some(c), None) => format!("{:.0} / —", peak(c)),
+            _ => "—".into(),
+        };
+        let agreement = caroli.map(|c| numbers(c, "transmissions")).map_or("—".into(), |reference| {
+            let worst = runs
+                .values()
+                .map(|v| numbers(v, "transmissions"))
+                .filter(|t| t.len() == reference.len())
+                .map(|t| t.iter().zip(&reference).map(|(a, b)| (a - b).abs()).fold(0.0, f64::max))
+                .fold(0.0, f64::max);
+            format!("{worst:.0e}")
+        });
+        println!(
+            "| {p} | {w} | {} | {} | {speedup} | {} | {memory} | {parallel} | {agreement} |",
+            time(caroli),
+            time(kwant),
+            time(rgf)
+        );
+    }
+
+    // Every run.
+    println!();
+    println!("Every run:");
+    println!();
+    println!(
+        "| problem | W | orbitals | code | threads | build (s) | per energy (s) | all energies (s) | peak (MB) | commit |"
     );
     println!("|---|---|---|---|---|---|---|---|---|---|");
     for ((p, w), runs) in &cases {
-        let reference: Option<Vec<f64>> = runs.iter().find(|(code, _)| *code == "caroli").map(|(_, v)| {
-            v["transmissions"].as_array().unwrap().iter().map(|x| x.as_f64().unwrap()).collect()
-        });
-        for &(code, v) in runs {
-            let ts: Vec<f64> =
-                v["transmissions"].as_array().unwrap().iter().map(|x| x.as_f64().unwrap()).collect();
-            let times: Vec<f64> =
-                v["times_s"].as_array().unwrap().iter().map(|x| x.as_f64().unwrap()).collect();
-            let diff = reference
-                .as_ref()
-                .map(|r| r.iter().zip(&ts).map(|(a, b)| (a - b).abs()).fold(0.0, f64::max))
-                .map_or("—".to_string(), |d| format!("{d:.1e}"));
+        for ((code, threads), v) in runs {
+            let times = numbers(v, "times_s");
             let all = v["parallel_s"].as_f64().unwrap_or(times.iter().sum());
-            let busy = if v["runner_busy"].as_bool() == Some(true) { " (runner busy)" } else { "" };
             println!(
-                "| {p} | {w} | {} | {}{busy} | {} | {:.3} | {:.4} | {:.3} | {:.0} | {diff} |",
+                "| {p} | {w} | {} | {code}{} | {threads} | {:.3} | {:.4} | {:.3} | {:.0} | {} |",
                 v["orbitals"],
-                code,
-                v["threads"],
+                busy(v),
                 v["build_s"].as_f64().unwrap_or(f64::NAN),
                 median(&times),
                 all,
-                v["peak_rss_mb"].as_f64().unwrap_or(f64::NAN),
+                peak(v),
+                v["caroli_commit"].as_str().unwrap_or("—"),
             );
         }
     }
