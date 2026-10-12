@@ -8,10 +8,13 @@ Named after the Caroli formula for the transmission, `T = Tr[Γ_L G Γ_R G†]`,
 Caroli–Combescot–Nozières–Saint-James paper (1971), the first non-equilibrium (Keldysh)
 calculation of a tunnelling current.
 
-> Status: early development. The first crates build tight-binding systems and compute
-> two-terminal transmissions with Green's functions. They are validated against the Fortran
-> codes of the author's PhD thesis (`reference/`), which the toolbox will reproduce as its two
-> worked examples. See [ARCHITECTURE.md](ARCHITECTURE.md) for the design and the roadmap.
+> Status: early development. The crates build tight-binding systems and compute transport with
+> Green's functions: two- and multi-terminal transmissions by nested dissection, magnetic
+> fields, scattering states, local densities and currents, Keldysh observables. They are
+> validated against the Fortran codes of the author's PhD thesis (`reference/`), which the
+> toolbox will reproduce as its two worked examples, and benchmarked against Kwant
+> (`benchmarks/`). See [ARCHITECTURE.md](ARCHITECTURE.md) for the design and the roadmap, and
+> [docs/kwant-to-caroli.md](docs/kwant-to-caroli.md) if you come from Kwant.
 
 ```rust
 use caroli::prelude::*;
