@@ -582,9 +582,9 @@ fn report(args: &[String]) {
     println!("One thread, median time per energy (s):");
     println!();
     println!(
-        "| problem | W | caroli | Kwant | TBtrans | Quantica.jl | fastest other | caroli speed-up | memory caroli / fastest (MB) | max ΔT: Kwant, TBtrans, Quantica.jl |"
+        "| problem | W | caroli | Kwant | TBtrans | Quantica.jl | fastest other | caroli speed-up | memory caroli / fastest (MB) | max ΔT: Kwant, TBtrans, Quantica.jl | caroli, one energy on all threads |"
     );
-    println!("|---|---|---|---|---|---|---|---|---|---|");
+    println!("|---|---|---|---|---|---|---|---|---|---|---|");
     for ((p, w), runs) in &cases {
         let get = |code: &str| runs.get(&(code.to_string(), 1, false)).copied();
         let caroli = get("caroli");
@@ -613,8 +613,14 @@ fn report(args: &[String]) {
             }
             _ => "—".into(),
         };
+        // One energy at a time with every thread (tree parallelism), the latest such run.
+        let wide = runs
+            .iter()
+            .filter(|((c, threads, t), _)| c == "caroli" && *threads > 1 && !*t)
+            .max_by_key(|((_, threads, _), _)| *threads)
+            .map_or("—".into(), |((_, threads, _), v)| format!("{:.4} ({threads})", per_energy(v)));
         println!(
-            "| {p} | {w} | {} | {} | {} | {} | {best} | {speedup} | {memory} | {}, {}, {} |",
+            "| {p} | {w} | {} | {} | {} | {} | {best} | {speedup} | {memory} | {}, {}, {} | {wide} |",
             time(caroli),
             time(get("kwant")),
             time(get("tbtrans")),

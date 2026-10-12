@@ -21,15 +21,26 @@ preparation and reports are in Rust (`crates/caroli-bench`).
   - caroli runs with `RAYON_NUM_THREADS` = `--threads`. `times_s` holds the single-energy
     latencies, computed one after the other, and `parallel_s` the time for all the energies
     together.
-- **Each code at its best.** Kwant uses MUMPS, computes only the needed block of the scattering
-  matrix, and skips the Hermiticity check. caroli splits independent blocks, such as the spin
-  blocks of BHZ.
+  - Throughput (`--count N`): N energies on all the cores, builds included. caroli runs them on
+    its thread pool, Kwant on a pool of as many processes (how Kwant users run sweeps in
+    parallel; MUMPS is sequential).
+- **Each code at its best.**
+  - Kwant uses MUMPS, computes only the needed block of the scattering matrix, and skips the
+    Hermiticity check. With the `kwant-accelerate` environment its BLAS is Apple's Accelerate
+    (5–10 % faster than OpenBLAS). MUMPS's other orderings and `nrhs` gave nothing.
+  - TBtrans takes the electrodes at η = 1e-6 eV (agreement to about 1e-5, for 20 % more time
+    than its default 1 meV) and writes double precision. Its conda-forge build with
+    Accelerate is not faster, and the new-LAPACK variant crashes.
+  - Quantica.jl (GS.SparseLU for the sample, GS.Schur for the leads) first runs a small
+    instance, so that compilation is not timed.
+  - caroli splits independent blocks, such as the spin blocks of BHZ.
 
 ## Problems (`transport.toml`)
 
 Two-terminal transmission of a length × width sample (length = width by default) between clean
 leads. caroli's recursive Green's function (`caroli-rgf`) runs up to W = 256 only: it costs
-O(L W³).
+O(L W³). TBtrans and Quantica.jl run the two-terminal problems up to W = 256 (their runners
+have no four-terminal set-up); TBtrans needs a real Hamiltonian, so it skips BHZ.
 
 | name | model | widths | disorder |
 |---|---|---|---|
@@ -65,8 +76,10 @@ JULIA_DEPOT_PATH=$PWD/.julia ./.tools/julia-1.13.1/bin/julia --project=quantica 
 ```bash
 cargo build --release -p caroli-bench
 ./target/release/caroli-bench prepare
-./target/release/caroli-bench run                                  # caroli and Kwant, 1 thread
-./target/release/caroli-bench run --code caroli --threads 14       # caroli on all cores
+./target/release/caroli-bench run                                  # caroli, its RGF and Kwant, 1 thread
+./target/release/caroli-bench run --code competitors               # TBtrans and Quantica.jl, 1 thread
+./target/release/caroli-bench run --code caroli --threads 14 --count 56   # throughput, all cores
+./target/release/caroli-bench run --code kwant --threads 14 --count 56    # Kwant, 14 processes
 ./target/release/caroli-bench report > results/report.md
 ```
 
