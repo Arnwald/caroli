@@ -19,7 +19,7 @@ mod two_terminal;
 
 pub use multi::{AttachedLead, Interface, MultiSolution, MultiTerminal, lead_voltages};
 pub use nested::{BondCurrent, LeadSelfEnergies, NestedTwoTerminal, ScatteringStates};
-pub use nested_multi::NestedMultiTerminal;
+pub use nested_multi::{NestedMultiTerminal, SectorTransmissions};
 pub use two_terminal::{EndToEnd, Lead, SelfEnergyMethod, Sweeps, TwoTerminal};
 
 use caroli_dense::Lu;

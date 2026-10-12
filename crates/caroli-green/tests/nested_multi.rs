@@ -245,7 +245,8 @@ fn spin_sectors() {
     let spins = vec![Some(vec![0, 0, 1, 1]); 4];
     for e in [-0.2, 0.02, 0.3] {
         let t = sys.transmissions(e).unwrap();
-        let (labels, ts) = sys.sector_transmissions(e, &spins).unwrap();
+        let sectors = sys.sector_transmissions(e, &spins).unwrap();
+        let (labels, ts) = (&sectors.labels, &sectors.t);
         assert_eq!(labels.len(), 8);
         for (a, &(p, sa)) in labels.iter().enumerate() {
             for (b, &(q, sb)) in labels.iter().enumerate() {
@@ -254,8 +255,8 @@ fn spin_sectors() {
                 }
             }
         }
-        for p in 0..4 {
-            for q in (0..4).filter(|&q| q != p) {
+        for (p, row) in t.iter().enumerate() {
+            for (q, &tpq) in row.iter().enumerate().filter(|&(q, _)| q != p) {
                 let sum: f64 = labels
                     .iter()
                     .enumerate()
@@ -263,11 +264,7 @@ fn spin_sectors() {
                     .filter(|(_, la, _, lb)| la.0 == p && lb.0 == q)
                     .map(|(a, _, b, _)| ts[a][b])
                     .sum();
-                assert!(
-                    (sum - t[p][q]).abs() < 1e-10,
-                    "E = {e}: T[{p}][{q}] = {} vs Σ sectors {sum}",
-                    t[p][q]
-                );
+                assert!((sum - tpq).abs() < 1e-10, "E = {e}: T[{p}][{q}] = {tpq} vs Σ sectors {sum}");
             }
         }
     }
@@ -311,8 +308,9 @@ fn andreev_reflection() {
     let channels =
         |e: f64| NestedTwoTerminal::from_model(&normal, &normal, &wire, 0).transmission(e).unwrap();
     for e in [0.0, 0.02, -0.03] {
-        let (labels, ts) = sys.sector_transmissions(e, &[Some(vec![0, 1]), None]).unwrap();
-        assert_eq!(labels, vec![(0, 0), (0, 1), (1, 0)]);
+        let sectors = sys.sector_transmissions(e, &[Some(vec![0, 1]), None]).unwrap();
+        let (labels, ts) = (&sectors.labels, &sectors.t);
+        assert_eq!(labels, &vec![(0, 0), (0, 1), (1, 0)]);
         let (into_sc, andreev) = (ts[2][0], ts[1][0]);
         let n = channels(e).round();
         assert!(into_sc.abs() < 1e-8, "E = {e}: {into_sc} enters the superconductor");

@@ -28,6 +28,16 @@ struct MultiBlock {
     cells: Vec<Vec<usize>>,
 }
 
+/// Transmissions between the sectors of the leads (see
+/// [`NestedMultiTerminal::sector_transmissions`]).
+#[derive(Clone, Debug)]
+pub struct SectorTransmissions {
+    /// `(lead, sector)` of each row and column.
+    pub labels: Vec<(usize, usize)>,
+    /// `t[k][l]` from `labels[l]` into `labels[k]`.
+    pub t: Vec<Vec<f64>>,
+}
+
 /// A device with any number of attached leads, solved by nested dissection (see the module
 /// documentation).
 #[derive(Clone, Debug)]
@@ -191,15 +201,15 @@ impl NestedMultiTerminal {
     /// holes, `[0, 0, 1, 1]` with spin), or is `None` to take the lead as a whole; the lead
     /// Hamiltonian must not couple different sectors.
     ///
-    /// Returns `(labels, t)`: `labels[k] = (lead, sector)` and `t[k][l] = Tr[Γ_k G Γ_l G†]` from
-    /// `l` into `k`, with `Γ_k` the broadening of lead `p` projected on its sector. Between two
-    /// sectors of the same lead it is a reflection probability (Andreev reflection for electrons
-    /// and holes); the diagonal is not a reflection (use unitarity).
+    /// `t[k][l] = Tr[Γ_k G Γ_l G†]` from `labels[l]` into `labels[k]`, with `Γ_k` the broadening
+    /// of the lead projected on the sector. Between two sectors of the same lead it is a
+    /// reflection probability (Andreev reflection for electrons and holes); the diagonal is not a
+    /// reflection (use unitarity).
     pub fn sector_transmissions(
         &self,
         energy: f64,
         sectors: &[Option<Vec<usize>>],
-    ) -> Result<(Vec<(usize, usize)>, Vec<Vec<f64>>), GreenError> {
+    ) -> Result<SectorTransmissions, GreenError> {
         assert_eq!(sectors.len(), self.lead_count, "one sector labelling per lead");
         let label = |p: usize, cell_orbital: usize| -> usize {
             sectors[p].as_ref().map_or(0, |s| s[self.orbital_kinds[p][cell_orbital]])
@@ -268,7 +278,7 @@ impl NestedMultiTerminal {
                 }
             }
         }
-        Ok((labels, t))
+        Ok(SectorTransmissions { labels, t })
     }
 
     /// The Schur complement `S` of `z − H − Σ` on the orbitals the leads couple to (`kept`, in
