@@ -7,15 +7,18 @@
 //! - [`MultiTerminal`]: any geometry with any number of leads, solved directly.
 //! - [`NestedTwoTerminal`]: the same two-terminal problem by geometric nested dissection,
 //!   O(n³) for an n × n sample instead of O(n⁴).
+//! - [`NestedMultiTerminal`]: any number of leads attached anywhere, by nested dissection.
 
 pub mod decimation;
 pub mod modes;
 pub mod multi;
 pub mod nested;
+pub mod nested_multi;
 mod two_terminal;
 
 pub use multi::{AttachedLead, Interface, MultiSolution, MultiTerminal};
 pub use nested::{LeadSelfEnergies, NestedTwoTerminal};
+pub use nested_multi::NestedMultiTerminal;
 pub use two_terminal::{EndToEnd, Lead, SelfEnergyMethod, Sweeps, TwoTerminal};
 
 use caroli_dense::Lu;

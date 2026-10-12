@@ -71,31 +71,11 @@ impl MultiTerminal {
     /// clean `lead` model. The lead couples to every device orbital its first cell reaches (not
     /// only the interface slice: slanted bonds, several sublattices).
     pub fn from_model(device: &Model, lead: &Model, region: &Region, interfaces: &[Interface]) -> Self {
-        let h = device.hamiltonian(region);
-        let leads = interfaces
-            .iter()
-            .map(|itf| {
-                let shift = |k: i64| -> Cell { [k * itf.outward[0], k * itf.outward[1], k * itf.outward[2]] };
-                let first = itf.slice.translated(shift(1));
-                assert!(
-                    first.sites().iter().all(|s| region.index_of(s).is_none()),
-                    "the first lead cell overlaps the device"
-                );
-                let skip = lead.coupling(&itf.slice, &itf.slice.translated(shift(2)));
-                assert!(skip.norm_max() == 0.0, "a lead hopping reaches beyond the next cell");
-                let v = lead.coupling(region, &first);
-                let orbitals: Vec<usize> = (0..v.nrows())
-                    .filter(|&i| (0..v.ncols()).any(|j| v[(i, j)] != c64::new(0.0, 0.0)))
-                    .collect();
-                AttachedLead {
-                    h00: lead.hamiltonian(&itf.slice),
-                    h01: lead.coupling(&itf.slice, &first),
-                    coupling: CMat::from_fn(orbitals.len(), v.ncols(), |a, j| v[(orbitals[a], j)]),
-                    orbitals,
-                }
-            })
-            .collect();
-        Self { h, leads, region: Some(region.clone()) }
+        Self {
+            h: device.hamiltonian(region),
+            leads: attach_leads(lead, region, interfaces),
+            region: Some(region.clone()),
+        }
     }
 
     /// Self-energies of the leads and the retarded Green's function of the whole device.
@@ -120,6 +100,32 @@ impl MultiTerminal {
         }
         Ok(MultiSolution { g: inverse(&a), sigmas })
     }
+}
+
+/// Leads of `lead` attached to `region` at each interface (see [`MultiTerminal::from_model`]).
+pub(crate) fn attach_leads(lead: &Model, region: &Region, interfaces: &[Interface]) -> Vec<AttachedLead> {
+    interfaces
+        .iter()
+        .map(|itf| {
+            let shift = |k: i64| -> Cell { [k * itf.outward[0], k * itf.outward[1], k * itf.outward[2]] };
+            let first = itf.slice.translated(shift(1));
+            assert!(
+                first.sites().iter().all(|s| region.index_of(s).is_none()),
+                "the first lead cell overlaps the device"
+            );
+            let skip = lead.coupling(&itf.slice, &itf.slice.translated(shift(2)));
+            assert!(skip.norm_max() == 0.0, "a lead hopping reaches beyond the next cell");
+            let v = lead.coupling(region, &first);
+            let orbitals: Vec<usize> =
+                (0..v.nrows()).filter(|&i| (0..v.ncols()).any(|j| v[(i, j)] != c64::new(0.0, 0.0))).collect();
+            AttachedLead {
+                h00: lead.hamiltonian(&itf.slice),
+                h01: lead.coupling(&itf.slice, &first),
+                coupling: CMat::from_fn(orbitals.len(), v.ncols(), |a, j| v[(orbitals[a], j)]),
+                orbitals,
+            }
+        })
+        .collect()
 }
 
 /// Result of [`MultiTerminal::solve`].

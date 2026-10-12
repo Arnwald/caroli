@@ -103,8 +103,8 @@ impl LeadModes {
 
     /// Modes at a complex energy `z`. With `Im z > 0` no mode propagates (`|λ| ≠ 1`).
     ///
-    /// At a real energy, a Hermitian definite coupling takes the fast path of
-    /// [`DefiniteCoupling`]; everything else takes the general algorithm.
+    /// At a real energy, a Hermitian definite coupling (`H1 = ±P`, `P > 0`) takes a fast path: one
+    /// Hermitian eigenproblem of size n. Everything else takes the general algorithm.
     pub fn at(h0: &CMat, h1: &CMat, z: c64) -> Result<Self, GreenError> {
         let definite = if z.im == 0.0 { DefiniteCoupling::new(h0, h1) } else { None };
         Self::shifted(h0, h1, z, |e, scale| match &definite {

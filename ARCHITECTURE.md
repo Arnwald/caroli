@@ -11,7 +11,7 @@ crates/
   caroli-dense        dense complex kernels: Schur decomposition and reordering, LU, products
                       (Apple Accelerate on macOS, faer elsewhere)
   caroli-green        steady state: lead modes and self-energies, recursive Green's function,
-                      nested dissection, Caroli transmission
+                      nested dissection (two and many terminals), Caroli transmission
   caroli-disorder     reproducible random streams (xoshiro256**, gfortran-compatible seeding),
                       Anderson disorder, classical magnetic impurities
   caroli-keldysh      non-equilibrium steady state: lesser Green's function by lead injection,
@@ -108,6 +108,12 @@ The dependencies only go downward: lattice ← model ← green ← caroli, and d
   - In `NestedTwoTerminal`, a separator block that cannot be eliminated stably is delayed to the
     parent. This happens for a piece of a clean lattice at one of its eigenvalues. Independent
     branches run in parallel.
+  - `NestedMultiTerminal`: any number of leads attached anywhere (the interfaces of
+    `MultiTerminal`). The sites the leads couple to stay at the root, whose inverse gives
+    `G_pq` and `T_pq` for every pair of leads. `MultiTerminal` inverts the whole device densely;
+    it stays as the reference in the tests (crosses of square and BHZ lattices, graphene with a
+    narrow lead).
+  - The two nested solvers share the elimination (`SiteTree`, `Tree`).
   - Both solvers split independent blocks of orbitals, such as the spin blocks of BHZ.
   - `NestedTwoTerminal::self_energies` and `transmission_with` reuse the lead self-energies of
     one energy for every disorder configuration with the same leads. For BHZ at W = 128 the

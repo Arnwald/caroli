@@ -19,6 +19,8 @@
 //!
 //! Independent blocks (orbitals that neither the device nor the leads couple, e.g. the two
 //! spin blocks of BHZ) are solved separately on the same tree.
+//!
+//! The elimination itself (`SiteTree`, `Tree`) also serves [`crate::NestedMultiTerminal`].
 
 use crate::modes::{sigma_left, sigma_right};
 use crate::{GreenError, Lead, broadening, trace};
@@ -41,12 +43,205 @@ struct Node {
     children: Vec<usize>,
 }
 
-/// One independent block of orbitals with its elimination tree and its leads.
+/// Geometric tree over the sites of a region: separator layers as thick as the hopping range,
+/// down to leaves of `LEAF_ORBITALS` orbitals. Shared by the independent blocks of orbitals.
 #[derive(Clone, Debug)]
-struct Block {
+pub(crate) struct SiteTree {
+    /// `(sites eliminated, children)` of each node, in post-order.
+    nodes: Vec<(Vec<usize>, Vec<usize>)>,
+    /// Children of the root.
+    top: Vec<usize>,
+}
+
+impl SiteTree {
+    /// Tree over the `interior` sites (indices in `region`); the other sites stay at the root.
+    pub(crate) fn new(device: &Model, region: &Region, interior: Vec<usize>) -> Self {
+        let mut range = [1i64; 3];
+        for hop in device.hoppings() {
+            for (d, r) in range.iter_mut().enumerate() {
+                *r = (*r).max(hop.offset[d].abs());
+            }
+        }
+        let mut nodes = Vec::new();
+        let top = split(region, interior, &range, &mut nodes).into_iter().collect();
+        Self { nodes, top }
+    }
+
+    /// Elimination tree of the orbitals for which `mine` holds.
+    pub(crate) fn tree(&self, region: &Region, h: &SparseMatrix, mine: impl Fn(usize) -> bool) -> Tree {
+        let block_orbitals = |sites: &[usize]| -> Vec<usize> {
+            let mut v: Vec<usize> = sites
+                .iter()
+                .flat_map(|&i| region.offset(i)..region.offset(i) + region.site_orbitals(i))
+                .filter(|&o| mine(o))
+                .collect();
+            v.sort_unstable();
+            v
+        };
+        let mut nodes: Vec<Node> = self
+            .nodes
+            .iter()
+            .map(|(sites, children)| Node {
+                eliminate: block_orbitals(sites),
+                boundary: Vec::new(),
+                children: children.clone(),
+            })
+            .collect();
+        symbolic(h, &mut nodes);
+        Tree { nodes, top: self.top.clone() }
+    }
+}
+
+/// Elimination tree of one block of orbitals.
+#[derive(Clone, Debug)]
+pub(crate) struct Tree {
     nodes: Vec<Node>,
     /// Children of the root.
     top: Vec<usize>,
+}
+
+impl Tree {
+    /// Front of the root on the `kept` orbitals, which are never eliminated: returns `(nd, f)`,
+    /// where `f` holds the `nd` variables delayed up to the root, then `kept` in order. The
+    /// entries of `z − H` between kept orbitals are included; the caller adds the leads.
+    pub(crate) fn root(&self, h: &SparseMatrix, z: c64, kept: &[usize]) -> Result<(usize, CMat), GreenError> {
+        let kids = self.fronts(h, &self.top, z)?;
+        let in_kept = Positions::new(kept);
+        let mut delayed: Vec<usize> =
+            kids.iter().flat_map(|(v, _)| v.iter().copied()).filter(|&o| in_kept.get(o).is_none()).collect();
+        delayed.sort_unstable();
+        delayed.dedup();
+        let vars: Vec<usize> = delayed.iter().chain(kept).copied().collect();
+        let pos = Positions::new(&vars);
+        let mut f = CMat::zeros(vars.len(), vars.len());
+        for &i in kept {
+            let pi = pos.get(i).unwrap();
+            f[(pi, pi)] += z;
+            for (j, hij) in h.row(i) {
+                if in_kept.get(j).is_some() {
+                    f[(pi, pos.get(j).unwrap())] -= hij;
+                }
+            }
+        }
+        extend_add(&mut f, &pos, &kids);
+        Ok((delayed.len(), f))
+    }
+
+    /// Fronts of the given nodes, in parallel: `(variables, Schur complement)` of each.
+    fn fronts(
+        &self,
+        h: &SparseMatrix,
+        nodes: &[usize],
+        z: c64,
+    ) -> Result<Vec<(Vec<usize>, CMat)>, GreenError> {
+        match nodes {
+            [] => Ok(Vec::new()),
+            [a] => Ok(vec![self.front(h, *a, z)?]),
+            [a, b] => {
+                let (x, y) = rayon::join(|| self.front(h, *a, z), || self.front(h, *b, z));
+                Ok(vec![x?, y?])
+            }
+            _ => nodes.iter().map(|&k| self.front(h, k, z)).collect(),
+        }
+    }
+
+    /// Eliminates node `k` (after its children) and returns the variables left in its front and
+    /// their Schur complement.
+    fn front(&self, h: &SparseMatrix, k: usize, z: c64) -> Result<(Vec<usize>, CMat), GreenError> {
+        let node = &self.nodes[k];
+        let kids = self.fronts(h, &node.children, z)?;
+        let in_boundary = |o: usize| node.boundary.binary_search(&o).is_ok();
+        // Own separator, plus variables the children could not eliminate.
+        let mut elim: Vec<usize> = node.eliminate.clone();
+        for (vars, _) in &kids {
+            elim.extend(vars.iter().copied().filter(|&o| !in_boundary(o)));
+        }
+        elim.sort_unstable();
+        elim.dedup();
+        let vars: Vec<usize> = elim.iter().chain(&node.boundary).copied().collect();
+        let pos = Positions::new(&vars);
+        let mut f = CMat::zeros(vars.len(), vars.len());
+        // Entries of the own separator with every later variable (the earlier ones were
+        // assembled where those were eliminated).
+        for &i in &node.eliminate {
+            let pi = pos.get(i).unwrap();
+            f[(pi, pi)] += z;
+            for (j, hij) in h.row(i) {
+                if j == i {
+                    f[(pi, pi)] -= hij;
+                } else if let Some(pj) = pos.get(j) {
+                    // Later variables only: the rest of the own separator after i, and the
+                    // boundary. A child's delayed variables already carry these entries.
+                    let later = if node.eliminate.binary_search(&j).is_ok() { j > i } else { in_boundary(j) };
+                    if later {
+                        f[(pi, pj)] -= hij;
+                        f[(pj, pi)] -= hij.conj();
+                    }
+                }
+            }
+        }
+        extend_add(&mut f, &pos, &kids);
+        let ne = elim.len();
+        if ne == 0 {
+            return Ok((vars, f));
+        }
+        match schur(&f, ne) {
+            Some(s) => Ok((node.boundary.clone(), s)),
+            // Singular separator block: hand the whole front to the parent.
+            None => Ok((vars, f)),
+        }
+    }
+}
+
+/// Independent sets of indices (union-find).
+pub(crate) struct Components(Vec<usize>);
+
+impl Components {
+    pub(crate) fn new(n: usize) -> Self {
+        Self((0..n).collect())
+    }
+
+    fn find(&mut self, mut i: usize) -> usize {
+        while self.0[i] != i {
+            self.0[i] = self.0[self.0[i]];
+            i = self.0[i];
+        }
+        i
+    }
+
+    pub(crate) fn join(&mut self, a: usize, b: usize) {
+        let (ra, rb) = (self.find(a), self.find(b));
+        if ra != rb {
+            self.0[ra.max(rb)] = ra.min(rb);
+        }
+    }
+
+    /// Joins `orbitals[a]` and `orbitals[b]` for every nonzero `m[(a, b)]`.
+    pub(crate) fn join_matrix(&mut self, m: &CMat, rows: &[usize], cols: &[usize]) {
+        for b in 0..m.ncols() {
+            for a in 0..m.nrows() {
+                if m[(a, b)] != c64::new(0.0, 0.0) {
+                    self.join(rows[a], cols[b]);
+                }
+            }
+        }
+    }
+
+    /// The label of every index (its smallest member), and the sorted labels.
+    pub(crate) fn labels(mut self) -> (Vec<usize>, Vec<usize>) {
+        let n = self.0.len();
+        let roots: Vec<usize> = (0..n).map(|i| self.find(i)).collect();
+        let mut labels = roots.clone();
+        labels.sort_unstable();
+        labels.dedup();
+        (roots, labels)
+    }
+}
+
+/// One independent block of orbitals with its elimination tree and its leads.
+#[derive(Clone, Debug)]
+struct Block {
+    tree: Tree,
     left: Lead,
     right: Lead,
     /// Device orbitals of the first and last slices, in the order of the lead cells.
@@ -91,16 +286,16 @@ pub struct NestedTwoTerminal {
 }
 
 /// Position of each item of `vars` (any order): a sorted index for binary search.
-struct Positions(Vec<(usize, usize)>);
+pub(crate) struct Positions(Vec<(usize, usize)>);
 
 impl Positions {
-    fn new(vars: &[usize]) -> Self {
+    pub(crate) fn new(vars: &[usize]) -> Self {
         let mut v: Vec<(usize, usize)> = vars.iter().enumerate().map(|(k, &x)| (x, k)).collect();
         v.sort_unstable();
         Self(v)
     }
 
-    fn get(&self, x: usize) -> Option<usize> {
+    pub(crate) fn get(&self, x: usize) -> Option<usize> {
         self.0.binary_search_by_key(&x, |&(y, _)| y).ok().map(|k| self.0[k].1)
     }
 }
@@ -136,54 +331,22 @@ impl NestedTwoTerminal {
         let ends = [first.sites()[0].cell[axis], last.sites()[0].cell[axis]];
         let interior: Vec<usize> =
             (0..region.len()).filter(|&i| !ends.contains(&region.sites()[i].cell[axis])).collect();
-        let mut range = [1i64; 3];
-        for hop in device.hoppings() {
-            for (d, r) in range.iter_mut().enumerate() {
-                *r = (*r).max(hop.offset[d].abs());
-            }
-        }
-        let mut site_nodes: Vec<(Vec<usize>, Vec<usize>)> = Vec::new();
-        let top: Vec<usize> = split(region, interior, &range, &mut site_nodes).into_iter().collect();
+        let sites = SiteTree::new(device, region, interior);
 
         // Independent blocks of orbitals: connected through the device or the leads.
-        let n = h.n;
-        let mut parent: Vec<usize> = (0..n).collect();
-        fn find(p: &mut [usize], mut i: usize) -> usize {
-            while p[i] != i {
-                p[i] = p[p[i]];
-                i = p[i];
-            }
-            i
-        }
-        let join = |p: &mut Vec<usize>, a: usize, b: usize| {
-            let (ra, rb) = (find(p, a), find(p, b));
-            if ra != rb {
-                p[ra.max(rb)] = ra.min(rb);
-            }
-        };
-        for r in 0..n {
+        let mut components = Components::new(h.n);
+        for r in 0..h.n {
             for (c, v) in h.row(r) {
                 if v != c64::new(0.0, 0.0) {
-                    join(&mut parent, r, c);
+                    components.join(r, c);
                 }
             }
         }
         for (lead, orbs) in [(&left, &left_orbitals), (&right, &right_orbitals)] {
-            for m in [&lead.h00, &lead.h01] {
-                for a in 0..m.nrows() {
-                    for b in 0..m.ncols() {
-                        if m[(a, b)] != c64::new(0.0, 0.0) {
-                            join(&mut parent, orbs[a], orbs[b]);
-                        }
-                    }
-                }
-            }
+            components.join_matrix(&lead.h00, orbs, orbs);
+            components.join_matrix(&lead.h01, orbs, orbs);
         }
-        let mut roots: Vec<usize> = (0..n).map(|i| find(&mut parent, i)).collect();
-        roots.iter_mut().for_each(|r| *r = find(&mut parent, *r));
-        let mut labels: Vec<usize> = roots.clone();
-        labels.sort_unstable();
-        labels.dedup();
+        let (roots, labels) = components.labels();
 
         let blocks = labels
             .iter()
@@ -194,27 +357,8 @@ impl NestedTwoTerminal {
                 let (kl, kr) = (pick(&left_orbitals), pick(&right_orbitals));
                 let restrict =
                     |m: &CMat, k: &[usize]| CMat::from_fn(k.len(), k.len(), |a, b| m[(k[a], k[b])]);
-                let block_orbitals = |sites: &[usize]| -> Vec<usize> {
-                    let mut v: Vec<usize> = sites
-                        .iter()
-                        .flat_map(|&i| region.offset(i)..region.offset(i) + region.site_orbitals(i))
-                        .filter(|&o| mine(o))
-                        .collect();
-                    v.sort_unstable();
-                    v
-                };
-                let mut nodes: Vec<Node> = site_nodes
-                    .iter()
-                    .map(|(sites, children)| Node {
-                        eliminate: block_orbitals(sites),
-                        boundary: Vec::new(),
-                        children: children.clone(),
-                    })
-                    .collect();
-                symbolic(&h, &mut nodes);
                 Block {
-                    nodes,
-                    top: top.clone(),
+                    tree: sites.tree(region, &h, mine),
                     left: Lead { h00: restrict(&left.h00, &kl), h01: restrict(&left.h01, &kl) },
                     right: Lead { h00: restrict(&right.h00, &kr), h01: restrict(&right.h01, &kr) },
                     left_orbitals: kl.iter().map(|&k| left_orbitals[k]).collect(),
@@ -307,31 +451,12 @@ impl NestedTwoTerminal {
 
     /// `G_LR`, the block of `(z − H − Σ)⁻¹` between the first and last slices.
     fn lead_green(&self, block: &Block, z: c64, sigma_l: &CMat, sigma_r: &CMat) -> Result<CMat, GreenError> {
-        let kids = self.fronts(block, &block.top, z)?;
         let same = block.left_orbitals == block.right_orbitals;
-        let mut b: Vec<usize> = block.left_orbitals.clone();
+        let mut kept: Vec<usize> = block.left_orbitals.clone();
         if !same {
-            b.extend_from_slice(&block.right_orbitals);
+            kept.extend_from_slice(&block.right_orbitals);
         }
-        let in_b = Positions::new(&b);
-        // Variables delayed up to the root, eliminated before the lead slices.
-        let mut delayed: Vec<usize> =
-            kids.iter().flat_map(|(v, _)| v.iter().copied()).filter(|&o| in_b.get(o).is_none()).collect();
-        delayed.sort_unstable();
-        delayed.dedup();
-        let vars: Vec<usize> = delayed.iter().chain(&b).copied().collect();
-        let pos = Positions::new(&vars);
-        let nd = delayed.len();
-        let mut f = CMat::zeros(vars.len(), vars.len());
-        for &i in &b {
-            let pi = pos.get(i).unwrap();
-            f[(pi, pi)] += z;
-            for (j, hij) in self.h.row(i) {
-                if in_b.get(j).is_some() {
-                    f[(pi, pos.get(j).unwrap())] -= hij;
-                }
-            }
-        }
+        let (nd, mut f) = block.tree.root(&self.h, z, &kept)?;
         let (nl, nr) = (block.left_orbitals.len(), block.right_orbitals.len());
         let r0 = if same { nd } else { nd + nl };
         for a in 0..nl {
@@ -344,7 +469,6 @@ impl NestedTwoTerminal {
                 f[(r0 + a, r0 + c)] -= sigma_r[(a, c)];
             }
         }
-        extend_add(&mut f, &pos, &kids);
         let s = if nd > 0 { schur(&f, nd).ok_or(GreenError::Singular(z.re))? } else { f };
         // Columns of the right slice of S⁻¹, rows of the left slice.
         let rhs = CMat::from_fn(s.nrows(), nr, |i, j| {
@@ -355,66 +479,6 @@ impl NestedTwoTerminal {
             return Err(GreenError::Singular(z.re));
         }
         Ok(CMat::from_fn(nl, nr, |i, j| x[(i, j)]))
-    }
-
-    /// Fronts of the given nodes, in parallel: `(variables, Schur complement)` of each.
-    fn fronts(&self, block: &Block, nodes: &[usize], z: c64) -> Result<Vec<(Vec<usize>, CMat)>, GreenError> {
-        match nodes {
-            [] => Ok(Vec::new()),
-            [a] => Ok(vec![self.front(block, *a, z)?]),
-            [a, b] => {
-                let (x, y) = rayon::join(|| self.front(block, *a, z), || self.front(block, *b, z));
-                Ok(vec![x?, y?])
-            }
-            _ => nodes.iter().map(|&k| self.front(block, k, z)).collect(),
-        }
-    }
-
-    /// Eliminates node `k` of a block (after its children) and returns the variables left in its
-    /// front and their Schur complement.
-    fn front(&self, block: &Block, k: usize, z: c64) -> Result<(Vec<usize>, CMat), GreenError> {
-        let node = &block.nodes[k];
-        let kids = self.fronts(block, &node.children, z)?;
-        let in_boundary = |o: usize| node.boundary.binary_search(&o).is_ok();
-        // Own separator, plus variables the children could not eliminate.
-        let mut elim: Vec<usize> = node.eliminate.clone();
-        for (vars, _) in &kids {
-            elim.extend(vars.iter().copied().filter(|&o| !in_boundary(o)));
-        }
-        elim.sort_unstable();
-        elim.dedup();
-        let vars: Vec<usize> = elim.iter().chain(&node.boundary).copied().collect();
-        let pos = Positions::new(&vars);
-        let mut f = CMat::zeros(vars.len(), vars.len());
-        // Entries of the own separator with every later variable (the earlier ones were
-        // assembled where those were eliminated).
-        for &i in &node.eliminate {
-            let pi = pos.get(i).unwrap();
-            f[(pi, pi)] += z;
-            for (j, hij) in self.h.row(i) {
-                if j == i {
-                    f[(pi, pi)] -= hij;
-                } else if let Some(pj) = pos.get(j) {
-                    // Later variables only: the rest of the own separator after i, and the
-                    // boundary. A child's delayed variables already carry these entries.
-                    let later = if node.eliminate.binary_search(&j).is_ok() { j > i } else { in_boundary(j) };
-                    if later {
-                        f[(pi, pj)] -= hij;
-                        f[(pj, pi)] -= hij.conj();
-                    }
-                }
-            }
-        }
-        extend_add(&mut f, &pos, &kids);
-        let ne = elim.len();
-        if ne == 0 {
-            return Ok((vars, f));
-        }
-        match schur(&f, ne) {
-            Some(s) => Ok((node.boundary.clone(), s)),
-            // Singular separator block: hand the whole front to the parent.
-            None => Ok((vars, f)),
-        }
     }
 }
 
@@ -508,7 +572,7 @@ fn extend_add(f: &mut CMat, pos: &Positions, kids: &[(Vec<usize>, CMat)]) {
 
 /// Schur complement of the leading `ne × ne` block of `f`, or `None` if that block is
 /// numerically singular.
-fn schur(f: &CMat, ne: usize) -> Option<CMat> {
+pub(crate) fn schur(f: &CMat, ne: usize) -> Option<CMat> {
     let n = f.nrows();
     let f11 = f.as_ref().submatrix(0, 0, ne, ne);
     let scale = f11.norm_max();
