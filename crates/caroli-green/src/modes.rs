@@ -43,6 +43,9 @@ const DEFECTIVE_TOL: f64 = 1e-7;
 /// `X_α` or `Y_γ` with an inverse condition number (1-norm estimate) below this: a bound state
 /// of the lead surface.
 const SINGULAR_TOL: f64 = 1e-11;
+/// The stabilisation of a real problem (any real number works but those that make the resolvent
+/// singular at the energy; an irrational one makes it unlikely).
+const REAL_STABILISATION: f64 = 0.618_033_988_749_894_8;
 /// Energy shifts tried in turn, in units of the bandwidth scale.
 const SHIFTS: [f64; 5] = [0.0, 1e-9, 1e-8, 1e-7, 1e-6];
 
@@ -141,15 +144,29 @@ impl LeadModes {
         Err(last)
     }
 
+    /// The general algorithm. A real problem (real `H0`, `H1` and energy) keeps the pencil real,
+    /// with a real stabilisation, and its Schur decomposition goes through the real Schur form, a
+    /// quarter of the arithmetic; if that stabilisation is ill-conditioned, the complex one takes
+    /// over.
     fn solve(h0: &CMat, h1: &CMat, z: c64, scale: f64) -> Result<Self, GreenError> {
+        let real = z.im == 0.0 && caroli_dense::is_real(h0.as_ref()) && caroli_dense::is_real(h1.as_ref());
+        if real && let Ok(modes) = Self::solve_with(h0, h1, z, scale, true) {
+            return Ok(modes);
+        }
+        Self::solve_with(h0, h1, z, scale, false)
+    }
+
+    fn solve_with(h0: &CMat, h1: &CMat, z: c64, scale: f64, real: bool) -> Result<Self, GreenError> {
         let n = h0.nrows();
         let i = c64::new(0.0, 1.0);
+        // The stabilisation s(uu† + vv†): s = i in general, a real s for a real problem.
+        let s = if real { c64::new(REAL_STABILISATION, 0.0) } else { i };
         let one = c64::new(1.0, 0.0);
         let zero = c64::new(0.0, 0.0);
 
-        // Compact SVD of the coupling.
-        let caroli_dense::Svd { u: su, s: ss, v: sv } =
-            caroli_dense::svd(h1.as_ref()).map_err(|_| GreenError::Eigen)?;
+        // Compact SVD of the coupling (with real vectors for a real problem).
+        let svd = if real { caroli_dense::svd_of_real(h1.as_ref()) } else { caroli_dense::svd(h1.as_ref()) };
+        let caroli_dense::Svd { u: su, s: ss, v: sv } = svd.map_err(|_| GreenError::Eigen)?;
         let smax = ss.iter().copied().fold(0.0, f64::max);
         let kept: Vec<usize> = (0..ss.len()).filter(|&k| ss[k] > RANK_TOL * smax).collect();
         let r = kept.len();
@@ -171,11 +188,20 @@ impl LeadModes {
             });
         }
 
-        // Stabilised resolvent G̃ = (H0 − z + i(uu† + vv†))⁻¹, applied to u and v.
+        // Stabilised resolvent G̃ = (H0 − z + s(uu† + vv†))⁻¹, applied to u and v.
         let uv = CMat::from_fn(n, 2 * r, |p, k| if k < r { u[(p, k)] } else { v[(p, k - r)] });
         let stab = product(uv.as_ref(), Op::Plain, uv.as_ref(), Op::Adjoint);
-        let a = CMat::from_fn(n, n, |p, q| h0[(p, q)] - if p == q { z } else { zero } + i * stab[(p, q)]);
-        let g = Lu::new(a.as_ref()).solve(uv.as_ref());
+        let a = CMat::from_fn(n, n, |p, q| h0[(p, q)] - if p == q { z } else { zero } + s * stab[(p, q)]);
+        let lu_a = Lu::new(a.as_ref());
+        if real {
+            // A real stabilisation can make the resolvent singular at some energies.
+            let (lo, hi) = lu_a.pivot_range();
+            let conditioned = lo > 1e-10 * hi; // false for NaN
+            if !conditioned {
+                return Err(GreenError::Eigen);
+            }
+        }
+        let g = lu_a.solve(uv.as_ref());
         if g.norm_max().is_nan() {
             return Err(GreenError::Singular(z.re));
         }
@@ -186,18 +212,18 @@ impl LeadModes {
         let (vgu, vgv) = (blocks.as_ref().submatrix(r, 0, r, r), blocks.as_ref().submatrix(r, r, r, r));
 
         // Pencil R x = λ L x:
-        //   L = [[1 − i u†G̃u, u†G̃u], [−i v†G̃u, v†G̃u]],  R = [[−u†G̃v, i u†G̃v], [−v†G̃v, i v†G̃v − 1]].
+        //   L = [[1 − s u†G̃u, u†G̃u], [−s v†G̃u, v†G̃u]],  R = [[−u†G̃v, s u†G̃v], [−v†G̃v, s v†G̃v − 1]].
         let lmat = CMat::from_fn(2 * r, 2 * r, |p, q| match (p < r, q < r) {
-            (true, true) => (if p == q { one } else { zero }) - i * ugu[(p, q)],
+            (true, true) => (if p == q { one } else { zero }) - s * ugu[(p, q)],
             (true, false) => ugu[(p, q - r)],
-            (false, true) => -i * vgu[(p - r, q)],
+            (false, true) => -s * vgu[(p - r, q)],
             (false, false) => vgu[(p - r, q - r)],
         });
         let rmat = CMat::from_fn(2 * r, 2 * r, |p, q| match (p < r, q < r) {
             (true, true) => -ugv[(p, q)],
-            (true, false) => i * ugv[(p, q - r)],
+            (true, false) => s * ugv[(p, q - r)],
             (false, true) => -vgv[(p - r, q)],
-            (false, false) => i * vgv[(p - r, q - r)] - if p == q { one } else { zero },
+            (false, false) => s * vgv[(p - r, q - r)] - if p == q { one } else { zero },
         });
 
         // A standard eigenproblem with the same invariant subspaces: L⁻¹R (eigenvalue λ) or R⁻¹L
@@ -222,7 +248,12 @@ impl LeadModes {
         } else {
             let mut best: Option<(f64, c64, CMat)> = None;
             for k in 0..8 {
-                let sigma = c64::from_polar(if k % 2 == 0 { 0.5 } else { 2.0 }, 0.3 + 0.9 * k as f64);
+                // Off the unit circle; on the real axis for a real pencil.
+                let sigma = if real {
+                    c64::new([0.5, 2.0, -0.5, -2.0, 0.37, 2.7, -0.37, -2.7][k], 0.0)
+                } else {
+                    c64::from_polar(if k % 2 == 0 { 0.5 } else { 2.0 }, 0.3 + 0.9 * k as f64)
+                };
                 let m = &rmat - CMat::from_fn(2 * r, 2 * r, |p, q| sigma * lmat[(p, q)]);
                 let lu = Lu::new(m.as_ref());
                 let ratio = pivot_ratio(&lu);
@@ -239,7 +270,12 @@ impl LeadModes {
 
         // Schur form and classes: right-evanescent, propagating, left-evanescent (with λ = ∞).
         let m2 = 2 * r;
-        let (q0, t0) = caroli_dense::schur(c.as_ref()).map_err(|_| GreenError::Eigen)?;
+        let schur = if real && caroli_dense::is_real(c.as_ref()) {
+            caroli_dense::schur_of_real(c.as_ref())
+        } else {
+            caroli_dense::schur(c.as_ref())
+        };
+        let (q0, t0) = schur.map_err(|_| GreenError::Eigen)?;
         let mu_max = (0..m2).map(|k| t0[(k, k)].norm()).fold(0.0, f64::max);
         let to_lambda = |mu: c64| -> Option<c64> {
             match map {
@@ -344,7 +380,7 @@ impl LeadModes {
                 }
             }
         }
-        // x = Q y, normalised, and φ = G̃(−v α + i v γ + λ(i u α − u γ)) with (α, γ) = x.
+        // x = Q y, normalised, and φ = G̃(−v α + s v γ + λ(s u α − u γ)) with (α, γ) = x.
         let mut x = product(qa.as_ref(), Op::Plain, y.as_ref(), Op::Plain);
         for p in 0..np {
             let col = x.col_as_slice_mut(p);
@@ -354,8 +390,8 @@ impl LeadModes {
             }
             col.iter_mut().for_each(|z| *z /= norm);
         }
-        let bb = CMat::from_fn(r, np, |q, p| -x[(q, p)] + i * x[(r + q, p)]);
-        let cc = CMat::from_fn(r, np, |q, p| lams[p] * (i * x[(q, p)] - x[(r + q, p)]));
+        let bb = CMat::from_fn(r, np, |q, p| -x[(q, p)] + s * x[(r + q, p)]);
+        let cc = CMat::from_fn(r, np, |q, p| lams[p] * (s * x[(q, p)] - x[(r + q, p)]));
         let mut phis = CMat::zeros(n, np);
         matmul(phis.as_mut(), Accum::Replace, gv, Op::Plain, bb.as_ref(), Op::Plain, one);
         matmul(phis.as_mut(), Accum::Add, gu, Op::Plain, cc.as_ref(), Op::Plain, one);
@@ -694,4 +730,55 @@ pub fn surface_green_right(h0: &CMat, h1: &CMat, energy: f64, modes: &LeadModes)
     crate::inverse(&CMat::from_fn(n, n, |i, j| {
         (if i == j { c64::new(energy, 0.0) } else { c64::new(0.0, 0.0) }) - h0[(i, j)] - s[(i, j)]
     }))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use caroli_lattice::{Lattice, Region};
+    use caroli_model::Model;
+
+    /// Cell and coupling of a lead along the first primitive vector, `w` cells wide.
+    fn lead(model: &Model, w: usize) -> (CMat, CMat) {
+        let region = Region::cuboid(model.lattice(), [2, w, 0]);
+        let slices = region.slices(0);
+        (model.hamiltonian(&slices[0]), model.coupling(&slices[0], &slices[1]))
+    }
+
+    /// The real pencil and its real Schur form give the self-energies of the complex ones.
+    #[test]
+    fn real_pencil_matches_complex() {
+        let graphene = Model::new(Lattice::honeycomb(1.0, 1))
+            .hopping(0, 1, [0, 0, 0], -1.0)
+            .hopping(0, 1, [0, -1, 0], -1.0)
+            .hopping(0, 1, [1, -1, 0], -1.0);
+        // Square lattice with diagonal hoppings: a Hermitian coupling that is not definite.
+        let square = Model::new(Lattice::square(1.0, 1))
+            .onsite(0, 0.3)
+            .hopping(0, 0, [1, 0, 0], -1.0)
+            .hopping(0, 0, [0, 1, 0], -1.0)
+            .hopping(0, 0, [1, 1, 0], -0.45)
+            .hopping(0, 0, [1, -1, 0], 0.2);
+        for (name, model, w) in [("graphene", &graphene, 7), ("square", &square, 6)] {
+            let (h0, h1) = lead(model, w);
+            assert!(caroli_dense::is_real(h0.as_ref()) && caroli_dense::is_real(h1.as_ref()));
+            let scale = row_norm(&h0) + 2.0 * row_norm(&h1);
+            let mut compared = 0;
+            for e in [-2.3, -1.1, -0.35, 0.05, 0.42, 1.3, 2.6] {
+                let z = c64::new(e, 0.0);
+                let (Ok(re), Ok(cx)) = (
+                    LeadModes::solve_with(&h0, &h1, z, scale, true),
+                    LeadModes::solve_with(&h0, &h1, z, scale, false),
+                ) else {
+                    continue; // a subband edge for both
+                };
+                let d = |a: &CMat, b: &CMat| (a - b).norm_max();
+                assert!(d(&re.sigma_right(), &cx.sigma_right()) < 1e-10, "{name} E = {e}: Σ_R");
+                assert!(d(&re.sigma_left(), &cx.sigma_left()) < 1e-10, "{name} E = {e}: Σ_L");
+                assert_eq!(re.right_velocities.len(), cx.right_velocities.len(), "{name} E = {e}");
+                compared += 1;
+            }
+            assert!(compared >= 6, "{name}: {compared} energies compared");
+        }
+    }
 }

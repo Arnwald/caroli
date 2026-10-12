@@ -98,6 +98,68 @@ pub fn schur(a: MatRef<'_, c64>) -> Result<(Mat<c64>, Mat<c64>), DenseError> {
     schur::schur(a)
 }
 
+/// Complex Schur decomposition `a = q t q†` of a real matrix (given with zero imaginary parts):
+/// the real Schur form (a quarter of the arithmetic of the complex one), whose 2 × 2 blocks of
+/// complex pairs are then split by complex rotations (`rsf2csf`). Same output as [`schur`].
+pub fn schur_of_real(a: MatRef<'_, c64>) -> Result<(Mat<c64>, Mat<c64>), DenseError> {
+    let n = a.nrows();
+    assert_eq!(n, a.ncols(), "schur_of_real: square matrix expected");
+    #[cfg(all(target_os = "macos", feature = "accelerate"))]
+    if use_accelerate() {
+        let mut t: Vec<f64> = (0..n * n).map(|k| a[(k % n, k / n)].re).collect();
+        if !t.iter().all(|x| x.is_finite()) {
+            return Err(DenseError::Schur);
+        }
+        let mut q = vec![0.0; n * n];
+        accelerate::real_schur(&mut t, &mut q, n)?;
+        let mut tc = Mat::<c64>::from_fn(n, n, |i, j| c64::new(t[i + j * n], 0.0));
+        let mut qc = Mat::<c64>::from_fn(n, n, |i, j| c64::new(q[i + j * n], 0.0));
+        split_pairs(&mut tc, &mut qc);
+        return Ok((qc, tc));
+    }
+    schur(a)
+}
+
+/// Turns a real quasi-triangular Schur form into a complex triangular one (as MATLAB's
+/// `rsf2csf`): each 2 × 2 block of a complex pair is triangularised by a complex rotation applied
+/// to its two rows, its two columns and the Schur vectors.
+fn split_pairs(t: &mut Mat<c64>, q: &mut Mat<c64>) {
+    let n = t.nrows();
+    let zero = c64::new(0.0, 0.0);
+    for m in (1..n).rev() {
+        let sub = t[(m, m - 1)];
+        if sub == zero {
+            continue;
+        }
+        // An eigenvalue of the block [[a, b], [c, d]], relative to d.
+        let (a, b, c, d) = (t[(m - 1, m - 1)], t[(m - 1, m)], sub, t[(m, m)]);
+        let half = (a - d) * 0.5;
+        let mu = half + (half * half + b * c).sqrt(); // eigenvalue − d
+        let r = (mu.norm_sqr() + c.norm_sqr()).sqrt();
+        if r == 0.0 {
+            continue;
+        }
+        let (cs, sn) = (mu / r, c / r);
+        // G = [[cs*, sn*], [−sn, cs]] on rows m−1, m (columns m−1..n), G† on columns m−1, m.
+        for j in m - 1..n {
+            let (x, y) = (t[(m - 1, j)], t[(m, j)]);
+            t[(m - 1, j)] = cs.conj() * x + sn.conj() * y;
+            t[(m, j)] = -sn * x + cs * y;
+        }
+        for i in 0..=m {
+            let (x, y) = (t[(i, m - 1)], t[(i, m)]);
+            t[(i, m - 1)] = x * cs + y * sn;
+            t[(i, m)] = -x * sn.conj() + y * cs.conj();
+        }
+        for i in 0..n {
+            let (x, y) = (q[(i, m - 1)], q[(i, m)]);
+            q[(i, m - 1)] = x * cs + y * sn;
+            q[(i, m)] = -x * sn.conj() + y * cs.conj();
+        }
+        t[(m, m - 1)] = zero;
+    }
+}
+
 /// LU factorisation with partial pivoting of a square matrix.
 #[derive(Clone, Debug)]
 pub struct Lu {
@@ -295,6 +357,30 @@ pub fn hermitian_eigen(a: MatRef<'_, c64>) -> Result<(Vec<f64>, Mat<c64>), Dense
     Ok(((0..a.nrows()).map(|k| evd.S()[k].re).collect(), evd.U().to_owned()))
 }
 
+/// Whether a matrix has no imaginary part at all.
+pub fn is_real(a: MatRef<'_, c64>) -> bool {
+    (0..a.ncols()).all(|j| (0..a.nrows()).all(|i| a[(i, j)].im == 0.0))
+}
+
+/// Thin singular value decomposition of a real matrix (given with zero imaginary parts), with
+/// real singular vectors (a complex decomposition may mix degenerate ones with phases). Without
+/// Accelerate, [`svd`].
+pub fn svd_of_real(a: MatRef<'_, c64>) -> Result<Svd, DenseError> {
+    #[cfg(all(target_os = "macos", feature = "accelerate"))]
+    if use_accelerate() {
+        let (m, n) = (a.nrows(), a.ncols());
+        let k = m.min(n);
+        let mut re: Vec<f64> = (0..m * n).map(|x| a[(x % m, x / m)].re).collect();
+        let (u, s, vt) = accelerate::real_svd(&mut re, m, n)?;
+        return Ok(Svd {
+            u: Mat::from_fn(m, k, |i, j| c64::new(u[i + j * m], 0.0)),
+            s,
+            v: Mat::from_fn(n, k, |i, j| c64::new(vt[j + i * k], 0.0)),
+        });
+    }
+    svd(a)
+}
+
 /// How a factor enters a product.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Op {
@@ -409,6 +495,70 @@ mod tests {
             assert!(w.iter().zip(&reference.3).all(|(u, v)| (u - v).abs() < 1e-11), "{choice:?}");
         }
         set_backend(saved);
+    }
+
+    /// The Schur form of a real matrix through its real Schur form, against the complex one.
+    #[test]
+    fn schur_of_real_matrices() {
+        for n in [1usize, 2, 7, 60, 257] {
+            let a = Mat::<c64>::from_fn(n, n, |i, j| c64::new(test_matrix(n, n, 5)[(i, j)].re, 0.0));
+            let (q, t) = schur_of_real(a.as_ref()).unwrap();
+            assert!((&q * &t * q.adjoint() - &a).norm_max() < 1e-12 * n as f64, "n {n}: q t q† = a");
+            assert!(
+                (q.adjoint() * &q - Mat::<c64>::identity(n, n)).norm_max() < 1e-12 * n as f64,
+                "n {n}: unitary"
+            );
+            assert!((0..n).all(|j| (j + 1..n).all(|i| t[(i, j)] == c64::new(0.0, 0.0))), "n {n}: triangular");
+            let (_, tc) = schur(a.as_ref()).unwrap();
+            // Each eigenvalue matches one of the complex decomposition.
+            let mut theirs: Vec<c64> = (0..n).map(|k| tc[(k, k)]).collect();
+            for k in 0..n {
+                let mine = t[(k, k)];
+                let (best, d) = theirs
+                    .iter()
+                    .enumerate()
+                    .map(|(i, x)| (i, (x - mine).norm()))
+                    .min_by(|x, y| x.1.total_cmp(&y.1))
+                    .unwrap();
+                assert!(d < 1e-9, "n {n}: eigenvalue {mine}");
+                theirs.swap_remove(best);
+            }
+        }
+    }
+
+    /// The real SVD reconstructs the matrix with real factors.
+    #[test]
+    fn svd_of_real_matrices() {
+        for (m, n) in [(7usize, 3usize), (40, 40), (30, 50)] {
+            let a = Mat::<c64>::from_fn(m, n, |i, j| c64::new(test_matrix(m, n, 9)[(i, j)].re, 0.0));
+            let Svd { u, s, v } = svd_of_real(a.as_ref()).unwrap();
+            let k = m.min(n);
+            let sigma =
+                Mat::<c64>::from_fn(
+                    k,
+                    k,
+                    |i, j| if i == j { c64::new(s[i], 0.0) } else { c64::new(0.0, 0.0) },
+                );
+            assert!((&u * sigma * v.adjoint() - &a).norm_max() < 1e-12, "{m}x{n}");
+            assert!(is_real(u.as_ref()) && is_real(v.as_ref()));
+        }
+    }
+
+    /// Time of the real path against the complex one (`cargo test --release -- --ignored`).
+    #[test]
+    #[ignore]
+    fn schur_of_real_timing() {
+        for n in [256usize, 512, 1024] {
+            let a = Mat::<c64>::from_fn(n, n, |i, j| {
+                c64::new(((i * 7919 + j * 104729) % 1009) as f64 / 1009.0 - 0.5, 0.0)
+            });
+            let t0 = std::time::Instant::now();
+            let _ = schur(a.as_ref()).unwrap();
+            let complex = t0.elapsed();
+            let t0 = std::time::Instant::now();
+            let _ = schur_of_real(a.as_ref()).unwrap();
+            println!("n {n}: complex {complex:.2?}, real {:.2?}", t0.elapsed());
+        }
     }
 
     /// LU solves against faer, with a strided right-hand side, and the pivots of a singular matrix.

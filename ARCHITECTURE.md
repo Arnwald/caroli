@@ -104,6 +104,14 @@ The dependencies only go downward: lattice ← model ← green ← caroli, and d
       145 ms swap by swap and 181 ms with Accelerate's ztrsen.
     - The propagating eigenvectors are back-substituted in the Schur form, then transformed,
       projected and multiplied by `H1` as matrix products over all the modes at once.
+    - **Real problems** (real `H0`, `H1` and energy: graphene, square lattices with
+      non-definite couplings, Anderson disorder) keep the pencil real: the stabilisation is
+      `s(uu† + vv†)` with a real s (0.618…) instead of i, the SVD of `H1` is real (dgesdd), and
+      the Schur decomposition goes through the real Schur form (dhseqr), whose 2 × 2 blocks are
+      then split by complex rotations (`rsf2csf`, O(n) per block). Everything after it is
+      unchanged. The real form costs a third of the complex one at n = 512 to 1024; graphene
+      ribbons, bound by their leads, are 1.5–1.6× faster (W = 128 and 256). If the real
+      stabilisation is ill-conditioned at some energy, the complex one takes over.
   - Propagating modes are split by velocity sign. The current is diagonalised within each
     degenerate group.
   - `Σ_R = u X_γ X_α⁻¹ u†` and `Σ_L = v Y_α Y_γ⁻¹ v†`, from orthonormal bases of the right- and

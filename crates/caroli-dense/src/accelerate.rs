@@ -46,6 +46,47 @@ unsafe extern "C" {
         lwork: *const Int,
         info: *mut Int,
     );
+    #[link_name = "dgehrd$NEWLAPACK"]
+    fn dgehrd(
+        n: *const Int,
+        ilo: *const Int,
+        ihi: *const Int,
+        a: *mut f64,
+        lda: *const Int,
+        tau: *mut f64,
+        work: *mut f64,
+        lwork: *const Int,
+        info: *mut Int,
+    );
+    #[link_name = "dorghr$NEWLAPACK"]
+    fn dorghr(
+        n: *const Int,
+        ilo: *const Int,
+        ihi: *const Int,
+        a: *mut f64,
+        lda: *const Int,
+        tau: *const f64,
+        work: *mut f64,
+        lwork: *const Int,
+        info: *mut Int,
+    );
+    #[link_name = "dhseqr$NEWLAPACK"]
+    fn dhseqr(
+        job: *const u8,
+        compz: *const u8,
+        n: *const Int,
+        ilo: *const Int,
+        ihi: *const Int,
+        h: *mut f64,
+        ldh: *const Int,
+        wr: *mut f64,
+        wi: *mut f64,
+        z: *mut f64,
+        ldz: *const Int,
+        work: *mut f64,
+        lwork: *const Int,
+        info: *mut Int,
+    );
     #[link_name = "zgetrf$NEWLAPACK"]
     fn zgetrf(m: *const Int, n: *const Int, a: *mut c64, lda: *const Int, ipiv: *mut Int, info: *mut Int);
     #[link_name = "zgetrs$NEWLAPACK"]
@@ -115,6 +156,23 @@ unsafe extern "C" {
         lrwork: *const Int,
         iwork: *mut Int,
         liwork: *const Int,
+        info: *mut Int,
+    );
+    #[link_name = "dgesdd$NEWLAPACK"]
+    fn dgesdd(
+        jobz: *const u8,
+        m: *const Int,
+        n: *const Int,
+        a: *mut f64,
+        lda: *const Int,
+        s: *mut f64,
+        u: *mut f64,
+        ldu: *const Int,
+        vt: *mut f64,
+        ldvt: *const Int,
+        work: *mut f64,
+        lwork: *const Int,
+        iwork: *mut Int,
         info: *mut Int,
     );
     #[link_name = "zgemm$NEWLAPACK"]
@@ -529,4 +587,150 @@ pub(crate) fn hermitian_eigen(a: MatRef<'_, c64>) -> Result<(Vec<f64>, Mat<c64>)
         return Err(DenseError::Eigen);
     }
     Ok((w, v))
+}
+
+/// Real Schur decomposition `a = q t qᵀ` of a real matrix (column-major `n × n`, overwritten
+/// by `t`): Hessenberg reduction (dgehrd), its orthogonal factor (dorghr), then the multishift
+/// QR algorithm (dhseqr). `t` is quasi-triangular: 2 × 2 blocks for complex pairs.
+pub(crate) fn real_schur(t: &mut [f64], q: &mut [f64], n: usize) -> Result<(), DenseError> {
+    if n <= 1 {
+        q.iter_mut().for_each(|x| *x = 1.0);
+        return Ok(());
+    }
+    let ni = Int::try_from(n).map_err(|_| DenseError::Schur)?;
+    let one: Int = 1;
+    let mut tau = vec![0.0; n - 1];
+    let (mut wr, mut wi) = (vec![0.0; n], vec![0.0; n]);
+    let mut info: Int = 0;
+    let query: Int = -1;
+    let mut sizes = [0.0f64; 3];
+    // SAFETY: valid pointers and dimensions; lwork = −1 only writes the optimal size.
+    unsafe {
+        dgehrd(&ni, &one, &ni, t.as_mut_ptr(), &ni, tau.as_mut_ptr(), &mut sizes[0], &query, &mut info);
+        dorghr(&ni, &one, &ni, q.as_mut_ptr(), &ni, tau.as_ptr(), &mut sizes[1], &query, &mut info);
+        dhseqr(
+            b"S".as_ptr(),
+            b"V".as_ptr(),
+            &ni,
+            &one,
+            &ni,
+            t.as_mut_ptr(),
+            &ni,
+            wr.as_mut_ptr(),
+            wi.as_mut_ptr(),
+            q.as_mut_ptr(),
+            &ni,
+            &mut sizes[2],
+            &query,
+            &mut info,
+        );
+    }
+    let lwork = sizes.iter().map(|s| *s as usize).max().unwrap_or(0).max(n);
+    let mut work = vec![0.0; lwork];
+    let lw = Int::try_from(lwork).map_err(|_| DenseError::Schur)?;
+    // SAFETY: as above, with a workspace of the queried size.
+    unsafe {
+        dgehrd(&ni, &one, &ni, t.as_mut_ptr(), &ni, tau.as_mut_ptr(), work.as_mut_ptr(), &lw, &mut info)
+    };
+    if info != 0 {
+        return Err(DenseError::Schur);
+    }
+    q.copy_from_slice(t);
+    for j in 0..n {
+        for i in j + 2..n {
+            t[i + j * n] = 0.0;
+        }
+    }
+    // SAFETY: as above.
+    unsafe { dorghr(&ni, &one, &ni, q.as_mut_ptr(), &ni, tau.as_ptr(), work.as_mut_ptr(), &lw, &mut info) };
+    if info != 0 {
+        return Err(DenseError::Schur);
+    }
+    // SAFETY: as above.
+    unsafe {
+        dhseqr(
+            b"S".as_ptr(),
+            b"V".as_ptr(),
+            &ni,
+            &one,
+            &ni,
+            t.as_mut_ptr(),
+            &ni,
+            wr.as_mut_ptr(),
+            wi.as_mut_ptr(),
+            q.as_mut_ptr(),
+            &ni,
+            work.as_mut_ptr(),
+            &lw,
+            &mut info,
+        )
+    };
+    if info != 0 {
+        return Err(DenseError::Schur);
+    }
+    Ok(())
+}
+
+/// Factors of a real thin SVD, column-major: `u` (`m × k`), the singular values, `vᵀ` (`k × n`).
+pub(crate) type RealSvd = (Vec<f64>, Vec<f64>, Vec<f64>);
+
+/// Thin singular value decomposition of a real `m × n` matrix (column-major, overwritten),
+/// by dgesdd.
+pub(crate) fn real_svd(a: &mut [f64], m: usize, n: usize) -> Result<RealSvd, DenseError> {
+    let k = m.min(n);
+    let (mut u, mut vt, mut s) = (vec![0.0; m * k], vec![0.0; k * n], vec![0.0; k]);
+    if k == 0 {
+        return Ok((u, s, vt));
+    }
+    let int = |x: usize| Int::try_from(x).map_err(|_| DenseError::Svd);
+    let (mi, ni, ki) = (int(m)?, int(n)?, int(k)?);
+    let mut iwork = vec![0 as Int; 8 * k];
+    let mut info: Int = 0;
+    let query: Int = -1;
+    let mut size = 0.0;
+    // SAFETY: valid pointers and dimensions; lwork = −1 only writes the optimal size.
+    unsafe {
+        dgesdd(
+            b"S".as_ptr(),
+            &mi,
+            &ni,
+            a.as_mut_ptr(),
+            &mi,
+            s.as_mut_ptr(),
+            u.as_mut_ptr(),
+            &mi,
+            vt.as_mut_ptr(),
+            &ki,
+            &mut size,
+            &query,
+            iwork.as_mut_ptr(),
+            &mut info,
+        );
+    }
+    let lwork = (size as usize).max(1);
+    let mut work = vec![0.0; lwork];
+    let lw = int(lwork)?;
+    // SAFETY: as above, with a workspace of the queried size.
+    unsafe {
+        dgesdd(
+            b"S".as_ptr(),
+            &mi,
+            &ni,
+            a.as_mut_ptr(),
+            &mi,
+            s.as_mut_ptr(),
+            u.as_mut_ptr(),
+            &mi,
+            vt.as_mut_ptr(),
+            &ki,
+            work.as_mut_ptr(),
+            &lw,
+            iwork.as_mut_ptr(),
+            &mut info,
+        );
+    }
+    if info != 0 {
+        return Err(DenseError::Svd);
+    }
+    Ok((u, s, vt))
 }
