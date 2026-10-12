@@ -19,6 +19,8 @@ pub use schur::{partition, reorder};
 pub enum DenseError {
     #[error("the Schur decomposition did not converge")]
     Schur,
+    #[error("the singular value decomposition did not converge")]
+    Svd,
 }
 
 /// Backend of the Schur decomposition and of the products in this build.
@@ -68,18 +70,103 @@ impl Lu {
 
     /// `b ← a⁻¹ b`.
     pub fn solve_in_place(&self, b: MatMut<'_, c64>) {
+        self.solve_with(b, false);
+    }
+
+    /// `b ← a⁻† b`.
+    pub fn solve_adjoint_in_place(&self, b: MatMut<'_, c64>) {
+        self.solve_with(b, true);
+    }
+
+    fn solve_with(&self, b: MatMut<'_, c64>, adjoint: bool) {
         #[cfg(all(target_os = "macos", feature = "accelerate"))]
-        if let Err(mut b) = self.inner.solve_in_place(b) {
+        if let Err(mut b) = self.inner.solve_in_place(b, adjoint) {
             // A stride LAPACK cannot take: solve a column-major copy.
             let mut copy = b.to_owned();
-            let _ = self.inner.solve_in_place(copy.as_mut());
+            let _ = self.inner.solve_in_place(copy.as_mut(), adjoint);
             b.copy_from(&copy);
         }
         #[cfg(not(all(target_os = "macos", feature = "accelerate")))]
         {
             use faer::linalg::solvers::SolveCore;
-            self.inner.solve_in_place_with_conj(faer::Conj::No, b);
+            if adjoint {
+                self.inner.solve_transpose_in_place_with_conj(faer::Conj::Yes, b);
+            } else {
+                self.inner.solve_in_place_with_conj(faer::Conj::No, b);
+            }
         }
+    }
+
+    /// Estimate of the reciprocal condition number `1 / (‖a‖₁ ‖a⁻¹‖₁)`, given `‖a‖₁`: 0 for a
+    /// singular matrix. As LAPACK zgecon, `‖a⁻¹‖₁` comes from a few solves with `a` and `a†`
+    /// (Hager's method with Higham's refinements, zlacn2). The 2-norm ratio `σ_min / σ_max` is
+    /// within a factor n of it.
+    pub fn inverse_condition_1(&self, norm_1: f64) -> f64 {
+        let n = self.pivots_len();
+        if n == 0 {
+            return 1.0;
+        }
+        let (lo, _) = self.pivot_range();
+        let invertible = lo > 0.0 && norm_1 > 0.0; // false for NaN
+        if !invertible {
+            return 0.0;
+        }
+        let estimate = self.inverse_norm_1();
+        if estimate.is_finite() && estimate > 0.0 { 1.0 / (norm_1 * estimate) } else { 0.0 }
+    }
+
+    fn pivots_len(&self) -> usize {
+        #[cfg(all(target_os = "macos", feature = "accelerate"))]
+        return self.inner.diagonal().count();
+        #[cfg(not(all(target_os = "macos", feature = "accelerate")))]
+        return self.inner.U().nrows();
+    }
+
+    /// Lower estimate of `‖a⁻¹‖₁` (LAPACK zlacn2, at most 5 iterations).
+    fn inverse_norm_1(&self) -> f64 {
+        let n = self.pivots_len();
+        let one = c64::new(1.0, 0.0);
+        let apply = |x: Mat<c64>, adjoint: bool| {
+            let mut y = x;
+            self.solve_with(y.as_mut(), adjoint);
+            y
+        };
+        let norm = |y: &Mat<c64>| (0..n).map(|i| y[(i, 0)].norm()).sum::<f64>();
+        let sign = |y: &Mat<c64>| {
+            Mat::from_fn(n, 1, |i, _| {
+                let a = y[(i, 0)].norm();
+                if a > f64::MIN_POSITIVE { y[(i, 0)] / a } else { one }
+            })
+        };
+        let argmax =
+            |z: &Mat<c64>| (0..n).max_by(|&a, &b| z[(a, 0)].norm().total_cmp(&z[(b, 0)].norm())).unwrap_or(0);
+        let y = apply(Mat::from_fn(n, 1, |_, _| c64::new(1.0 / n as f64, 0.0)), false);
+        if n == 1 {
+            return y[(0, 0)].norm();
+        }
+        let mut estimate = norm(&y);
+        let z = apply(sign(&y), true);
+        let mut j = argmax(&z);
+        for _ in 2..=5 {
+            let y = apply(Mat::from_fn(n, 1, |i, _| if i == j { one } else { c64::new(0.0, 0.0) }), false);
+            let previous = estimate;
+            estimate = estimate.max(norm(&y));
+            if estimate <= previous {
+                break;
+            }
+            let z = apply(sign(&y), true);
+            let last = j;
+            j = argmax(&z);
+            if z[(last, 0)].norm() == z[(j, 0)].norm() {
+                break;
+            }
+        }
+        // Alternative estimate from x_i = ±(1 + i/(n − 1)).
+        let x = Mat::from_fn(n, 1, |i, _| {
+            let sign = if i % 2 == 0 { 1.0 } else { -1.0 };
+            c64::new(sign * (1.0 + i as f64 / (n - 1) as f64), 0.0)
+        });
+        estimate.max(2.0 * norm(&apply(x, false)) / (3.0 * n as f64))
     }
 
     /// `a⁻¹ b`.
@@ -87,6 +174,42 @@ impl Lu {
         let mut x = b.to_owned();
         self.solve_in_place(x.as_mut());
         x
+    }
+}
+
+/// `‖a‖₁`, the largest column sum of moduli.
+pub fn norm_1(a: MatRef<'_, c64>) -> f64 {
+    (0..a.ncols()).map(|j| (0..a.nrows()).map(|i| a[(i, j)].norm()).sum::<f64>()).fold(0.0, f64::max)
+}
+
+/// Orthonormal basis of the columns of a full-rank `m × n` matrix, `m ≥ n`: the thin `Q` of its
+/// QR factorisation.
+pub fn orthonormal_columns(a: MatRef<'_, c64>) -> Mat<c64> {
+    assert!(a.nrows() >= a.ncols(), "orthonormal_columns: more columns than rows");
+    #[cfg(all(target_os = "macos", feature = "accelerate"))]
+    return accelerate::orthonormal_columns(a);
+    #[cfg(not(all(target_os = "macos", feature = "accelerate")))]
+    return a.qr().compute_thin_Q();
+}
+
+/// Thin singular value decomposition `a = u diag(s) v†`.
+#[derive(Clone, Debug)]
+pub struct Svd {
+    pub u: Mat<c64>,
+    /// Singular values, in decreasing order.
+    pub s: Vec<f64>,
+    pub v: Mat<c64>,
+}
+
+/// Thin singular value decomposition of `a`.
+pub fn svd(a: MatRef<'_, c64>) -> Result<Svd, DenseError> {
+    #[cfg(all(target_os = "macos", feature = "accelerate"))]
+    return accelerate::svd(a);
+    #[cfg(not(all(target_os = "macos", feature = "accelerate")))]
+    {
+        let svd = a.thin_svd().map_err(|_| DenseError::Svd)?;
+        let s = (0..a.nrows().min(a.ncols())).map(|k| svd.S()[k].re).collect();
+        Ok(Svd { u: svd.U().to_owned(), s, v: svd.V().to_owned() })
     }
 }
 
@@ -189,6 +312,61 @@ mod tests {
         }
         let (lo, hi) = Lu::new(s.as_ref()).pivot_range();
         assert!(lo < 1e-14 * hi, "singular: {lo:e} / {hi:e}");
+    }
+
+    /// The condition estimate against the singular values, and solves with the adjoint.
+    #[test]
+    fn condition_estimate() {
+        for n in [1usize, 5, 40, 150] {
+            let mut a = test_matrix(n, n, 3);
+            for i in 0..n {
+                a[(i, i)] += c64::new(0.05 * i as f64, 0.0);
+            }
+            let lu = Lu::new(a.as_ref());
+            let b = test_matrix(n, 3, 4);
+            let mut x = b.clone();
+            lu.solve_adjoint_in_place(x.as_mut());
+            assert!((a.adjoint() * &x - &b).norm_max() < 1e-9 * (1.0 + x.norm_max()), "n {n}: adjoint solve");
+            let s = a.singular_values().unwrap();
+            let ratio =
+                s.iter().cloned().fold(f64::INFINITY, f64::min) / s.iter().cloned().fold(0.0, f64::max);
+            let rcond = lu.inverse_condition_1(norm_1(a.as_ref()));
+            assert!(
+                rcond <= n as f64 * ratio * (1.0 + 1e-9) && rcond >= ratio / (n as f64 * n as f64),
+                "n {n}: {rcond:e} vs {ratio:e}"
+            );
+        }
+        let mut s = test_matrix(6, 6, 1);
+        for i in 0..6 {
+            s[(i, 5)] = s[(i, 0)] * 2.0;
+        }
+        assert!(Lu::new(s.as_ref()).inverse_condition_1(norm_1(s.as_ref())) < 1e-14);
+    }
+
+    #[test]
+    fn qr_and_svd() {
+        for (m, n) in [(7usize, 3usize), (60, 60), (90, 40)] {
+            let a = test_matrix(m, n, 5)
+                + Mat::<c64>::from_fn(
+                    m,
+                    n,
+                    |i, j| if i == j { c64::new(1.0, 0.0) } else { c64::new(0.0, 0.0) },
+                );
+            let q = orthonormal_columns(a.as_ref());
+            assert!((q.adjoint() * &q - Mat::<c64>::identity(n, n)).norm_max() < 1e-13);
+            // Same column space: a = q (q† a).
+            assert!((&q * (q.adjoint() * &a) - &a).norm_max() < 1e-12);
+            let Svd { u, s, v } = svd(a.as_ref()).unwrap();
+            let k = m.min(n);
+            let sigma =
+                Mat::<c64>::from_fn(
+                    k,
+                    k,
+                    |i, j| if i == j { c64::new(s[i], 0.0) } else { c64::new(0.0, 0.0) },
+                );
+            assert!((&u * sigma * v.adjoint() - &a).norm_max() < 1e-12, "{m}x{n}");
+            assert!(s.windows(2).all(|w| w[0] >= w[1]));
+        }
     }
 
     /// Every combination of operations, both accumulation modes, and strided views.

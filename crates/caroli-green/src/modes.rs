@@ -25,7 +25,7 @@
 //! from above), and [`LeadModes::energy`] records the energy used.
 
 use crate::{GreenError, solve_right};
-use caroli_dense::{Accum, Lu, Op, matmul, product};
+use caroli_dense::{Accum, Lu, Op, matmul, norm_1, product};
 use caroli_model::{CMat, c64};
 use faer::Side;
 
@@ -40,7 +40,8 @@ const VELOCITY_TOL: f64 = 1e-8;
 /// Propagating modes of one group whose `(α, γ)` vectors are closer to parallel than this
 /// (angle): a Jordan block, i.e. a subband edge.
 const DEFECTIVE_TOL: f64 = 1e-7;
-/// `X_α` or `Y_γ` with `σ_min/σ_max` below this: a bound state of the lead surface.
+/// `X_α` or `Y_γ` with an inverse condition number (1-norm estimate) below this: a bound state
+/// of the lead surface.
 const SINGULAR_TOL: f64 = 1e-11;
 /// Energy shifts tried in turn, in units of the bandwidth scale.
 const SHIFTS: [f64; 5] = [0.0, 1e-9, 1e-8, 1e-7, 1e-6];
@@ -143,13 +144,13 @@ impl LeadModes {
         let zero = c64::new(0.0, 0.0);
 
         // Compact SVD of the coupling.
-        let svd = h1.svd().map_err(|_| GreenError::Eigen)?;
-        let (su, ss, sv) = (svd.U(), svd.S(), svd.V());
-        let smax = (0..n).map(|k| ss[k].re).fold(0.0, f64::max);
-        let kept: Vec<usize> = (0..n).filter(|&k| ss[k].re > RANK_TOL * smax).collect();
+        let caroli_dense::Svd { u: su, s: ss, v: sv } =
+            caroli_dense::svd(h1.as_ref()).map_err(|_| GreenError::Eigen)?;
+        let smax = ss.iter().copied().fold(0.0, f64::max);
+        let kept: Vec<usize> = (0..ss.len()).filter(|&k| ss[k] > RANK_TOL * smax).collect();
         let r = kept.len();
-        let u = CMat::from_fn(n, r, |a, k| su[(a, kept[k])] * ss[kept[k]].re.sqrt());
-        let v = CMat::from_fn(n, r, |a, k| sv[(a, kept[k])] * ss[kept[k]].re.sqrt());
+        let u = CMat::from_fn(n, r, |a, k| su[(a, kept[k])] * ss[kept[k]].sqrt());
+        let v = CMat::from_fn(n, r, |a, k| sv[(a, kept[k])] * ss[kept[k]].sqrt());
         if r == 0 {
             return Ok(Self {
                 u,
@@ -163,17 +164,18 @@ impl LeadModes {
         }
 
         // Stabilised resolvent G̃ = (H0 − z + i(uu† + vv†))⁻¹, applied to u and v.
-        let stab = &u * u.adjoint() + &v * v.adjoint();
+        let uv = CMat::from_fn(n, 2 * r, |p, k| if k < r { u[(p, k)] } else { v[(p, k - r)] });
+        let stab = product(uv.as_ref(), Op::Plain, uv.as_ref(), Op::Adjoint);
         let a = CMat::from_fn(n, n, |p, q| h0[(p, q)] - if p == q { z } else { zero } + i * stab[(p, q)]);
-        let rhs = CMat::from_fn(n, 2 * r, |p, k| if k < r { u[(p, k)] } else { v[(p, k - r)] });
-        let g = Lu::new(a.as_ref()).solve(rhs.as_ref());
-        let gu = CMat::from_fn(n, r, |p, k| g[(p, k)]);
-        let gv = CMat::from_fn(n, r, |p, k| g[(p, r + k)]);
-        if gu.norm_max().is_nan() || gv.norm_max().is_nan() {
+        let g = Lu::new(a.as_ref()).solve(uv.as_ref());
+        if g.norm_max().is_nan() {
             return Err(GreenError::Singular(z.re));
         }
-        let (ugu, ugv) = (u.adjoint() * &gu, u.adjoint() * &gv);
-        let (vgu, vgv) = (v.adjoint() * &gu, v.adjoint() * &gv);
+        let (gu, gv) = (g.as_ref().subcols(0, r), g.as_ref().subcols(r, r));
+        // [u v]† G̃ [u v], in blocks.
+        let blocks = product(uv.as_ref(), Op::Adjoint, g.as_ref(), Op::Plain);
+        let (ugu, ugv) = (blocks.as_ref().submatrix(0, 0, r, r), blocks.as_ref().submatrix(0, r, r, r));
+        let (vgu, vgv) = (blocks.as_ref().submatrix(r, 0, r, r), blocks.as_ref().submatrix(r, r, r, r));
 
         // Pencil R x = λ L x:
         //   L = [[1 − i u†G̃u, u†G̃u], [−i v†G̃u, v†G̃u]],  R = [[−u†G̃v, i u†G̃v], [−v†G̃v, i v†G̃v − 1]].
@@ -344,8 +346,8 @@ impl LeadModes {
         let bb = CMat::from_fn(r, np, |q, p| -x[(q, p)] + i * x[(r + q, p)]);
         let cc = CMat::from_fn(r, np, |q, p| lams[p] * (i * x[(q, p)] - x[(r + q, p)]));
         let mut phis = CMat::zeros(n, np);
-        matmul(phis.as_mut(), Accum::Replace, gv.as_ref(), Op::Plain, bb.as_ref(), Op::Plain, one);
-        matmul(phis.as_mut(), Accum::Add, gu.as_ref(), Op::Plain, cc.as_ref(), Op::Plain, one);
+        matmul(phis.as_mut(), Accum::Replace, gv, Op::Plain, bb.as_ref(), Op::Plain, one);
+        matmul(phis.as_mut(), Accum::Add, gu, Op::Plain, cc.as_ref(), Op::Plain, one);
         let h1phi = product(h1.as_ref(), Op::Plain, phis.as_ref(), Op::Plain);
         let h1dphi = product(h1.as_ref(), Op::Adjoint, phis.as_ref(), Op::Plain);
         // Current J_ab = i(λ_b φ_a† H1 φ_b − λ_a* φ_a† H1† φ_b) of each group, in the metric of the
@@ -402,12 +404,14 @@ impl LeadModes {
         let basis = |cols: &[Vec<c64>]| -> CMat {
             let norms: Vec<f64> =
                 cols.iter().map(|c| c.iter().map(|z| z.norm_sqr()).sum::<f64>().sqrt()).collect();
-            CMat::from_fn(m2, cols.len(), |p, q| cols[q][p] / norms[q]).qr().compute_thin_Q()
+            caroli_dense::orthonormal_columns(
+                CMat::from_fn(m2, cols.len(), |p, q| cols[q][p] / norms[q]).as_ref(),
+            )
         };
         let (xb, yb) = (basis(&right), basis(&left));
-        if inverse_condition(&rows(&xb, 0..r)) < SINGULAR_TOL
-            || inverse_condition(&rows(&yb, r..m2)) < SINGULAR_TOL
-        {
+        let invertible =
+            |m: CMat| Lu::new(m.as_ref()).inverse_condition_1(norm_1(m.as_ref())) >= SINGULAR_TOL;
+        if !invertible(rows(&xb, 0..r)) || !invertible(rows(&yb, r..m2)) {
             return Err(GreenError::Singular(z.re));
         }
         Ok(Self { u, v, right: xb, left: yb, right_velocities: rv, left_velocities: lv, energy: z })

@@ -36,15 +36,17 @@ The dependencies only go downward: lattice ← model ← green ← caroli, and d
 
 - **Linear algebra: faer.** Complex scalars are `faer::c64` (= `num_complex::Complex<f64>`),
   matrices `faer::Mat<c64>` (`CMat`).
-  - The kernels that dominate transport go through `caroli-dense`: the Schur decomposition, LU
-    solves and inverses, and matrix products.
+  - The kernels that dominate transport go through `caroli-dense`: `schur` with `partition`
+    and `reorder`, `Lu` (solves with `a` and `a†`, pivots, a condition estimate), `svd`,
+    `orthonormal_columns`, `matmul` and `product`.
   - On macOS they call Apple's Accelerate framework (feature `accelerate`, on by default):
     LAPACK 3.9+ (`$NEWLAPACK` symbols) and BLAS, which run on the matrix units of Apple silicon.
     It is part of the system, so nothing extra is installed, but it needs macOS 13.3 or later.
   - Elsewhere, or with the feature off, they use faer and the in-house QR algorithm.
   - Measured on an M5, one thread, n = 512: Accelerate's products are 5× faster than faer's.
     Its Schur decomposition (zhseqr) takes 0.35 s on a lead pencil. faer's multishift QR is
-    1.8× faster for the eigenvalues alone, but it is private (`pub(crate)`).
+    1.8× faster for the eigenvalues alone, but only 14 % faster with the Schur vectors (0.31 s),
+    and it is private (`pub(crate)`): not worth vendoring for now.
 - **Orbital layout** is fixed by the `Region`: site `i` occupies orbitals
   `offset(i) .. offset(i) + orbitals(i)`. `Region::cuboid` orders the sites with the first axis
   varying slowest, so the slices along x are contiguous.
@@ -232,6 +234,11 @@ Golden cases with disorder use the same impurity configurations as the thesis.
         from 228 ms to 19 ms with batched products.
       - What remains: the Schur decomposition (0.35 s), the orthonormal bases with their
         condition checks (47 ms), and the elimination (0.11 s).
+    - The other stages of the general algorithm also use Accelerate: SVD of the coupling
+      (zgesdd), one product for the four blocks of `[u v]† G̃ [u v]`, QR of the mode bases, and
+      a 1-norm condition estimate from an LU (as zgecon) instead of an SVD of `X_α` and `Y_γ`.
+      BHZ at W = 128 went from 0.72 s to 0.62 s per energy (two spin blocks with a 512 pencil
+      each; the Schur decomposition is now 60 % of the time).
     - The Hermitian fast path removes the Schur decomposition for square-lattice leads:
       `NestedTwoTerminal` takes 0.127 s per energy at W = 256 and 0.026 s at W = 128 (M5, one
       thread). The elimination is now the main cost there. BHZ leads keep the general

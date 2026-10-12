@@ -1,6 +1,6 @@
 //! Apple Accelerate: LAPACK 3.9+ (the `$NEWLAPACK` symbols, 32-bit integers) and BLAS.
 
-use crate::{DenseError, Op};
+use crate::{DenseError, Op, Svd};
 use faer::{Accum, Mat, MatMut, MatRef, c64};
 
 type Int = i32;
@@ -58,6 +58,47 @@ unsafe extern "C" {
         ipiv: *const Int,
         b: *mut c64,
         ldb: *const Int,
+        info: *mut Int,
+    );
+    #[link_name = "zgeqrf$NEWLAPACK"]
+    fn zgeqrf(
+        m: *const Int,
+        n: *const Int,
+        a: *mut c64,
+        lda: *const Int,
+        tau: *mut c64,
+        work: *mut c64,
+        lwork: *const Int,
+        info: *mut Int,
+    );
+    #[link_name = "zungqr$NEWLAPACK"]
+    fn zungqr(
+        m: *const Int,
+        n: *const Int,
+        k: *const Int,
+        a: *mut c64,
+        lda: *const Int,
+        tau: *const c64,
+        work: *mut c64,
+        lwork: *const Int,
+        info: *mut Int,
+    );
+    #[link_name = "zgesdd$NEWLAPACK"]
+    fn zgesdd(
+        jobz: *const u8,
+        m: *const Int,
+        n: *const Int,
+        a: *mut c64,
+        lda: *const Int,
+        s: *mut f64,
+        u: *mut c64,
+        ldu: *const Int,
+        vt: *mut c64,
+        ldvt: *const Int,
+        work: *mut c64,
+        lwork: *const Int,
+        rwork: *mut f64,
+        iwork: *mut Int,
         info: *mut Int,
     );
     #[link_name = "zgemm$NEWLAPACK"]
@@ -278,8 +319,12 @@ impl Lu {
         (0..self.factors.nrows()).map(|i| self.factors[(i, i)])
     }
 
-    /// `b ← a⁻¹ b` (zgetrs), or `b` back when its stride does not fit LAPACK.
-    pub(crate) fn solve_in_place<'a>(&self, b: MatMut<'a, c64>) -> Result<(), MatMut<'a, c64>> {
+    /// `b ← a⁻¹ b`, or `b ← a⁻† b` (zgetrs), or `b` back when its stride does not fit LAPACK.
+    pub(crate) fn solve_in_place<'a>(
+        &self,
+        b: MatMut<'a, c64>,
+        adjoint: bool,
+    ) -> Result<(), MatMut<'a, c64>> {
         let (n, nrhs) = (b.nrows(), b.ncols());
         if n == 0 || nrhs == 0 {
             return Ok(());
@@ -294,7 +339,7 @@ impl Lu {
         // SAFETY: the factors of an n × n matrix and a column-major n × nrhs right-hand side.
         unsafe {
             zgetrs(
-                b"N".as_ptr(),
+                if adjoint { b"C".as_ptr() } else { b"N".as_ptr() },
                 &ni,
                 &nr,
                 self.factors.as_ptr(),
@@ -307,4 +352,101 @@ impl Lu {
         };
         Ok(())
     }
+}
+
+/// Thin `Q` of the QR factorisation of an `m × n` matrix, `m ≥ n` (zgeqrf, zungqr).
+pub(crate) fn orthonormal_columns(a: MatRef<'_, c64>) -> Mat<c64> {
+    let (m, n) = (a.nrows(), a.ncols());
+    let mut q = a.to_owned();
+    if n == 0 {
+        return q;
+    }
+    let (mi, ni) = (Int::try_from(m).expect("matrix too large"), Int::try_from(n).expect("matrix too large"));
+    let ld = Int::try_from(q.col_stride()).expect("matrix too large");
+    let mut tau = vec![ZERO; n];
+    let mut info: Int = 0;
+    let query: Int = -1;
+    let mut sizes = [ZERO; 2];
+    // SAFETY: valid pointers and dimensions; lwork = −1 only writes the optimal size.
+    unsafe {
+        zgeqrf(&mi, &ni, q.as_ptr_mut(), &ld, tau.as_mut_ptr(), &mut sizes[0], &query, &mut info);
+        zungqr(&mi, &ni, &ni, q.as_ptr_mut(), &ld, tau.as_ptr(), &mut sizes[1], &query, &mut info);
+    }
+    let lwork = sizes.iter().map(|s| s.re as usize).max().unwrap_or(0).max(n);
+    let mut work = vec![ZERO; lwork];
+    let lw = Int::try_from(lwork).expect("workspace too large");
+    // SAFETY: as above, with a workspace of the queried size.
+    unsafe {
+        zgeqrf(&mi, &ni, q.as_ptr_mut(), &ld, tau.as_mut_ptr(), work.as_mut_ptr(), &lw, &mut info);
+        zungqr(&mi, &ni, &ni, q.as_ptr_mut(), &ld, tau.as_ptr(), work.as_mut_ptr(), &lw, &mut info);
+    }
+    q
+}
+
+/// Thin singular value decomposition `a = u diag(s) v†` (zgesdd).
+pub(crate) fn svd(a: MatRef<'_, c64>) -> Result<Svd, DenseError> {
+    let (m, n) = (a.nrows(), a.ncols());
+    let k = m.min(n);
+    if k == 0 {
+        return Ok(Svd { u: Mat::zeros(m, 0), s: Vec::new(), v: Mat::zeros(n, 0) });
+    }
+    let mut a = a.to_owned();
+    let (mut u, mut vt) = (Mat::<c64>::zeros(m, k), Mat::<c64>::zeros(k, n));
+    let mut s = vec![0.0; k];
+    let int = |x: usize| Int::try_from(x).map_err(|_| DenseError::Svd);
+    let (mi, ni) = (int(m)?, int(n)?);
+    let (lda, ldu, ldvt) =
+        (int(a.col_stride() as usize)?, int(u.col_stride() as usize)?, int(vt.col_stride() as usize)?);
+    let mut rwork = vec![0.0; (5 * k * k + 5 * k).max(2 * m.max(n) * k + 2 * k * k + k)];
+    let mut iwork = vec![0 as Int; 8 * k];
+    let mut info: Int = 0;
+    let query: Int = -1;
+    let mut size = ZERO;
+    // SAFETY: valid pointers and dimensions; lwork = −1 only writes the optimal size.
+    unsafe {
+        zgesdd(
+            b"S".as_ptr(),
+            &mi,
+            &ni,
+            a.as_ptr_mut(),
+            &lda,
+            s.as_mut_ptr(),
+            u.as_ptr_mut(),
+            &ldu,
+            vt.as_ptr_mut(),
+            &ldvt,
+            &mut size,
+            &query,
+            rwork.as_mut_ptr(),
+            iwork.as_mut_ptr(),
+            &mut info,
+        );
+    }
+    let lwork = (size.re as usize).max(1);
+    let mut work = vec![ZERO; lwork];
+    let lw = int(lwork)?;
+    // SAFETY: as above, with a workspace of the queried size.
+    unsafe {
+        zgesdd(
+            b"S".as_ptr(),
+            &mi,
+            &ni,
+            a.as_ptr_mut(),
+            &lda,
+            s.as_mut_ptr(),
+            u.as_ptr_mut(),
+            &ldu,
+            vt.as_ptr_mut(),
+            &ldvt,
+            work.as_mut_ptr(),
+            &lw,
+            rwork.as_mut_ptr(),
+            iwork.as_mut_ptr(),
+            &mut info,
+        );
+    }
+    if info != 0 {
+        return Err(DenseError::Svd);
+    }
+    Ok(Svd { u, s, v: vt.adjoint().to_owned() })
 }
