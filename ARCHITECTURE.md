@@ -135,7 +135,9 @@ The dependencies only go downward: lattice ← model ← green ← caroli, and d
     front, and a back-substitution from the lead slices gives `ψ_p = G W_p` (`W_p W_p† = Γ_p`)
     on the whole device. From them come the occupied densities and the bond currents of the
     Keldysh conventions (`G^< = i Σ_p f_p ψ_p ψ_p†`), which match `caroli-keldysh`'s recursive
-    `Lesser` to 1e-10 (square, BHZ, graphene, field).
+    `Lesser` to 1e-10 (square, BHZ, graphene, field). `NestedMultiTerminal::scattering_states`
+    does the same for any number of leads: in a cross, the current out of each arm is `T_pq`
+    and Kirchhoff's law holds at every inner site, with or without a field.
   - Both solvers split independent blocks of orbitals, such as the spin blocks of BHZ.
   - `NestedTwoTerminal::self_energies` and `transmission_with` reuse the lead self-energies of
     one energy for every disorder configuration with the same leads. For BHZ at W = 128 the

@@ -11,7 +11,9 @@
 //! the part of every lead it reaches.
 
 use crate::multi::{AttachedLead, Interface, attach_leads};
-use crate::nested::{Components, Root, SiteTree, Tree, schur};
+use crate::nested::{
+    BondCurrent, Components, Factor, Root, ScatteringStates, SiteTree, Tree, gamma_root, schur,
+};
 use crate::{GreenError, SelfEnergyMethod, broadening, trace};
 use caroli_dense::Lu;
 use caroli_lattice::Region;
@@ -29,6 +31,7 @@ struct MultiBlock {
 #[derive(Clone, Debug)]
 pub struct NestedMultiTerminal {
     h: SparseMatrix,
+    region: Region,
     lead_count: usize,
     blocks: Vec<MultiBlock>,
 }
@@ -105,7 +108,7 @@ impl NestedMultiTerminal {
                 Some(MultiBlock { tree: sites.tree(region, &h, mine), leads: block_leads })
             })
             .collect();
-        Self { h, lead_count: leads.len(), blocks }
+        Self { h, region: region.clone(), lead_count: leads.len(), blocks }
     }
 
     /// Number of leads.
@@ -134,9 +137,10 @@ impl NestedMultiTerminal {
         Ok(t)
     }
 
-    fn block_transmissions(&self, block: &MultiBlock, energy: f64) -> Result<Vec<Vec<f64>>, GreenError> {
-        // Σ_p = V_p g V_p†, with the surface Green's function g computed once per distinct lead
-        // (opposite leads of a symmetric device often share h00 and h01).
+    /// Self-energies of the leads a block reaches: `Σ_p = V_p g V_p†`, with the surface Green's
+    /// function `g` computed once per distinct lead (opposite leads of a symmetric device often
+    /// share h00 and h01).
+    fn self_energies(block: &MultiBlock, energy: f64) -> Result<Vec<Option<CMat>>, GreenError> {
         let mut surfaces: Vec<(&AttachedLead, CMat)> = Vec::new();
         let mut sigmas: Vec<Option<CMat>> = Vec::with_capacity(block.leads.len());
         for l in &block.leads {
@@ -154,19 +158,28 @@ impl NestedMultiTerminal {
             };
             sigmas.push(Some(&l.coupling * g * l.coupling.adjoint()));
         }
-        // The root keeps every orbital a lead couples to.
+        Ok(sigmas)
+    }
+
+    /// The Schur complement `S` of `z − H − Σ` on the orbitals the leads couple to (`kept`, in
+    /// increasing order), with the delayed variables eliminated: `(kept, S, delayed)`.
+    fn root(
+        &self,
+        block: &MultiBlock,
+        energy: f64,
+        sigmas: &[Option<CMat>],
+        keep: bool,
+    ) -> Result<(Vec<usize>, CMat, Factor), GreenError> {
         let mut kept: Vec<usize> =
             block.leads.iter().flatten().flat_map(|l| l.orbitals.iter().copied()).collect();
         kept.sort_unstable();
         kept.dedup();
-        let index = |l: &AttachedLead| -> Vec<usize> {
-            l.orbitals.iter().map(|o| kept.binary_search(o).expect("lead orbital kept")).collect()
-        };
-        let Root { delayed, mut f, .. } = block.tree.root(&self.h, c64::new(energy, 0.0), &kept, false)?;
+        let Root { delayed, mut f, factors } =
+            block.tree.root(&self.h, c64::new(energy, 0.0), &kept, keep)?;
         let nd = delayed.len();
-        for (l, s) in block.leads.iter().zip(&sigmas) {
+        for (l, s) in block.leads.iter().zip(sigmas) {
             if let (Some(l), Some(s)) = (l, s) {
-                let at = index(l);
+                let at = index(&kept, l);
                 for (a, &i) in at.iter().enumerate() {
                     for (b, &j) in at.iter().enumerate() {
                         f[(nd + i, nd + j)] -= s[(a, b)];
@@ -174,7 +187,17 @@ impl NestedMultiTerminal {
                 }
             }
         }
-        let s = if nd > 0 { schur(&f, nd).ok_or(GreenError::Singular(energy))?.0 } else { f };
+        let (s, x) = if nd > 0 {
+            schur(&f, nd).ok_or(GreenError::Singular(energy))?
+        } else {
+            (f, CMat::zeros(0, kept.len()))
+        };
+        Ok((kept.clone(), s, Factor { elim: delayed, boundary: kept, x, children: factors }))
+    }
+
+    fn block_transmissions(&self, block: &MultiBlock, energy: f64) -> Result<Vec<Vec<f64>>, GreenError> {
+        let sigmas = Self::self_energies(block, energy)?;
+        let (kept, s, _) = self.root(block, energy, &sigmas, false)?;
         let k = kept.len();
         let g = Lu::new(s.as_ref()).solve(CMat::identity(k, k).as_ref());
         if !g.norm_max().is_finite() {
@@ -190,11 +213,86 @@ impl NestedMultiTerminal {
                 else {
                     continue;
                 };
-                let (ip, iq) = (index(lp), index(lq));
+                let (ip, iq) = (index(&kept, lp), index(&kept, lq));
                 let gpq = CMat::from_fn(ip.len(), iq.len(), |a, b| g[(ip[a], iq[b])]);
                 *tpq = trace(&(gp * &gpq * gq * gpq.adjoint())).re;
             }
         }
         Ok(t)
     }
+
+    /// Scattering states at `energy`: `ψ_p = G W_p` on every device orbital for each lead `p`
+    /// (`W_p W_p† = Γ_p`, one column per channel), as
+    /// [`crate::NestedTwoTerminal::scattering_states`].
+    pub fn scattering_states(&self, energy: f64) -> Result<ScatteringStates, GreenError> {
+        let n = self.h.n;
+        let mut parts: Vec<Vec<CMat>> = vec![Vec::new(); self.lead_count];
+        for block in &self.blocks {
+            let sigmas = Self::self_energies(block, energy)?;
+            let roots: Vec<Option<CMat>> =
+                sigmas.iter().map(|s| s.as_ref().map(gamma_root).transpose()).collect::<Result<_, _>>()?;
+            let (kept, s, delayed) = self.root(block, energy, &sigmas, true)?;
+            // Sources: W_p on the orbitals of lead p, one block of columns per lead.
+            let widths: Vec<usize> = roots.iter().map(|w| w.as_ref().map_or(0, |w| w.ncols())).collect();
+            let total: usize = widths.iter().sum();
+            let mut rhs = CMat::zeros(kept.len(), total);
+            let mut c0 = 0;
+            for ((l, w), &width) in block.leads.iter().zip(&roots).zip(&widths) {
+                if let (Some(l), Some(w)) = (l, w) {
+                    for (a, &i) in index(&kept, l).iter().enumerate() {
+                        for c in 0..width {
+                            rhs[(i, c0 + c)] = w[(a, c)];
+                        }
+                    }
+                }
+                c0 += width;
+            }
+            let x = Lu::new(s.as_ref()).solve(rhs.as_ref());
+            if !x.norm_max().is_finite() {
+                return Err(GreenError::Singular(energy));
+            }
+            let mut psi = CMat::zeros(n, total);
+            for (a, &o) in kept.iter().enumerate() {
+                for c in 0..total {
+                    psi[(o, c)] = x[(a, c)];
+                }
+            }
+            delayed.back_substitute(&mut psi);
+            let mut c0 = 0;
+            for (p, &width) in widths.iter().enumerate() {
+                parts[p].push(psi.as_ref().subcols(c0, width).to_owned());
+                c0 += width;
+            }
+        }
+        let leads = parts
+            .into_iter()
+            .map(|blocks| {
+                let cols: usize = blocks.iter().map(|m| m.ncols()).sum();
+                let mut out = CMat::zeros(n, cols);
+                let mut c0 = 0;
+                for m in blocks {
+                    out.as_mut().subcols_mut(c0, m.ncols()).copy_from(&m);
+                    c0 += m.ncols();
+                }
+                out
+            })
+            .collect();
+        Ok(ScatteringStates { energy, leads })
+    }
+
+    /// Spectral bond currents `2 Re Tr[H_ij G^<_ji]` between every pair of coupled sites, from
+    /// the scattering states and the lead occupations `f` (one per lead).
+    pub fn bond_currents(&self, states: &ScatteringStates, f: &[f64]) -> Vec<BondCurrent> {
+        crate::nested::bond_currents(&self.h, &self.region, states, f)
+    }
+
+    /// The device region (orbital layout of the scattering states).
+    pub fn region(&self) -> &Region {
+        &self.region
+    }
+}
+
+/// Positions in `kept` (sorted) of the orbitals of lead `l`.
+fn index(kept: &[usize], l: &AttachedLead) -> Vec<usize> {
+    l.orbitals.iter().map(|o| kept.binary_search(o).expect("lead orbital kept")).collect()
 }

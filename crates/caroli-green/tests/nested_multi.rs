@@ -141,3 +141,91 @@ fn two_leads_as_two_terminal() {
         assert!((t[1][0] - t2).abs() < 1e-10 && (t[0][1] - t2).abs() < 1e-10, "E = {e}: {:?} vs {t2}", t);
     }
 }
+
+/// Two leads at the ends of a ribbon: the scattering states of the multi-terminal solver give
+/// the densities and bond currents of the two-terminal one.
+#[test]
+fn scattering_states_as_two_terminal() {
+    let (sq, device) = (square(), disordered(square(), 2.0, 1));
+    let region = Region::cuboid(sq.lattice(), [11, 6, 0]);
+    let slices = region.slices(0);
+    let interfaces = [
+        Interface { slice: slices[0].clone(), outward: [-1, 0, 0] },
+        Interface { slice: slices[10].clone(), outward: [1, 0, 0] },
+    ];
+    let multi = NestedMultiTerminal::from_model(&device, &sq, &region, &interfaces);
+    let two = NestedTwoTerminal::from_model(&device, &sq, &region, 0);
+    for e in [-2.2, 0.3, 1.6] {
+        let (sm, st) = (multi.scattering_states(e).unwrap(), two.scattering_states(e).unwrap());
+        let f = [0.9, 0.2];
+        let (om, ot) = (sm.occupation(&f), st.occupation(&f));
+        assert!(om.iter().zip(&ot).all(|(a, b)| (a - b).abs() < 1e-10), "E = {e}: occupations");
+        let (cm, ct) = (multi.bond_currents(&sm, &f), two.bond_currents(&st, &f));
+        assert!(
+            cm.len() == ct.len()
+                && cm
+                    .iter()
+                    .zip(&ct)
+                    .all(|(a, b)| a.from == b.from && a.to == b.to && (a.current - b.current).abs() < 1e-10)
+        );
+    }
+}
+
+/// Bond currents in crosses (disordered, and in a field): with lead q alone injecting, the
+/// current out through a cut across arm p is T_pq, the current into the device through arm q
+/// is their sum, and no current leaks at the inner sites.
+#[test]
+fn cross_currents() {
+    let (nx, ny, arm) = (9i64, 7i64, 4i64);
+    let (region, interfaces) = cross(square().lattice(), nx, ny, arm);
+    for (device, lead) in [
+        (disordered(square(), 1.5, 1), square()),
+        (disordered(square(), 0.5, 1).with_field(0.2), square().with_field(0.2)),
+    ] {
+        let sys = NestedMultiTerminal::from_model(&device, &lead, &region, &interfaces);
+        for e in [-2.4, -0.6, 0.8] {
+            let t = sys.transmissions(e).unwrap();
+            let states = sys.scattering_states(e).unwrap();
+            for q in 0..4 {
+                let mut f = [0.0; 4];
+                f[q] = 1.0;
+                let currents = sys.bond_currents(&states, &f);
+                for (p, itf) in interfaces.iter().enumerate() {
+                    // Outer side of the cut: the interface column of arm p and the one before it.
+                    let d = itf.outward;
+                    let depth = |s: &Site| s.cell[0] * d[0] + s.cell[1] * d[1];
+                    let edge = depth(&itf.slice.sites()[0]) - 1;
+                    let out: f64 = currents
+                        .iter()
+                        .map(|b| match (depth(&b.from) >= edge, depth(&b.to) >= edge) {
+                            (false, true) => b.current,
+                            (true, false) => -b.current,
+                            _ => 0.0,
+                        })
+                        .sum();
+                    let expected = if p == q {
+                        -(0..4).filter(|&r| r != q).map(|r| t[r][q]).sum::<f64>()
+                    } else {
+                        t[p][q]
+                    };
+                    assert!(
+                        (out - expected).abs() < 1e-9,
+                        "E = {e}, from lead {q}: out of arm {p} {out} vs {expected}"
+                    );
+                }
+                // Kirchhoff at the sites no lead touches.
+                let lead_sites: std::collections::HashSet<Site> =
+                    interfaces.iter().flat_map(|i| i.slice.sites().iter().copied()).collect();
+                let mut net: std::collections::HashMap<Site, f64> = Default::default();
+                for b in &currents {
+                    *net.entry(b.from).or_default() += b.current;
+                    *net.entry(b.to).or_default() -= b.current;
+                }
+                assert!(
+                    net.iter().filter(|(s, _)| !lead_sites.contains(s)).all(|(_, j)| j.abs() < 1e-9),
+                    "E = {e}: Kirchhoff"
+                );
+            }
+        }
+    }
+}

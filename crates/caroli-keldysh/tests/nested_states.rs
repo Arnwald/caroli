@@ -49,7 +49,7 @@ fn compare(device: &Model, lead: &Model, region: &Region, energies: &[f64]) {
         for (fl, fr) in [(1.0, 0.0), (0.3, 0.8)] {
             let lesser = Lesser::compute(&rgf, e, SelfEnergyMethod::Modes, fl, fr).unwrap();
             // Occupied densities, slice by slice.
-            let occupation = states.occupation(fl, fr);
+            let occupation = states.occupation(&[fl, fr]);
             for (n, slice) in rgf.regions.iter().enumerate() {
                 let reference = lesser.occupation(n);
                 let mut k = 0;
@@ -71,7 +71,7 @@ fn compare(device: &Model, lead: &Model, region: &Region, energies: &[f64]) {
                 |from: Site, to: Site, j: f64| if from < to { ((from, to), j) } else { ((to, from), -j) };
             let reference: HashMap<(Site, Site), f64> =
                 lesser.bond_currents(&rgf).into_iter().map(|b| canonical(b.from, b.to, b.current)).collect();
-            let ours = nested.bond_currents(&states, fl, fr);
+            let ours = nested.bond_currents(&states, &[fl, fr]);
             assert_eq!(ours.len(), reference.len(), "E = {e}: bonds");
             for b in ours {
                 let (key, j) = canonical(b.from, b.to, b.current);
@@ -83,7 +83,7 @@ fn compare(device: &Model, lead: &Model, region: &Region, energies: &[f64]) {
             }
             // Through each cross-section between slices, the currents add up to T (f_L − f_R).
             let t = nested.transmission(e).unwrap();
-            let currents = nested.bond_currents(&states, fl, fr);
+            let currents = nested.bond_currents(&states, &[fl, fr]);
             for x in 0..rgf.regions.len() as i64 - 1 {
                 let through: f64 = currents
                     .iter()

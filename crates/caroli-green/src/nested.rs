@@ -113,10 +113,10 @@ struct Front {
 /// variables, `ψ_elim = −X ψ_boundary`. A delayed front eliminates nothing and only holds its
 /// children.
 pub(crate) struct Factor {
-    elim: Vec<usize>,
-    boundary: Vec<usize>,
-    x: CMat,
-    children: Vec<Factor>,
+    pub(crate) elim: Vec<usize>,
+    pub(crate) boundary: Vec<usize>,
+    pub(crate) x: CMat,
+    pub(crate) children: Vec<Factor>,
 }
 
 impl Factor {
@@ -365,27 +365,29 @@ pub struct NestedTwoTerminal {
     blocks: Vec<Block>,
 }
 
-/// Scattering states of a two-terminal device at one energy (see
-/// [`NestedTwoTerminal::scattering_states`]).
+/// Scattering states at one energy (see [`NestedTwoTerminal::scattering_states`] and
+/// [`crate::NestedMultiTerminal::scattering_states`]).
 #[derive(Clone, Debug)]
 pub struct ScatteringStates {
     pub energy: f64,
-    /// `ψ_L = G W_L` on every device orbital (rows, in the order of the region), one column per
-    /// channel of the left lead: `W_L W_L† = Γ_L`, so `ψ_L ψ_L† = G Γ_L G†` is the spectral
-    /// function of the electrons the left lead injects.
-    pub left: CMat,
-    /// The same for the right lead.
-    pub right: CMat,
+    /// `ψ_p = G W_p` for each lead `p`, on every device orbital (rows, in the order of the
+    /// region), one column per channel of the lead: `W_p W_p† = Γ_p`, so `ψ_p ψ_p† = G Γ_p G†`
+    /// is the spectral function of the electrons lead `p` injects. Two-terminal devices list the
+    /// left lead, then the right one.
+    pub leads: Vec<CMat>,
 }
 
 impl ScatteringStates {
-    /// Occupied spectral density `Im G^<_aa / 2π = (f_L |ψ_L,a|² + f_R |ψ_R,a|²) / 2π` of every
-    /// orbital, for the lead occupations `f_left` and `f_right` (`G^< = i Σ_p f_p ψ_p ψ_p†`).
-    pub fn occupation(&self, f_left: f64, f_right: f64) -> Vec<f64> {
-        let weight = |m: &CMat, a: usize| (0..m.ncols()).map(|c| m[(a, c)].norm_sqr()).sum::<f64>();
-        (0..self.left.nrows())
+    /// Occupied spectral density `Im G^<_aa / 2π = Σ_p f_p |ψ_p,a|² / 2π` of every orbital, for
+    /// the lead occupations `f` (`G^< = i Σ_p f_p ψ_p ψ_p†`). With every `f_p = 1` it is the local
+    /// density of states of the scattering states (bound states of the device are not included).
+    pub fn occupation(&self, f: &[f64]) -> Vec<f64> {
+        assert_eq!(f.len(), self.leads.len(), "one occupation per lead");
+        let n = self.leads.first().map_or(0, |m| m.nrows());
+        (0..n)
             .map(|a| {
-                (f_left * weight(&self.left, a) + f_right * weight(&self.right, a))
+                let weight = |m: &CMat| (0..m.ncols()).map(|c| m[(a, c)].norm_sqr()).sum::<f64>();
+                self.leads.iter().zip(f).map(|(m, fp)| fp * weight(m)).sum::<f64>()
                     / (2.0 * std::f64::consts::PI)
             })
             .collect()
@@ -679,47 +681,62 @@ impl NestedTwoTerminal {
             }
             out
         };
-        Ok(ScatteringStates { energy, left: concat(left), right: concat(right) })
+        Ok(ScatteringStates { energy, leads: vec![concat(left), concat(right)] })
     }
 
     /// Spectral bond currents `2 Re Tr[H_ij G^<_ji]` between every pair of coupled sites, from
-    /// the scattering states and the lead occupations (`G^< = i Σ_p f_p ψ_p ψ_p†`). Each bond
+    /// the scattering states and the lead occupations `f` (`G^< = i Σ_p f_p ψ_p ψ_p†`). Each bond
     /// appears once, from the site of lower index in the region.
-    pub fn bond_currents(&self, states: &ScatteringStates, f_left: f64, f_right: f64) -> Vec<BondCurrent> {
-        // Rows of ψ as contiguous vectors: (ψ_L ψ_L†)_ba = ⟨row a, row b⟩.
-        let (tl, tr) = (states.left.transpose().to_owned(), states.right.transpose().to_owned());
-        let lesser = |b: usize, a: usize| -> c64 {
-            let dot = |t: &CMat| (0..t.nrows()).map(|k| t[(k, b)] * t[(k, a)].conj()).sum::<c64>();
-            c64::new(0.0, 1.0) * (dot(&tl) * f_left + dot(&tr) * f_right)
-        };
-        let region = &self.region;
-        let mut owner = vec![0usize; self.h.n];
-        for i in 0..region.len() {
-            owner[region.offset(i)..region.offset(i) + region.site_orbitals(i)].fill(i);
-        }
-        let mut currents: std::collections::BTreeMap<(usize, usize), c64> = Default::default();
-        for a in 0..self.h.n {
-            for (b, hab) in self.h.row(a) {
-                let (i, j) = (owner[a], owner[b]);
-                if i < j {
-                    *currents.entry((i, j)).or_default() += hab * lesser(b, a);
-                }
-            }
-        }
-        currents
-            .into_iter()
-            .map(|((i, j), acc)| BondCurrent {
-                from: region.sites()[i],
-                to: region.sites()[j],
-                current: 2.0 * acc.re,
-            })
-            .collect()
+    pub fn bond_currents(&self, states: &ScatteringStates, f: &[f64]) -> Vec<BondCurrent> {
+        bond_currents(&self.h, &self.region, states, f)
     }
 
     /// The device region (orbital layout of the scattering states).
     pub fn region(&self) -> &Region {
         &self.region
     }
+}
+
+/// Spectral bond currents `2 Re Tr[H_ij G^<_ji]` between every pair of coupled sites of `region`,
+/// with `G^< = i Σ_p f_p ψ_p ψ_p†` from the scattering states. Each bond appears once, from the
+/// site of lower index in the region.
+pub(crate) fn bond_currents(
+    h: &SparseMatrix,
+    region: &Region,
+    states: &ScatteringStates,
+    f: &[f64],
+) -> Vec<BondCurrent> {
+    assert_eq!(f.len(), states.leads.len(), "one occupation per lead");
+    // Rows of ψ_p as contiguous vectors: (ψ_p ψ_p†)_ba = Σ_k ψ_bk ψ_ak*.
+    let rows: Vec<CMat> = states.leads.iter().map(|m| m.transpose().to_owned()).collect();
+    let lesser = |b: usize, a: usize| -> c64 {
+        let mut acc = c64::new(0.0, 0.0);
+        for (t, fp) in rows.iter().zip(f) {
+            acc += (0..t.nrows()).map(|k| t[(k, b)] * t[(k, a)].conj()).sum::<c64>() * *fp;
+        }
+        c64::new(0.0, 1.0) * acc
+    };
+    let mut owner = vec![0usize; h.n];
+    for i in 0..region.len() {
+        owner[region.offset(i)..region.offset(i) + region.site_orbitals(i)].fill(i);
+    }
+    let mut currents: std::collections::BTreeMap<(usize, usize), c64> = Default::default();
+    for a in 0..h.n {
+        for (b, hab) in h.row(a) {
+            let (i, j) = (owner[a], owner[b]);
+            if i < j {
+                *currents.entry((i, j)).or_default() += hab * lesser(b, a);
+            }
+        }
+    }
+    currents
+        .into_iter()
+        .map(|((i, j), acc)| BondCurrent {
+            from: region.sites()[i],
+            to: region.sites()[j],
+            current: 2.0 * acc.re,
+        })
+        .collect()
 }
 
 /// The root of a two-terminal block: `S` on the kept lead orbitals (`right` is the position of
@@ -733,7 +750,7 @@ struct LeadRoot {
 
 /// `W` with `W W† = Γ = i(Σ − Σ†)`: the eigenvectors of `Γ` with positive eigenvalues, scaled by
 /// their square roots (one column per channel).
-fn gamma_root(sigma: &CMat) -> Result<CMat, GreenError> {
+pub(crate) fn gamma_root(sigma: &CMat) -> Result<CMat, GreenError> {
     let g = broadening(sigma);
     let n = g.nrows();
     let g = CMat::from_fn(n, n, |i, j| (g[(i, j)] + g[(j, i)].conj()) * 0.5);
