@@ -2,28 +2,13 @@
 
 julia_version = "1.13.1"
 manifest_format = "2.1"
-project_hash = "578725a0ffc418035c62a8256f695e21334d2b0e"
+project_hash = "b957e7c4354f411b86d491b11581029c0de35c78"
 
 [[deps.AbstractTrees]]
 git-tree-sha1 = "2d9c9a55f9c93e8887ad391fbae72f8ef55e1177"
 registries = "General"
 uuid = "1520ce14-60c1-5f80-bbc7-55ef81b5835c"
 version = "0.4.5"
-
-[[deps.AppleAccelerate]]
-deps = ["Libdl", "LinearAlgebra", "SparseArrays"]
-git-tree-sha1 = "fe93e28651296e51b59684141017a6b73138fd29"
-registries = "General"
-uuid = "13e28ba4-7ad8-5781-acae-3021b1ed3924"
-version = "0.7.0"
-
-    [deps.AppleAccelerate.extensions]
-    AppleAccelerateAbstractFFTsExt = "AbstractFFTs"
-    AppleAccelerateNNlibExt = "NNlib"
-
-    [deps.AppleAccelerate.weakdeps]
-    AbstractFFTs = "621f4979-c628-5d54-868e-fcf4e3e8185c"
-    NNlib = "872c559c-99b0-510c-b3b7-b6c96a88d5cd"
 
 [[deps.Artifacts]]
 uuid = "56f22d72-fd6d-98f1-02f0-08ddc0907c33"
