@@ -56,12 +56,20 @@ The dependencies only go downward: lattice ← model ← green ← caroli, and d
 - **Magnetic field**: Peierls phases, `Model::with_peierls(φ)` multiplies every hopping
   `⟨i| H |j⟩` by `exp(i φ(r_i, r_j))`. `caroli_model::gauge` gives uniform fields in the Landau
   (x or y) and symmetric gauges; `b` is the phase per unit area, so the flux quantum is 2π.
-  - The leads must see a gauge invariant along their axis. Every transport constructor checks
-    that the lead Hamiltonian is the same from cell to cell, and panics otherwise.
-  - Leads in several directions (a Hall cross) need a gauge transformed from lead to lead, as
-    Kwant's `magnetic_gauge`: still to do.
-  - Tests: gauge invariance of flake spectra and of transmissions, and quantum Hall plateaus
-    (T = 1, 2, 3 to 1e-6 in a disordered ribbon).
+  - `Model::with_field(b)` sets a uniform field. The model works in the Landau gauge
+    invariant along x; each lead along a direction `d` is taken to the Landau gauge invariant
+    along `d` by `ψ → exp(iχ) ψ`, with `χ` quadratic. The device keeps its gauge and the
+    device-lead couplings are mixed, so leads can point in any direction, as with Kwant's
+    `magnetic_gauge`. With `with_peierls` (any field), each lead must already see a gauge
+    invariant along it.
+  - Every transport constructor checks that the lead Hamiltonian is the same from cell to cell
+    (in the lead's gauge), and panics otherwise.
+  - Tests:
+    - gauge invariance of flake spectra and of transmissions;
+    - quantum Hall plateaus (T = 1, 2, 3 to 1e-6 in disordered ribbons, along x and along y);
+    - a Hall cross: symmetry under a quarter turn of a clean cross (x and y leads in different
+      gauges), Onsager reciprocity `T_pq(b) = T_qp(−b)`, and the chiral transmissions of the
+      quantum Hall regime (ν into the next lead, 0 elsewhere).
 - **BHZ conventions** follow the thesis codes (2014+): basis `(E1↑, H1↑, E1↓, H1↓)`, Γ matrices
   of `numbers.f90`. Exchange coupling: `GFactors::Same` (g_E = g_H, `n·s`) and `Opposite`
   (g_E = −g_H, `n·s τ_z`). The thesis calls these "ferro" and "antiferro".

@@ -78,3 +78,114 @@ fn leads_need_an_invariant_gauge() {
     let region = Region::cuboid(model.lattice(), [6, 5, 0]);
     let _ = NestedTwoTerminal::from_model(&model, &model, &region, 0);
 }
+
+/// A `w × w` square with arms of length `arm` and a lead at the end of each: left, right,
+/// bottom, top.
+fn cross(lat: &Lattice, w: i64, arm: i64) -> (Region, Vec<caroli_green::Interface>) {
+    let site = |x: i64, y: i64| Site { cell: [x, y, 0], sub: 0 };
+    let cells = (-arm..w + arm)
+        .flat_map(|x| (-arm..w + arm).map(move |y| (x, y)))
+        .filter(|&(x, y)| (0..w).contains(&x) || (0..w).contains(&y));
+    let region = Region::from_sites(lat, cells.map(|(x, y)| site(x, y)).collect());
+    let column = |x: i64| Region::from_sites(lat, (0..w).map(|y| site(x, y)).collect());
+    let row = |y: i64| Region::from_sites(lat, (0..w).map(|x| site(x, y)).collect());
+    let interfaces = vec![
+        caroli_green::Interface { slice: column(-arm), outward: [-1, 0, 0] },
+        caroli_green::Interface { slice: column(w + arm - 1), outward: [1, 0, 0] },
+        caroli_green::Interface { slice: row(-arm), outward: [0, -1, 0] },
+        caroli_green::Interface { slice: row(w + arm - 1), outward: [0, 1, 0] },
+    ];
+    (region, interfaces)
+}
+
+/// Transport along y in a uniform field: the leads are taken to the Landau gauge invariant
+/// along y, and the plateaus are those of the ribbon along x.
+#[test]
+fn quantum_hall_plateaus_along_y() {
+    let b = 0.1;
+    let clean = square().with_field(b);
+    let device = disordered(square(), 0.2).with_field(b);
+    let region = Region::cuboid(clean.lattice(), [60, 40, 0]);
+    let nested = NestedTwoTerminal::from_model(&device, &clean, &region, 1);
+    let rgf = TwoTerminal::from_model(&device, &clean, &region, 1);
+    for (e, plateau) in [(-3.8, 1.0), (-3.6, 2.0), (-3.4, 3.0)] {
+        let (t, t2) = (nested.transmission(e).unwrap(), rgf.transmission(e).unwrap());
+        assert!((t - plateau).abs() < 1e-6 && (t - t2).abs() < 1e-9, "E = {e}: T = {t} (RGF {t2})");
+    }
+}
+
+/// A clean cross in a uniform field is symmetric under a quarter turn, which takes left to
+/// bottom, bottom to right, right to top and top to left: the leads along x and along y, in
+/// different gauges, give the same transmissions. Dense and nested solvers agree.
+#[test]
+fn hall_cross_quarter_turn() {
+    use caroli_green::{MultiTerminal, NestedMultiTerminal, SelfEnergyMethod};
+    let b = 0.05;
+    let model = square().with_field(b);
+    let (region, interfaces) = cross(model.lattice(), 12, 4);
+    let nested = NestedMultiTerminal::from_model(&model, &model, &region, &interfaces);
+    let dense = MultiTerminal::from_model(&model, &model, &region, &interfaces);
+    let turn = [2, 3, 1, 0]; // left → bottom, right → top, bottom → right, top → left
+    for e in [-3.1, -2.5, -1.2] {
+        let t = nested.transmissions(e).unwrap();
+        let sol = dense.solve(e, SelfEnergyMethod::Modes).unwrap();
+        for p in 0..4 {
+            for q in 0..4 {
+                assert!((t[p][q] - sol.transmission(&dense, p, q)).abs() < 1e-9, "E = {e}: dense and nested");
+                if p != q {
+                    let rotated = t[turn[p]][turn[q]];
+                    assert!(
+                        (t[p][q] - rotated).abs() < 1e-9,
+                        "E = {e}: T[{p}][{q}] = {} vs {rotated}",
+                        t[p][q]
+                    );
+                }
+            }
+        }
+    }
+}
+
+/// Onsager: reversing the field transposes the transmissions of a disordered cross.
+#[test]
+fn hall_cross_onsager() {
+    use caroli_green::NestedMultiTerminal;
+    let (region, interfaces) = cross(square().lattice(), 12, 4);
+    let t = |b: f64, e: f64| {
+        let (clean, device) = (square().with_field(b), disordered(square(), 1.0).with_field(b));
+        NestedMultiTerminal::from_model(&device, &clean, &region, &interfaces).transmissions(e).unwrap()
+    };
+    for e in [-2.7, -0.8, 0.9] {
+        let (plus, minus) = (t(0.07, e), t(-0.07, e));
+        for p in 0..4 {
+            for q in 0..4 {
+                assert!(
+                    (plus[p][q] - minus[q][p]).abs() < 1e-9,
+                    "E = {e}: T[{p}][{q}](b) vs T[{q}][{p}](−b)"
+                );
+            }
+        }
+    }
+}
+
+/// Quantum Hall regime in a disordered cross: the edge states carry ν channels from each lead to
+/// the next one around the cross, and nothing elsewhere.
+#[test]
+fn hall_cross_chirality() {
+    use caroli_green::NestedMultiTerminal;
+    let b = 0.1;
+    let (clean, device) = (square().with_field(b), disordered(square(), 0.2).with_field(b));
+    let (region, interfaces) = cross(clean.lattice(), 40, 10);
+    let sys = NestedMultiTerminal::from_model(&device, &clean, &region, &interfaces);
+    for (e, nu) in [(-3.8, 1.0), (-3.6, 2.0)] {
+        let t = sys.transmissions(e).unwrap();
+        // Column q: what lead q sends to the others.
+        let columns: Vec<Vec<f64>> = (0..4).map(|q| t.iter().map(|row| row[q]).collect()).collect();
+        for (q, column) in columns.iter().enumerate() {
+            let targets: Vec<usize> = (0..4).filter(|&p| p != q && column[p] > 0.5).collect();
+            assert_eq!(targets.len(), 1, "E = {e}: lead {q} feeds {targets:?}");
+            let p = targets[0];
+            assert!((column[p] - nu).abs() < 1e-6, "E = {e}: T[{p}][{q}] = {}", column[p]);
+            assert!((0..4).filter(|&r| r != q && r != p).all(|r| column[r].abs() < 1e-6));
+        }
+    }
+}

@@ -5,6 +5,7 @@
 //! few thousand orbitals (Hall bars, crosses, small flakes). Long quasi-one-dimensional devices
 //! are better served by [`crate::TwoTerminal`].
 
+use crate::gauge::Gauge;
 use crate::modes::{LeadModes, sigma_right};
 use crate::{GreenError, SelfEnergyMethod, broadening, decimation, inverse, trace};
 use caroli_lattice::{Cell, Region};
@@ -71,6 +72,7 @@ impl MultiTerminal {
     /// clean `lead` model. The lead couples to every device orbital its first cell reaches (not
     /// only the interface slice: slanted bonds, several sublattices).
     pub fn from_model(device: &Model, lead: &Model, region: &Region, interfaces: &[Interface]) -> Self {
+        crate::gauge::assert_same_field(device, lead);
         Self {
             h: device.hamiltonian(region),
             leads: attach_leads(lead, region, interfaces),
@@ -115,13 +117,16 @@ pub(crate) fn attach_leads(lead: &Model, region: &Region, interfaces: &[Interfac
             );
             let skip = lead.coupling(&itf.slice, &itf.slice.translated(shift(2)));
             assert!(skip.norm_max() == 0.0, "a lead hopping reaches beyond the next cell");
-            crate::assert_lead_invariant(lead, &itf.slice, itf.outward);
-            let v = lead.coupling(region, &first);
+            // In a uniform field, the lead in the gauge invariant along it; the device keeps its
+            // gauge, and the coupling is mixed.
+            let gauge = Gauge::along(lead, itf.outward);
+            let (h00, h01) = gauge.lead(&itf.slice, itf.outward, itf.outward);
+            let v = gauge.transform_columns(lead.coupling(region, &first), &first);
             let orbitals: Vec<usize> =
                 (0..v.nrows()).filter(|&i| (0..v.ncols()).any(|j| v[(i, j)] != c64::new(0.0, 0.0))).collect();
             AttachedLead {
-                h00: lead.hamiltonian(&itf.slice),
-                h01: lead.coupling(&itf.slice, &first),
+                h00,
+                h01,
                 coupling: CMat::from_fn(orbitals.len(), v.ncols(), |a, j| v[(orbitals[a], j)]),
                 orbitals,
             }

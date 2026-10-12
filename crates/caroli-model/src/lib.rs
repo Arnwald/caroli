@@ -61,7 +61,7 @@ impl<F: Fn(Vec3, Vec3) -> f64 + Send + Sync> Peierls for F {
 /// near the band bottom sit at `E_n ≈ −4t + (2n + 1) t b`.
 ///
 /// The leads must see a gauge that is invariant along their axis (the transport constructors
-/// check it): [`landau_x`] for leads along x, [`landau_y`] for leads along y.
+/// check it): [`gauge::landau_x`] for leads along x, [`gauge::landau_y`] for leads along y.
 pub mod gauge {
     use caroli_lattice::Vec3;
 
@@ -82,6 +82,16 @@ pub mod gauge {
             0.5 * b * (-ym * (ri[0] - rj[0]) + xm * (ri[1] - rj[1]))
         }
     }
+
+    /// The gauge function `χ` that takes [`landau_x`] to the Landau gauge invariant along the
+    /// in-plane direction `d`, `A_d = −b (r·n) d` with `n = ẑ × d`: `A_d = A_x + ∇χ`. In the new
+    /// gauge, the hopping `⟨i| H |j⟩` picks up `exp(i (χ(r_i) − χ(r_j)))`.
+    pub fn landau_x_to_along(b: f64, d: Vec3) -> impl Fn(Vec3) -> f64 + Send + Sync + Clone {
+        let norm = d[0].hypot(d[1]);
+        let (dx, dy) = (d[0] / norm, d[1] / norm);
+        // ∇χ = M r with M = b [[dx dy, dy²], [dy², −dx dy]] (symmetric: A_d − A_x is a gradient).
+        move |r| 0.5 * b * (dx * dy * r[0] * r[0] + 2.0 * dy * dy * r[0] * r[1] - dx * dy * r[1] * r[1])
+    }
 }
 
 /// Tight-binding model on a lattice.
@@ -91,13 +101,15 @@ pub struct Model {
     hoppings: Vec<Hopping>,
     extra: Vec<Box<dyn OnSite>>,
     peierls: Option<Box<dyn Peierls>>,
+    /// Uniform field set by [`Model::with_field`].
+    field: Option<f64>,
 }
 
 impl Model {
     /// Model with zero on-site matrices and no hopping.
     pub fn new(lattice: Lattice) -> Self {
         let onsite = lattice.sublattices().iter().map(|s| CMat::zeros(s.orbitals, s.orbitals)).collect();
-        Self { lattice, onsite, hoppings: Vec::new(), extra: Vec::new(), peierls: None }
+        Self { lattice, onsite, hoppings: Vec::new(), extra: Vec::new(), peierls: None, field: None }
     }
 
     pub fn lattice(&self) -> &Lattice {
@@ -135,7 +147,22 @@ impl Model {
     /// the Peierls substitution (see [`gauge`] for uniform fields). Replaces any previous phase.
     pub fn with_peierls(mut self, phase: impl Peierls + 'static) -> Self {
         self.peierls = Some(Box::new(phase));
+        self.field = None;
         self
+    }
+
+    /// A uniform field `b ẑ` (see [`gauge`] for the units), in the gauge [`gauge::landau_x`].
+    /// The transport constructors change the gauge of each lead so that it is invariant along
+    /// the lead, whatever its direction (as Kwant's `magnetic_gauge`).
+    pub fn with_field(mut self, b: f64) -> Self {
+        self.peierls = Some(Box::new(gauge::landau_x(b)));
+        self.field = Some(b);
+        self
+    }
+
+    /// The uniform field set by [`Self::with_field`], if any.
+    pub fn field(&self) -> Option<f64> {
+        self.field
     }
 
     /// `factor · exp(i φ(r_i, r_j))` for the block `⟨i| H |j⟩`.

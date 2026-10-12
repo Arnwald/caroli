@@ -22,6 +22,7 @@
 //!
 //! The elimination itself (`SiteTree`, `Tree`) also serves [`crate::NestedMultiTerminal`].
 
+use crate::gauge::Gauge;
 use crate::modes::{sigma_left, sigma_right};
 use crate::{GreenError, Lead, broadening, trace};
 use caroli_dense::{Accum, Lu, Op, matmul};
@@ -308,15 +309,19 @@ impl NestedTwoTerminal {
         for hop in lead.hoppings() {
             assert!(hop.offset[axis].abs() <= 1, "a lead hopping skips a cell along axis {axis}");
         }
-        let h = device.sparse_hamiltonian(region);
+        crate::gauge::assert_same_field(device, lead);
         let slices = region.slices(axis);
         let mut step = [0i64; 3];
         step[axis] = 1;
+        // In a uniform field, everything in the gauge invariant along the axis.
+        let mut h = device.sparse_hamiltonian(region);
+        Gauge::along(device, step).transform_sparse(&mut h, region);
+        let lead_gauge = Gauge::along(lead, step);
         let (first, last) = (&slices[0], &slices[slices.len() - 1]);
-        crate::assert_lead_invariant(lead, first, [-step[0], -step[1], -step[2]]);
-        crate::assert_lead_invariant(lead, last, step);
-        let left = Lead { h00: lead.hamiltonian(first), h01: lead.coupling(first, &first.translated(step)) };
-        let right = Lead { h00: lead.hamiltonian(last), h01: lead.coupling(last, &last.translated(step)) };
+        let (h00, h01) = lead_gauge.lead(first, step, [-step[0], -step[1], -step[2]]);
+        let left = Lead { h00, h01 };
+        let (h00, h01) = lead_gauge.lead(last, step, step);
+        let right = Lead { h00, h01 };
         let orbitals_of = |s: &Region| -> Vec<usize> {
             s.sites()
                 .iter()

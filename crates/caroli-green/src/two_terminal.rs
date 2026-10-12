@@ -1,5 +1,6 @@
 //! Two-terminal devices: recursive Green's function and Caroli transmission.
 
+use crate::gauge::Gauge;
 use crate::modes::{LeadModes, sigma_left, sigma_right};
 use crate::{GreenError, broadening, decimation, inverse, resolvent_matrix, trace};
 use caroli_lattice::Region;
@@ -61,15 +62,24 @@ impl TwoTerminal {
         for hop in lead.hoppings() {
             assert!(hop.offset[axis].abs() <= 1, "a lead hopping skips a cell along axis {axis}");
         }
+        crate::gauge::assert_same_field(device, lead);
         let (slices, diag, off) = device.slice_blocks(region, axis);
         let mut step = [0i64; 3];
         step[axis] = 1;
-        let first = &slices[0];
-        let last = &slices[slices.len() - 1];
-        crate::assert_lead_invariant(lead, first, [-step[0], -step[1], -step[2]]);
-        crate::assert_lead_invariant(lead, last, step);
-        let left = Lead { h00: lead.hamiltonian(first), h01: lead.coupling(first, &first.translated(step)) };
-        let right = Lead { h00: lead.hamiltonian(last), h01: lead.coupling(last, &last.translated(step)) };
+        // In a uniform field, everything in the gauge invariant along the axis.
+        let gauge = Gauge::along(device, step);
+        let diag = diag.into_iter().zip(&slices).map(|(m, s)| gauge.transform(m, s, s)).collect();
+        let off = off
+            .into_iter()
+            .enumerate()
+            .map(|(k, m)| gauge.transform(m, &slices[k], &slices[k + 1]))
+            .collect();
+        let lead_gauge = Gauge::along(lead, step);
+        let (first, last) = (&slices[0], &slices[slices.len() - 1]);
+        let (h00, h01) = lead_gauge.lead(first, step, [-step[0], -step[1], -step[2]]);
+        let left = Lead { h00, h01 };
+        let (h00, h01) = lead_gauge.lead(last, step, step);
+        let right = Lead { h00, h01 };
         Self { slices: diag, couplings: off, left, right, regions: slices }
     }
 

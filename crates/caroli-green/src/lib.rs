@@ -10,6 +10,7 @@
 //! - [`NestedMultiTerminal`]: any number of leads attached anywhere, by nested dissection.
 
 pub mod decimation;
+mod gauge;
 pub mod modes;
 pub mod multi;
 pub mod nested;
@@ -37,26 +38,6 @@ pub enum GreenError {
     ModeCount { right: usize, left: usize, expected: usize },
     #[error("lead self-energy undefined near E = {0} (subband edge or bound state of the lead surface)")]
     Singular(f64),
-}
-
-/// Panics unless the `lead` model is the same on the lead cell `cell` and on the next cells
-/// along `step`: a vector potential or a potential that changes along the lead would make its
-/// modes wrong.
-pub(crate) fn assert_lead_invariant(
-    lead: &caroli_model::Model,
-    cell: &caroli_lattice::Region,
-    step: caroli_lattice::Cell,
-) {
-    let next = cell.translated(step);
-    let after = next.translated(step);
-    let (h0, h0_next) = (lead.hamiltonian(cell), lead.hamiltonian(&next));
-    let (h1, h1_next) = (lead.coupling(cell, &next), lead.coupling(&next, &after));
-    let tol = 1e-12 * h0.norm_max().max(h1.norm_max());
-    assert!(
-        (&h0 - &h0_next).norm_max() <= tol && (&h1 - &h1_next).norm_max() <= tol,
-        "the lead model changes along the lead: use a gauge invariant along it (gauge::landau_x for \
-         leads along x) and no potential that varies along it"
-    );
 }
 
 /// Inverse of a square matrix (partial-pivoting LU).

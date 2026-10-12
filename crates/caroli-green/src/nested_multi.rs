@@ -37,6 +37,7 @@ impl NestedMultiTerminal {
     /// Device from `device` on `region`, with leads of the clean `lead` model continuing each
     /// interface outward, as [`crate::MultiTerminal::from_model`].
     pub fn from_model(device: &Model, lead: &Model, region: &Region, interfaces: &[Interface]) -> Self {
+        crate::gauge::assert_same_field(device, lead);
         let h = device.sparse_hamiltonian(region);
         let leads = attach_leads(lead, region, interfaces);
         // Sites with an orbital coupled to a lead stay at the root.
