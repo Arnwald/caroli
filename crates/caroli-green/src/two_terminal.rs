@@ -66,6 +66,8 @@ impl TwoTerminal {
         step[axis] = 1;
         let first = &slices[0];
         let last = &slices[slices.len() - 1];
+        crate::assert_lead_invariant(lead, first, [-step[0], -step[1], -step[2]]);
+        crate::assert_lead_invariant(lead, last, step);
         let left = Lead { h00: lead.hamiltonian(first), h01: lead.coupling(first, &first.translated(step)) };
         let right = Lead { h00: lead.hamiltonian(last), h01: lead.coupling(last, &last.translated(step)) };
         Self { slices: diag, couplings: off, left, right, regions: slices }

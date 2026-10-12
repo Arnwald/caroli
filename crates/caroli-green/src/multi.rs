@@ -115,6 +115,7 @@ pub(crate) fn attach_leads(lead: &Model, region: &Region, interfaces: &[Interfac
             );
             let skip = lead.coupling(&itf.slice, &itf.slice.translated(shift(2)));
             assert!(skip.norm_max() == 0.0, "a lead hopping reaches beyond the next cell");
+            crate::assert_lead_invariant(lead, &itf.slice, itf.outward);
             let v = lead.coupling(region, &first);
             let orbitals: Vec<usize> =
                 (0..v.nrows()).filter(|&i| (0..v.ncols()).any(|j| v[(i, j)] != c64::new(0.0, 0.0))).collect();

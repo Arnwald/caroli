@@ -53,6 +53,15 @@ The dependencies only go downward: lattice ← model ← green ← caroli, and d
 - **Model** = on-site matrix per sublattice + hoppings `⟨(R, a)| H |(R + offset, b)⟩` (their
   conjugates are implied) + site-dependent terms (`OnSite` trait: disorder, potentials).
   The Bloch convention is `H(k) = Σ_n H_{0n} e^{i k·n}`.
+- **Magnetic field**: Peierls phases, `Model::with_peierls(φ)` multiplies every hopping
+  `⟨i| H |j⟩` by `exp(i φ(r_i, r_j))`. `caroli_model::gauge` gives uniform fields in the Landau
+  (x or y) and symmetric gauges; `b` is the phase per unit area, so the flux quantum is 2π.
+  - The leads must see a gauge invariant along their axis. Every transport constructor checks
+    that the lead Hamiltonian is the same from cell to cell, and panics otherwise.
+  - Leads in several directions (a Hall cross) need a gauge transformed from lead to lead, as
+    Kwant's `magnetic_gauge`: still to do.
+  - Tests: gauge invariance of flake spectra and of transmissions, and quantum Hall plateaus
+    (T = 1, 2, 3 to 1e-6 in a disordered ribbon).
 - **BHZ conventions** follow the thesis codes (2014+): basis `(E1↑, H1↑, E1↓, H1↓)`, Γ matrices
   of `numbers.f90`. Exchange coupling: `GFactors::Same` (g_E = g_H, `n·s`) and `Opposite`
   (g_E = −g_H, `n·s τ_z`). The thesis calls these "ferro" and "antiferro".

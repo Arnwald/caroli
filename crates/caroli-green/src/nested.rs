@@ -313,6 +313,8 @@ impl NestedTwoTerminal {
         let mut step = [0i64; 3];
         step[axis] = 1;
         let (first, last) = (&slices[0], &slices[slices.len() - 1]);
+        crate::assert_lead_invariant(lead, first, [-step[0], -step[1], -step[2]]);
+        crate::assert_lead_invariant(lead, last, step);
         let left = Lead { h00: lead.hamiltonian(first), h01: lead.coupling(first, &first.translated(step)) };
         let right = Lead { h00: lead.hamiltonian(last), h01: lead.coupling(last, &last.translated(step)) };
         let orbitals_of = |s: &Region| -> Vec<usize> {

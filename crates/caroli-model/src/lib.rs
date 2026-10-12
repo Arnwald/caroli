@@ -2,10 +2,11 @@
 //!
 //! A [`Model`] holds an on-site matrix per sublattice and a list of [`Hopping`]s
 //! `⟨(R, from)| H |(R + offset, to)⟩`. Extra on-site terms that depend on the site (disorder,
-//! potentials) are added through [`OnSite`]. The model builds dense Hamiltonians of finite
-//! regions, Bloch Hamiltonians of partially periodic systems and the blocks used by transport.
+//! potentials) are added through [`OnSite`], and a magnetic field through [`Peierls`] phases
+//! (see [`gauge`]). The model builds dense Hamiltonians of finite regions, Bloch Hamiltonians of
+//! partially periodic systems and the blocks used by transport.
 
-use caroli_lattice::{Cell, Lattice, Region, Site};
+use caroli_lattice::{Cell, Lattice, Region, Site, Vec3};
 use faer::Mat;
 pub use faer::c64;
 
@@ -40,19 +41,63 @@ impl<F: Fn(&Site) -> Option<CMat> + Send + Sync> OnSite for F {
     }
 }
 
+/// Peierls phase of the hopping `⟨i| H |j⟩`: `φ(r_i, r_j) = ∫ A · dl` from `r_j` to `r_i`, in
+/// radians (charge and ħ absorbed in `A`). It must be antisymmetric: `φ(a, b) = −φ(b, a)`.
+pub trait Peierls: Send + Sync {
+    fn phase(&self, to: Vec3, from: Vec3) -> f64;
+}
+
+impl<F: Fn(Vec3, Vec3) -> f64 + Send + Sync> Peierls for F {
+    fn phase(&self, to: Vec3, from: Vec3) -> f64 {
+        self(to, from)
+    }
+}
+
+/// Uniform magnetic fields `B ẑ` as [`Peierls`] phases, for [`Model::with_peierls`].
+///
+/// `b` is the field in units of `ħ/(e a²)`, `a` being the length unit of the lattice: the phase
+/// around a loop is `b` times the area it encloses (counterclockwise), and the flux quantum is
+/// `2π`. On the square lattice of constant 1, `b` is the flux per plaquette and the Landau levels
+/// near the band bottom sit at `E_n ≈ −4t + (2n + 1) t b`.
+///
+/// The leads must see a gauge that is invariant along their axis (the transport constructors
+/// check it): [`landau_x`] for leads along x, [`landau_y`] for leads along y.
+pub mod gauge {
+    use caroli_lattice::Vec3;
+
+    /// `A = (−b y, 0, 0)`: invariant along x.
+    pub fn landau_x(b: f64) -> impl Fn(Vec3, Vec3) -> f64 + Send + Sync + Clone {
+        move |ri, rj| -b * 0.5 * (ri[1] + rj[1]) * (ri[0] - rj[0])
+    }
+
+    /// `A = (0, b x, 0)`: invariant along y.
+    pub fn landau_y(b: f64) -> impl Fn(Vec3, Vec3) -> f64 + Send + Sync + Clone {
+        move |ri, rj| b * 0.5 * (ri[0] + rj[0]) * (ri[1] - rj[1])
+    }
+
+    /// `A = b (−y, x, 0) / 2`.
+    pub fn symmetric(b: f64) -> impl Fn(Vec3, Vec3) -> f64 + Send + Sync + Clone {
+        move |ri, rj| {
+            let (xm, ym) = (0.5 * (ri[0] + rj[0]), 0.5 * (ri[1] + rj[1]));
+            0.5 * b * (-ym * (ri[0] - rj[0]) + xm * (ri[1] - rj[1]))
+        }
+    }
+}
+
 /// Tight-binding model on a lattice.
 pub struct Model {
     lattice: Lattice,
     onsite: Vec<CMat>,
     hoppings: Vec<Hopping>,
     extra: Vec<Box<dyn OnSite>>,
+    peierls: Option<Box<dyn Peierls>>,
 }
 
 impl Model {
     /// Model with zero on-site matrices and no hopping.
     pub fn new(lattice: Lattice) -> Self {
         let onsite = lattice.sublattices().iter().map(|s| CMat::zeros(s.orbitals, s.orbitals)).collect();
-        Self { lattice, onsite, hoppings: Vec::new(), extra: Vec::new() }
+        Self { lattice, onsite, hoppings: Vec::new(), extra: Vec::new(), peierls: None }
     }
 
     pub fn lattice(&self) -> &Lattice {
@@ -84,6 +129,24 @@ impl Model {
     pub fn with_onsite_term(mut self, term: impl OnSite + 'static) -> Self {
         self.extra.push(Box::new(term));
         self
+    }
+
+    /// Multiplies every hopping `⟨i| H |j⟩` by `exp(i φ(r_i, r_j))`: a vector potential through
+    /// the Peierls substitution (see [`gauge`] for uniform fields). Replaces any previous phase.
+    pub fn with_peierls(mut self, phase: impl Peierls + 'static) -> Self {
+        self.peierls = Some(Box::new(phase));
+        self
+    }
+
+    /// `factor · exp(i φ(r_i, r_j))` for the block `⟨i| H |j⟩`.
+    fn phased(&self, factor: c64, i: &Site, j: &Site) -> c64 {
+        match &self.peierls {
+            None => factor,
+            Some(p) => {
+                let (s, c) = p.phase(self.lattice.position(*i), self.lattice.position(*j)).sin_cos();
+                factor * c64::new(c, s)
+            }
+        }
     }
 
     /// Full on-site matrix of a site (sublattice term plus site-dependent terms).
@@ -161,10 +224,12 @@ impl Model {
                     if !applies {
                         continue;
                     }
-                    if let Some((j, n)) = images.locate(&shifted(site, hop.offset, sign, sub)) {
+                    let partner = shifted(site, hop.offset, sign, sub);
+                    if let Some((j, n)) = images.locate(&partner) {
                         let phase: f64 = n.iter().zip(phases).map(|(n, k)| *n as f64 * k).sum();
                         let (s, cs) = phase.sin_cos();
-                        h.block(region.offset(i), region.offset(j), &hop.matrix, c64::new(cs, s), adjoint);
+                        let factor = self.phased(c64::new(cs, s), site, &partner);
+                        h.block(region.offset(i), region.offset(j), &hop.matrix, factor, adjoint);
                     }
                 }
             }
@@ -187,14 +252,26 @@ impl Model {
                 if hop.from == site.sub {
                     let partner = shifted(site, hop.offset, 1, hop.to);
                     if let Some(j) = b.index_of(&partner) {
-                        h.block(a.offset(i), b.offset(j), &hop.matrix, factor, false);
+                        h.block(
+                            a.offset(i),
+                            b.offset(j),
+                            &hop.matrix,
+                            self.phased(factor, site, &partner),
+                            false,
+                        );
                     }
                 }
                 // Backward: site is `to`, partner is `from` at -offset; block is matrix†.
                 if hop.to == site.sub {
                     let partner = shifted(site, hop.offset, -1, hop.from);
                     if let Some(j) = b.index_of(&partner) {
-                        h.block(a.offset(i), b.offset(j), &hop.matrix, factor, true);
+                        h.block(
+                            a.offset(i),
+                            b.offset(j),
+                            &hop.matrix,
+                            self.phased(factor, site, &partner),
+                            true,
+                        );
                     }
                 }
             }
