@@ -33,6 +33,8 @@ use caroli_model::{CMat, Model, SparseMatrix, c64};
 const LEAF_ORBITALS: usize = 16;
 /// A pivot below this fraction of the largest entry of a separator block delays the block.
 const PIVOT_TOL: f64 = 1e-11;
+/// Fronts with fewer variables than this are eliminated by [`small_schur`].
+const SMALL_FRONT: usize = 64;
 
 /// One node of the elimination tree, for one block of orbitals.
 #[derive(Clone, Debug)]
@@ -89,7 +91,8 @@ impl SiteTree {
             })
             .collect();
         symbolic(h, &mut nodes);
-        Tree { nodes, top: self.top.clone() }
+        let plans = (0..nodes.len()).map(|k| Plan::new(h, &nodes, k)).collect();
+        Tree { nodes, top: self.top.clone(), plans }
     }
 }
 
@@ -99,6 +102,80 @@ pub(crate) struct Tree {
     nodes: Vec<Node>,
     /// Children of the root.
     top: Vec<usize>,
+    /// The assembly of each front when nothing below it was delayed.
+    plans: Vec<Plan>,
+}
+
+/// How a front is assembled when its children hand over exactly their boundaries (no delayed
+/// variable): computed once with the tree, instead of sorting and searching the variables at
+/// every energy.
+#[derive(Clone, Debug)]
+struct Plan {
+    /// Variables of the front: those eliminated here (sorted), then the boundary.
+    vars: Vec<usize>,
+    /// Number of variables eliminated here.
+    ne: usize,
+    /// Positions of the own separator (they get `z` on the diagonal).
+    diagonal: Vec<usize>,
+    /// Entries of `H` in the front: `(row, column, value)`.
+    entries: Vec<(usize, usize, c64)>,
+    /// For each child, where its Schur complement goes (runs, see [`runs`]).
+    children: Vec<Vec<(usize, usize, usize)>>,
+}
+
+impl Plan {
+    fn new(h: &SparseMatrix, nodes: &[Node], k: usize) -> Self {
+        let node = &nodes[k];
+        let children: Vec<&[usize]> = node.children.iter().map(|&c| nodes[c].boundary.as_slice()).collect();
+        let (vars, ne) = front_vars(node, &children);
+        let pos = Positions::new(&vars);
+        let mut entries = Vec::new();
+        separator_entries(h, node, &pos, |a, b, v| entries.push((a, b, v)));
+        Self {
+            diagonal: node.eliminate.iter().map(|&i| pos.get(i).unwrap()).collect(),
+            entries,
+            children: children.iter().map(|vars| runs(vars, &pos)).collect(),
+            vars,
+            ne,
+        }
+    }
+}
+
+/// Variables of the front of `node` whose children hand over `children`: the own separator and
+/// what the children could not eliminate (sorted), then the boundary; and how many are
+/// eliminated here.
+fn front_vars(node: &Node, children: &[&[usize]]) -> (Vec<usize>, usize) {
+    let in_boundary = |o: usize| node.boundary.binary_search(&o).is_ok();
+    let mut elim: Vec<usize> = node.eliminate.clone();
+    for vars in children {
+        elim.extend(vars.iter().copied().filter(|&o| !in_boundary(o)));
+    }
+    elim.sort_unstable();
+    elim.dedup();
+    let ne = elim.len();
+    elim.extend_from_slice(&node.boundary);
+    (elim, ne)
+}
+
+/// Entries of `H` that the separator of `node` brings to its front: with every later variable
+/// (the rest of the separator after it, and the boundary); the earlier ones were assembled where
+/// those were eliminated, and a child's delayed variables already carry theirs.
+fn separator_entries(h: &SparseMatrix, node: &Node, pos: &Positions, mut add: impl FnMut(usize, usize, c64)) {
+    let in_boundary = |o: usize| node.boundary.binary_search(&o).is_ok();
+    for &i in &node.eliminate {
+        let pi = pos.get(i).unwrap();
+        for (j, hij) in h.row(i) {
+            if j == i {
+                add(pi, pi, hij);
+            } else if let Some(pj) = pos.get(j) {
+                let later = if node.eliminate.binary_search(&j).is_ok() { j > i } else { in_boundary(j) };
+                if later {
+                    add(pi, pj, hij);
+                    add(pj, pi, hij.conj());
+                }
+            }
+        }
+    }
 }
 
 /// What a front passes to its parent: its remaining variables and their Schur complement, and,
@@ -215,38 +292,38 @@ impl Tree {
     fn front(&self, h: &SparseMatrix, k: usize, z: c64, keep: bool) -> Result<Front, GreenError> {
         let node = &self.nodes[k];
         let kids = self.fronts(h, &node.children, z, keep)?;
-        let in_boundary = |o: usize| node.boundary.binary_search(&o).is_ok();
-        // Own separator, plus variables the children could not eliminate.
-        let mut elim: Vec<usize> = node.eliminate.clone();
-        for kid in &kids {
-            elim.extend(kid.vars.iter().copied().filter(|&o| !in_boundary(o)));
-        }
-        elim.sort_unstable();
-        elim.dedup();
-        let vars: Vec<usize> = elim.iter().chain(&node.boundary).copied().collect();
-        let pos = Positions::new(&vars);
-        let mut f = CMat::zeros(vars.len(), vars.len());
-        // Entries of the own separator with every later variable (the earlier ones were
-        // assembled where those were eliminated).
-        for &i in &node.eliminate {
-            let pi = pos.get(i).unwrap();
-            f[(pi, pi)] += z;
-            for (j, hij) in h.row(i) {
-                if j == i {
-                    f[(pi, pi)] -= hij;
-                } else if let Some(pj) = pos.get(j) {
-                    // Later variables only: the rest of the own separator after i, and the
-                    // boundary. A child's delayed variables already carry these entries.
-                    let later = if node.eliminate.binary_search(&j).is_ok() { j > i } else { in_boundary(j) };
-                    if later {
-                        f[(pi, pj)] -= hij;
-                        f[(pj, pi)] -= hij.conj();
-                    }
-                }
+        let plan = &self.plans[k];
+        let planned = kids.iter().zip(&node.children).all(|(kid, &c)| kid.vars == self.nodes[c].boundary);
+        let (vars, ne, f, children) = if planned {
+            let n = plan.vars.len();
+            let mut f = CMat::zeros(n, n);
+            for &(a, b, v) in &plan.entries {
+                f[(a, b)] -= v;
             }
-        }
-        let children = extend_add(&mut f, &pos, kids);
-        let ne = elim.len();
+            for &a in &plan.diagonal {
+                f[(a, a)] += z;
+            }
+            let mut factors = Vec::new();
+            for (kid, runs) in kids.into_iter().zip(&plan.children) {
+                add_runs(&mut f, runs, &kid.s);
+                factors.extend(kid.factor);
+            }
+            (None, plan.ne, f, factors)
+        } else {
+            // Variables delayed below: assemble from the actual variables.
+            let handed: Vec<&[usize]> = kids.iter().map(|kid| kid.vars.as_slice()).collect();
+            let (vars, ne) = front_vars(node, &handed);
+            let pos = Positions::new(&vars);
+            let mut f = CMat::zeros(vars.len(), vars.len());
+            separator_entries(h, node, &pos, |a, b, v| f[(a, b)] -= v);
+            for &i in &node.eliminate {
+                let pi = pos.get(i).unwrap();
+                f[(pi, pi)] += z;
+            }
+            let children = extend_add(&mut f, &pos, kids);
+            (Some(vars), ne, f, children)
+        };
+        let vars = || vars.clone().unwrap_or_else(|| plan.vars.clone());
         let delayed = |vars: Vec<usize>, f: CMat, children: Vec<Factor>| Front {
             factor: keep.then(|| Factor {
                 elim: Vec::new(),
@@ -258,16 +335,22 @@ impl Tree {
             s: f,
         };
         if ne == 0 {
-            return Ok(delayed(vars, f, children));
+            return Ok(delayed(vars(), f, children));
         }
-        match schur(&f, ne) {
+        let eliminated = if f.nrows() < SMALL_FRONT { small_schur(&f, ne, keep) } else { schur(&f, ne) };
+        match eliminated {
             Some((s, x)) => Ok(Front {
                 vars: node.boundary.clone(),
                 s,
-                factor: keep.then(|| Factor { elim, boundary: node.boundary.clone(), x, children }),
+                factor: keep.then(|| Factor {
+                    elim: vars()[..ne].to_vec(),
+                    boundary: node.boundary.clone(),
+                    x,
+                    children,
+                }),
             }),
             // Singular separator block: hand the whole front to the parent.
-            None => Ok(delayed(vars, f, children)),
+            None => Ok(delayed(vars(), f, children)),
         }
     }
 }
@@ -991,28 +1074,100 @@ fn symbolic(h: &SparseMatrix, nodes: &mut [Node]) {
 fn extend_add(f: &mut CMat, pos: &Positions, kids: Vec<Front>) -> Vec<Factor> {
     let mut factors = Vec::new();
     for kid in kids {
-        let map: Vec<usize> =
-            kid.vars.iter().map(|&o| pos.get(o).expect("child variable in the parent front")).collect();
-        // Runs of consecutive positions `(first in the child, first in the parent, length)`:
-        // the variables are sorted on both sides, so a few runs cover a column.
-        let mut runs: Vec<(usize, usize, usize)> = Vec::new();
-        for (a, &pa) in map.iter().enumerate() {
-            match runs.last_mut() {
-                Some((a0, p0, len)) if *a0 + *len == a && *p0 + *len == pa => *len += 1,
-                _ => runs.push((a, pa, 1)),
-            }
-        }
-        for (b, &pb) in map.iter().enumerate() {
-            let (src, dst) = (kid.s.col_as_slice(b), f.col_as_slice_mut(pb));
-            for &(a0, p0, len) in &runs {
-                for (d, s) in dst[p0..p0 + len].iter_mut().zip(&src[a0..a0 + len]) {
-                    *d += s;
-                }
-            }
-        }
+        add_runs(f, &runs(&kid.vars, pos), &kid.s);
         factors.extend(kid.factor);
     }
     factors
+}
+
+/// Where the variables `vars` sit in a front with positions `pos`, as runs of consecutive
+/// positions `(first in vars, first in the front, length)`: both sides are sorted, so a few runs
+/// cover a column.
+fn runs(vars: &[usize], pos: &Positions) -> Vec<(usize, usize, usize)> {
+    let mut runs: Vec<(usize, usize, usize)> = Vec::new();
+    for (a, &o) in vars.iter().enumerate() {
+        let pa = pos.get(o).expect("child variable in the parent front");
+        match runs.last_mut() {
+            Some((a0, p0, len)) if *a0 + *len == a && *p0 + *len == pa => *len += 1,
+            _ => runs.push((a, pa, 1)),
+        }
+    }
+    runs
+}
+
+/// `f[p, q] += s[a, b]` for the positions `p`, `q` of `a`, `b` given by `runs`.
+fn add_runs(f: &mut CMat, runs: &[(usize, usize, usize)], s: &CMat) {
+    for &(b0, q0, width) in runs {
+        for b in 0..width {
+            let (src, dst) = (s.col_as_slice(b0 + b), f.col_as_slice_mut(q0 + b));
+            for &(a0, p0, len) in runs {
+                for (d, x) in dst[p0..p0 + len].iter_mut().zip(&src[a0..a0 + len]) {
+                    *d += x;
+                }
+            }
+        }
+    }
+}
+
+/// [`schur`] for a small front: Gaussian elimination in a copy of `f`, without calls to the
+/// dense library or other allocations; `X` only when `want_x`. Partial pivoting within the
+/// separator rows, with the same stability test.
+pub(crate) fn small_schur(f: &CMat, ne: usize, want_x: bool) -> Option<(CMat, CMat)> {
+    let n = f.nrows();
+    let nb = n - ne;
+    let scale = (0..ne)
+        .map(|j| f.col_as_slice(j)[..ne].iter().map(|x| x.norm()).fold(0.0, f64::max))
+        .fold(0.0, f64::max);
+    let mut w = f.clone();
+    let mut lk: Vec<c64> = Vec::with_capacity(n);
+    for k in 0..ne {
+        let (p, big) =
+            (k..ne).map(|i| (i, w[(i, k)].norm())).fold((k, -1.0), |a, b| if b.1 > a.1 { b } else { a });
+        let stable = big > PIVOT_TOL * scale; // false for NaN
+        if !stable {
+            return None;
+        }
+        if p != k {
+            for j in 0..n {
+                w.col_as_slice_mut(j).swap(p, k);
+            }
+        }
+        let inv = c64::new(1.0, 0.0) / w[(k, k)];
+        for v in &mut w.col_as_slice_mut(k)[k + 1..] {
+            *v *= inv;
+        }
+        // Rank-one update of the trailing columns.
+        lk.clear();
+        lk.extend_from_slice(&w.col_as_slice(k)[k + 1..]);
+        for j in k + 1..n {
+            let col = w.col_as_slice_mut(j);
+            let ukj = col[k];
+            if ukj != c64::new(0.0, 0.0) {
+                for (c, l) in col[k + 1..].iter_mut().zip(&lk) {
+                    *c -= l * ukj;
+                }
+            }
+        }
+    }
+    let s = CMat::from_fn(nb, nb, |i, j| w[(ne + i, ne + j)]);
+    let x = if want_x {
+        // X = U⁻¹ U12, with U12 = L⁻¹ P f12 in the top right block.
+        let mut x = CMat::from_fn(ne, nb, |i, j| w[(i, ne + j)]);
+        for j in 0..nb {
+            let col = x.col_as_slice_mut(j);
+            for i in (0..ne).rev() {
+                let v = col[i] / w[(i, i)];
+                col[i] = v;
+                for (l, c) in col[..i].iter_mut().enumerate() {
+                    *c -= w[(l, i)] * v;
+                }
+            }
+        }
+        x
+    } else {
+        CMat::zeros(ne, 0)
+    };
+    Some((s, x))
 }
 
 /// Schur complement `S = f22 − f21 X` of the leading `ne × ne` block of `f`, with

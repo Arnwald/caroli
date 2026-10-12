@@ -331,3 +331,10 @@ Golden cases with disorder use the same impurity configurations as the thesis.
       `H1 = c·1` computes the spectrum of its cell once (`ModeSolver`, kept by the solvers).
       Square lattice at W = 256: 9.1 → 12.9 energies/s on one thread, 65 → 77 on 14
       (graphene at W = 128 +12 % and +8 %, BHZ +6 % and +4 %).
+    - Fronts below 64 variables cost as much as the large ones (square lattice at W = 256): the
+      time went to calls, copies and index searches, not arithmetic. Each front now has an
+      assembly plan computed with the tree (its variables, the positions of its `H` entries and
+      of its children's Schur complements), used whenever nothing below it was delayed, and
+      small fronts are eliminated by plain Gaussian elimination without the dense library.
+      +12 % on the square lattice at W = 256, +9 % at W = 512 (M5, one thread); graphene and
+      BHZ, dominated by their leads, do not change.
