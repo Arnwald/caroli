@@ -15,11 +15,13 @@ pub mod modes;
 pub mod multi;
 pub mod nested;
 pub mod nested_multi;
+mod smatrix;
 mod two_terminal;
 
 pub use multi::{AttachedLead, Interface, MultiSolution, MultiTerminal, lead_voltages};
 pub use nested::{BondCurrent, LeadSelfEnergies, NestedTwoTerminal, ScatteringStates};
 pub use nested_multi::{NestedMultiTerminal, SectorTransmissions};
+pub use smatrix::SMatrix;
 pub use two_terminal::{EndToEnd, Lead, SelfEnergyMethod, Sweeps, TwoTerminal};
 
 use caroli_dense::Lu;

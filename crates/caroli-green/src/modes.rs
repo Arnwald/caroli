@@ -59,6 +59,14 @@ pub struct LeadModes {
     /// Velocities of the propagating modes: right-going (> 0) and left-going (< 0).
     pub right_velocities: Vec<f64>,
     pub left_velocities: Vec<f64>,
+    /// The propagating modes `ψ_n = φ λ^n` on a cell (`φ` in columns, in the order of the
+    /// velocities), normalised to unit current: `J(φ, φ) = ±1` with the current
+    /// `J(a, b) = i(a_n† H1 b_{n+1} − a_{n+1}† H1† b_n)`.
+    pub right_modes: CMat,
+    pub left_modes: CMat,
+    /// Their Bloch factors `λ` (`|λ| = 1`).
+    pub right_lambdas: Vec<c64>,
+    pub left_lambdas: Vec<c64>,
     /// Energy at which the modes were computed (shifted off a band edge or a surface state).
     pub energy: c64,
 }
@@ -159,6 +167,10 @@ impl LeadModes {
                 left: CMat::zeros(0, 0),
                 right_velocities: Vec::new(),
                 left_velocities: Vec::new(),
+                right_modes: CMat::zeros(n, 0),
+                left_modes: CMat::zeros(n, 0),
+                right_lambdas: Vec::new(),
+                left_lambdas: Vec::new(),
                 energy: z,
             });
         }
@@ -292,6 +304,9 @@ impl LeadModes {
         // group; otherwise each eigenvector is back-substituted within the group too, and a Jordan
         // block (subband edge) shows up as nearly parallel vectors.
         let tnorm = ta.norm_max();
+        // Unit-current mode vectors and their Bloch factors, going right and going left.
+        type Modes = Vec<(Vec<c64>, c64)>;
+        let (mut right_phi, mut left_phi): (Modes, Modes) = (Vec::new(), Vec::new());
         let mut groups: Vec<(usize, usize, bool)> = Vec::new();
         let mut g0 = n_re;
         while g0 < m2 && keys_a[g0] != LEFT {
@@ -375,17 +390,25 @@ impl LeadModes {
                 product(fg, Op::Plain, coeffs.as_ref(), Op::Plain),
                 product(xg, Op::Plain, coeffs.as_ref(), Op::Plain),
             );
+            // The Bloch factor of a group: the mean of its members (equal to 1e-7).
+            let mean = lams[p0..p0 + m].iter().sum::<c64>() / m as f64;
+            let lambda = mean / mean.norm();
             for k in 0..m {
                 let vk = vel[k].re / phi_k.col_as_slice(k).iter().map(|z| z.norm_sqr()).sum::<f64>();
                 if vk.is_nan() || vk.abs() < VELOCITY_TOL * scale {
                     return Err(GreenError::Singular(z.re)); // subband edge
                 }
+                // J(φ_k, φ_k) = vel_k: unit current.
+                let flux: Vec<c64> =
+                    phi_k.col_as_slice(k).iter().map(|z| z / vel[k].re.abs().sqrt()).collect();
                 if vk > 0.0 {
                     right.push(x_k.col_as_slice(k).to_vec());
                     rv.push(vk);
+                    right_phi.push((flux, lambda));
                 } else {
                     left.push(x_k.col_as_slice(k).to_vec());
                     lv.push(vk);
+                    left_phi.push((flux, lambda));
                 }
             }
         }
@@ -414,7 +437,20 @@ impl LeadModes {
         if !invertible(rows(&xb, 0..r)) || !invertible(rows(&yb, r..m2)) {
             return Err(GreenError::Singular(z.re));
         }
-        Ok(Self { u, v, right: xb, left: yb, right_velocities: rv, left_velocities: lv, energy: z })
+        let columns = |modes: &[(Vec<c64>, c64)]| CMat::from_fn(n, modes.len(), |i, c| modes[c].0[i]);
+        Ok(Self {
+            u,
+            v,
+            right: xb,
+            left: yb,
+            right_velocities: rv,
+            left_velocities: lv,
+            right_modes: columns(&right_phi),
+            left_modes: columns(&left_phi),
+            right_lambdas: right_phi.iter().map(|m| m.1).collect(),
+            left_lambdas: left_phi.iter().map(|m| m.1).collect(),
+            energy: z,
+        })
     }
 
     /// Number of propagating channels in each direction.
@@ -548,6 +584,10 @@ impl DefiniteCoupling {
             rv.push(v);
             lv.push(-v);
         }
+        // ψ is P-normalised, so J(ψ, ψ) = −2 s Im λ: unit current after dividing by its root.
+        let flux = CMat::from_fn(n, propagating.len(), |i, c| {
+            psi[(i, c)] / (2.0 * right[propagating[c]].im.abs()).sqrt()
+        });
         let basis = |lams: &[c64]| {
             CMat::from_fn(2 * n, n, |p, k| {
                 let c = 1.0 / (1.0 + lams[k].norm_sqr()).sqrt();
@@ -561,6 +601,10 @@ impl DefiniteCoupling {
             left: basis(&left),
             right_velocities: rv,
             left_velocities: lv,
+            right_modes: flux.clone(),
+            left_modes: flux,
+            right_lambdas: propagating.iter().map(|&k| right[k]).collect(),
+            left_lambdas: propagating.iter().map(|&k| left[k]).collect(),
             energy: c64::new(e, 0.0),
         })
     }

@@ -317,3 +317,95 @@ fn andreev_reflection() {
         assert!((andreev - n).abs() < 0.05 * n, "E = {e}: R_he = {andreev}, {n} channels");
     }
 }
+
+/// The scattering matrix in the basis of the lead modes is unitary, its blocks give the
+/// transmissions, and a clean ribbon sends each mode straight through.
+#[test]
+fn scattering_matrix() {
+    let check = |name: &str, sys: &NestedMultiTerminal, energies: &[f64]| {
+        for &e in energies {
+            let s = sys.smatrix(e).unwrap();
+            let full = s.full();
+            let n = full.ncols();
+            assert_eq!(full.nrows(), n, "{name}, E = {e}: as many outgoing as incoming modes");
+            let unitarity = (full.adjoint() * &full - CMat::identity(n, n)).norm_max();
+            assert!(unitarity < 1e-9, "{name}, E = {e}: S†S − 1 = {unitarity:e}");
+            let t = sys.transmissions(e).unwrap();
+            for (p, row) in t.iter().enumerate() {
+                for (q, &tpq) in row.iter().enumerate().filter(|&(q, _)| q != p) {
+                    assert!((s.transmission(p, q) - tpq).abs() < 1e-9, "{name}, E = {e}: T[{p}][{q}]");
+                }
+            }
+        }
+    };
+    let (region, interfaces) = cross(square().lattice(), 9, 7, 3);
+    check(
+        "square cross",
+        &NestedMultiTerminal::from_model(&disordered(square(), 1.5, 1), &square(), &region, &interfaces),
+        &[-2.7, -0.4, 1.3],
+    );
+    let clean_bhz = bhz(BhzParams::default());
+    let (region, interfaces) = cross(clean_bhz.lattice(), 8, 6, 2);
+    let device = disordered(bhz(BhzParams::default()), 0.5, 4);
+    check(
+        "BHZ cross",
+        &NestedMultiTerminal::from_model(&device, &clean_bhz, &region, &interfaces),
+        &[-0.2, 0.02, 0.3],
+    );
+    let (region, interfaces) = cross(square().lattice(), 10, 10, 3);
+    let field = square().with_field(0.15);
+    check(
+        "Hall cross",
+        &NestedMultiTerminal::from_model(
+            &disordered(square(), 0.8, 1).with_field(0.15),
+            &field,
+            &region,
+            &interfaces,
+        ),
+        &[-3.2, -1.4, 0.5],
+    );
+    let g = graphene();
+    let lat = g.lattice().clone();
+    let cells = (0..7)
+        .flat_map(|x| (0..6).map(move |y| (x, y)))
+        .chain((-2..0).flat_map(|x| (2..4).map(move |y| (x, y))));
+    let region = Region::from_sites(&lat, sites(&lat, cells));
+    let interfaces = [
+        Interface {
+            slice: Region::from_sites(&lat, sites(&lat, (2..4).map(|y| (-2, y)))),
+            outward: [-1, 0, 0],
+        },
+        Interface {
+            slice: Region::from_sites(&lat, sites(&lat, (0..6).map(|y| (6, y)))),
+            outward: [1, 0, 0],
+        },
+    ];
+    check(
+        "graphene",
+        &NestedMultiTerminal::from_model(&disordered(graphene(), 0.8, 1), &g, &region, &interfaces),
+        &[-1.4, 0.45, 1.3],
+    );
+
+    // Clean ribbon: |S_RL| is a permutation (each mode goes straight through).
+    let region = Region::cuboid(square().lattice(), [8, 9, 0]);
+    let slices = region.slices(0);
+    let interfaces = [
+        Interface { slice: slices[0].clone(), outward: [-1, 0, 0] },
+        Interface { slice: slices[7].clone(), outward: [1, 0, 0] },
+    ];
+    let sys = NestedMultiTerminal::from_model(&square(), &square(), &region, &interfaces);
+    for e in [-2.9, -1.1, 0.3, 1.7] {
+        let s = sys.smatrix(e).unwrap();
+        let t = &s.blocks[1][0];
+        for c in 0..t.ncols() {
+            let moduli: Vec<f64> = (0..t.nrows()).map(|r| t[(r, c)].norm()).collect();
+            assert_eq!(
+                moduli.iter().filter(|&&m| (m - 1.0).abs() < 1e-9).count(),
+                1,
+                "E = {e}: column {c}: {moduli:?}"
+            );
+            assert_eq!(moduli.iter().filter(|&&m| m < 1e-9).count(), t.nrows() - 1, "E = {e}: column {c}");
+        }
+        assert!(s.blocks[0][0].norm_max() < 1e-9, "E = {e}: no reflection");
+    }
+}

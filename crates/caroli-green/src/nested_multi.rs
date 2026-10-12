@@ -14,10 +14,12 @@ use crate::multi::{AttachedLead, Interface, attach_leads};
 use crate::nested::{
     BondCurrent, Components, Factor, Root, ScatteringStates, SiteTree, Tree, gamma_root, schur,
 };
+use crate::smatrix::{LeadSolution, SMatrix, ScatteringLead, scattering_blocks};
 use crate::{GreenError, SelfEnergyMethod, broadening, trace};
 use caroli_dense::Lu;
 use caroli_lattice::Region;
 use caroli_model::{CMat, Model, SparseMatrix, c64};
+use std::rc::Rc;
 
 /// One independent block of orbitals: its elimination tree and the part of each lead it reaches.
 #[derive(Clone, Debug)]
@@ -398,6 +400,63 @@ impl NestedMultiTerminal {
             })
             .collect();
         Ok(ScatteringStates { energy, leads })
+    }
+
+    /// Scattering matrix at `energy` in the basis of the propagating lead modes, as
+    /// `kwant.smatrix` (see [`SMatrix`]).
+    pub fn smatrix(&self, energy: f64) -> Result<SMatrix, GreenError> {
+        let z = c64::new(energy, 0.0);
+        let mut parts = Vec::with_capacity(self.blocks.len());
+        for block in &self.blocks {
+            // Every distinct lead once.
+            let mut solved: Vec<(usize, Rc<LeadSolution>)> = Vec::new();
+            let mut solutions: Vec<Option<Rc<LeadSolution>>> = Vec::with_capacity(self.lead_count);
+            for (p, l) in block.leads.iter().enumerate() {
+                let Some(l) = l else {
+                    solutions.push(None);
+                    continue;
+                };
+                let known = solved.iter().find(|(k, _)| {
+                    let m = block.leads[*k].as_ref().unwrap();
+                    m.h00 == l.h00 && m.h01 == l.h01
+                });
+                let solution = match known {
+                    Some((_, s)) => s.clone(),
+                    None => Rc::new(LeadSolution::new(&l.h00, &l.h01, z)?),
+                };
+                if known.is_none() {
+                    solved.push((p, solution.clone()));
+                }
+                solutions.push(Some(solution));
+            }
+            let sigmas: Vec<Option<CMat>> = block
+                .leads
+                .iter()
+                .zip(&solutions)
+                .map(|(l, s)| l.as_ref().zip(s.as_ref()).map(|(l, s)| s.self_energy(&l.coupling)))
+                .collect();
+            let (kept, s, _) = self.root(block, energy, &sigmas, false)?;
+            let k = kept.len();
+            let green = Lu::new(s.as_ref()).solve(CMat::identity(k, k).as_ref());
+            if !green.norm_max().is_finite() {
+                return Err(GreenError::Singular(energy));
+            }
+            let leads: Vec<Option<ScatteringLead>> = block
+                .leads
+                .iter()
+                .zip(solutions)
+                .map(|(l, s)| {
+                    l.as_ref().zip(s).map(|(l, solution)| ScatteringLead {
+                        at: index(&kept, l),
+                        coupling: l.coupling.clone(),
+                        h01: l.h01.clone(),
+                        solution,
+                    })
+                })
+                .collect();
+            parts.push(scattering_blocks(&green, &leads));
+        }
+        Ok(SMatrix::assemble(energy, parts))
     }
 
     /// Spectral bond currents `2 Re Tr[H_ij G^<_ji]` between every pair of coupled sites, from

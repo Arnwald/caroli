@@ -218,3 +218,83 @@ fn definite_couplings_fast_path() {
         }
     }
 }
+
+/// The propagating modes solve the Bloch equation `H1† λ⁻¹ φ + (H0 − E) φ + H1 λ φ = 0` and are
+/// orthonormal for the current `J(a, b) = i(φ_a† H1 φ_b λ_b − λ̄_a φ_a† H1† φ_b)`: +1 going right,
+/// −1 going left, 0 between different modes. Fast path (strip), degenerate channels (spinful
+/// strip, BHZ) and the general algorithm (graphene, a field).
+#[test]
+fn propagating_modes_carry_unit_current() {
+    use caroli_green::modes::LeadModes;
+    let zero = c64::new(0.0, 0.0);
+    let square = Model::new(Lattice::square(1.0, 1)).hopping(0, 0, [1, 0, 0], one(-1.0)).hopping(
+        0,
+        0,
+        [0, 1, 0],
+        one(-1.0),
+    );
+    let bhz = caroli_model::presets::bhz(caroli_model::presets::BhzParams::default());
+    let field = Model::new(Lattice::square(1.0, 1))
+        .hopping(0, 0, [1, 0, 0], one(-1.0))
+        .hopping(0, 0, [0, 1, 0], one(-1.0))
+        .with_field(0.2);
+    let lead_of = |m: &Model, w: usize| {
+        let region = Region::cuboid(m.lattice(), [3, w, 0]);
+        TwoTerminal::from_model(m, m, &region, 0).left
+    };
+    let leads = [
+        ("strip", lead_of(&square, 9), vec![-2.7, -0.4, 1.1]),
+        ("BHZ", lead_of(&bhz, 7), vec![-0.3, 0.02, 0.6]),
+        ("graphene", lead_of(&graphene(), 6), vec![-1.3, 0.45, 2.1]),
+        ("field", lead_of(&field, 12), vec![-3.6, -2.1, 0.7]),
+    ];
+    for (name, lead, energies) in leads {
+        for e in energies {
+            let m = LeadModes::new(&lead.h00, &lead.h01, e).unwrap();
+            let (h0, h1) = (&lead.h00, &lead.h01);
+            let n = h0.nrows();
+            let modes: Vec<(Vec<c64>, c64, f64)> = (0..m.right_modes.ncols())
+                .map(|c| (m.right_modes.col_as_slice(c).to_vec(), m.right_lambdas[c], 1.0))
+                .chain(
+                    (0..m.left_modes.ncols())
+                        .map(|c| (m.left_modes.col_as_slice(c).to_vec(), m.left_lambdas[c], -1.0)),
+                )
+                .collect();
+            assert_eq!(m.right_modes.ncols(), m.channels());
+            for (phi, lambda, _) in &modes {
+                let residual = (0..n)
+                    .map(|i| {
+                        (0..n)
+                            .map(|j| {
+                                h1[(j, i)].conj() * phi[j] / lambda
+                                    + (h0[(i, j)] - if i == j { c64::new(e, 0.0) } else { zero }) * phi[j]
+                                    + h1[(i, j)] * phi[j] * lambda
+                            })
+                            .sum::<c64>()
+                            .norm()
+                    })
+                    .fold(0.0, f64::max);
+                assert!(residual < 1e-8, "{name}, E = {e}: Bloch residual {residual:e}");
+            }
+            let current = |a: &(Vec<c64>, c64, f64), b: &(Vec<c64>, c64, f64)| {
+                let (pa, la, _) = a;
+                let (pb, lb, _) = b;
+                let h1b: Vec<c64> = (0..n).map(|i| (0..n).map(|j| h1[(i, j)] * pb[j]).sum()).collect();
+                let h1db: Vec<c64> =
+                    (0..n).map(|i| (0..n).map(|j| h1[(j, i)].conj() * pb[j]).sum()).collect();
+                let dot = |x: &[c64], y: &[c64]| x.iter().zip(y).map(|(p, q)| p.conj() * q).sum::<c64>();
+                c64::new(0.0, 1.0) * (dot(pa, &h1b) * lb - la.conj() * dot(pa, &h1db))
+            };
+            for (k, a) in modes.iter().enumerate() {
+                for (l, b) in modes.iter().enumerate() {
+                    let expected = if k == l { a.2 } else { 0.0 };
+                    let j = current(a, b);
+                    assert!(
+                        (j - c64::new(expected, 0.0)).norm() < 1e-7,
+                        "{name}, E = {e}: J[{k}][{l}] = {j}"
+                    );
+                }
+            }
+        }
+    }
+}

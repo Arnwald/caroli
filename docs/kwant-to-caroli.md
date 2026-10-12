@@ -68,6 +68,7 @@ A lead must be the same from cell to cell. The constructors check it, and in a u
 | Kwant | caroli |
 |---|---|
 | `kwant.smatrix(fsys, E).transmission(1, 0)` | `sys.transmission(E)` (two terminals) |
+| `kwant.smatrix(fsys, E)` (mode basis) | `sys.smatrix(E)`: blocks `S_pq`, Bloch factors of the modes, `full()` |
 | all `transmission(p, q)` | `sys.transmissions(E)[p][q]` (from `q` into `p`) |
 | conservation law, `transmission((p, a), (q, b))` | `sys.sector_transmissions(E, &sectors)` |
 | conductance matrix, then resistances | `lead_voltages(&t, &currents, ground)` |
@@ -82,7 +83,7 @@ A lead must be the same from cell to cell. The constructors check it, and in a u
 `ScatteringStates` holds one matrix per lead (rows: device orbitals; columns: channels). The
 scattering states mix the channels of a lead by a unitary, which leaves densities, currents and
 transmissions unchanged. Mode-resolved quantities (which incoming mode goes to which outgoing
-one) need the scattering matrix in the mode basis, still to do.
+one) come from `smatrix`, whose modes carry unit current.
 
 The Hall bar of the tutorials, with a current from the left lead to the grounded right lead and
 the bottom and top leads as voltage probes:
@@ -112,5 +113,4 @@ let hall = v[3] - v[2]; // ±h/(ν e²) on the plateaus
 
 ## Not yet in caroli
 
-The scattering matrix in the basis of lead modes, discretisation of continuum (k·p) models,
-symmetry analysis (qsymm) and plotting.
+Discretisation of continuum (k·p) models, symmetry analysis (qsymm) and plotting.

@@ -175,3 +175,30 @@ fn cubic_samples() {
         }
     }
 }
+
+/// The two-terminal scattering matrix is unitary and equals the multi-terminal one of the same
+/// ribbon (disordered, and in a field).
+#[test]
+fn two_terminal_scattering_matrix() {
+    use caroli_green::{Interface, NestedMultiTerminal};
+    let region = Region::cuboid(square().lattice(), [10, 7, 0]);
+    let slices = region.slices(0);
+    let interfaces = [
+        Interface { slice: slices[0].clone(), outward: [-1, 0, 0] },
+        Interface { slice: slices[9].clone(), outward: [1, 0, 0] },
+    ];
+    for (device, lead) in [
+        (disordered(square(), 2.0, 1), square()),
+        (disordered(square(), 1.0, 1).with_field(0.2), square().with_field(0.2)),
+    ] {
+        let two = NestedTwoTerminal::from_model(&device, &lead, &region, 0);
+        let multi = NestedMultiTerminal::from_model(&device, &lead, &region, &interfaces);
+        for e in [-2.6, -0.9, 0.4, 1.8] {
+            let (s2, sm) = (two.smatrix(e).unwrap().full(), multi.smatrix(e).unwrap().full());
+            let n = s2.ncols();
+            assert!((s2.adjoint() * &s2 - CMat::identity(n, n)).norm_max() < 1e-9, "E = {e}: unitarity");
+            assert!((&s2 - &sm).norm_max() < 1e-9, "E = {e}: two-terminal and multi-terminal S differ");
+            assert!((two.smatrix(e).unwrap().transmission(1, 0) - two.transmission(e).unwrap()).abs() < 1e-9);
+        }
+    }
+}

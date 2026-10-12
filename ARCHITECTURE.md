@@ -148,6 +148,13 @@ The dependencies only go downward: lattice ← model ← green ← caroli, and d
     within one lead they are reflection probabilities between sectors, such as Andreev
     reflection. Tests: no spin flip in BHZ, the sectors add up to `T_pq`, and an NS junction
     reflects electrons as holes below the gap.
+  - `smatrix` (both nested solvers): the scattering matrix in the basis of the propagating
+    lead modes, as `kwant.smatrix`. `LeadModes` keeps the propagating modes normalised to unit
+    current. An incoming mode `φ λ^n` acts on the device as the source `V (λ − g H1†) φ`; the
+    outgoing wave on the first lead cell is `g V† ψ_D` (minus `g H1† φ` in the incoming lead),
+    and its amplitude on each outgoing mode is its current overlap with it. Tests: unitarity to
+    1e-9 (crosses of square and BHZ lattices, graphene, a field), `Σ |S_pq|² = T_pq`, a clean
+    ribbon sends each mode straight through, and the two solvers give the same matrix.
   - `NestedTwoTerminal::transmission_eigenvalues` (squared singular values of
     `W_L† G_LR W_R`) and `fano_factor` (shot noise); `Lead::bands` for lead band structures.
   - Both solvers split independent blocks of orbitals, such as the spin blocks of BHZ.

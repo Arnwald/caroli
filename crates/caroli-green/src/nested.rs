@@ -573,6 +573,45 @@ impl NestedTwoTerminal {
         parts.into_iter().sum()
     }
 
+    /// Scattering matrix at `energy` in the basis of the propagating lead modes (lead 0 on the
+    /// left, lead 1 on the right), as `kwant.smatrix` (see [`crate::SMatrix`]).
+    pub fn smatrix(&self, energy: f64) -> Result<crate::SMatrix, GreenError> {
+        use crate::smatrix::{BlockScattering, LeadSolution, ScatteringLead, scattering_blocks};
+        use std::rc::Rc;
+        let z = c64::new(energy, 0.0);
+        let mut parts: Vec<BlockScattering> = Vec::with_capacity(self.blocks.len());
+        for block in &self.blocks {
+            // Each lead seen from the device: cells going away from it, coupled to the end slice.
+            let left_out = block.left.h01.adjoint().to_owned();
+            let left = Rc::new(LeadSolution::new(&block.left.h00, &left_out, z)?);
+            let right = Rc::new(LeadSolution::new(&block.right.h00, &block.right.h01, z)?);
+            let (sigma_l, sigma_r) = (left.self_energy(&left_out), right.self_energy(&block.right.h01));
+            let root = self.root_with_leads(block, z, &sigma_l, &sigma_r, false)?;
+            let k = root.s.nrows();
+            let green = Lu::new(root.s.as_ref()).solve(CMat::identity(k, k).as_ref());
+            if !green.norm_max().is_finite() {
+                return Err(GreenError::Singular(energy));
+            }
+            let (nl, nr) = (block.left_orbitals.len(), block.right_orbitals.len());
+            let leads = [
+                Some(ScatteringLead {
+                    at: (0..nl).collect(),
+                    coupling: left_out.clone(),
+                    h01: left_out,
+                    solution: left,
+                }),
+                Some(ScatteringLead {
+                    at: (root.right..root.right + nr).collect(),
+                    coupling: block.right.h01.clone(),
+                    h01: block.right.h01.clone(),
+                    solution: right,
+                }),
+            ];
+            parts.push(scattering_blocks(&green, &leads));
+        }
+        Ok(crate::SMatrix::assemble(energy, parts))
+    }
+
     /// Transmission eigenvalues `τ_n` at `energy`, in decreasing order: the squared singular
     /// values of `t = W_L† G_LR W_R` (`W_p W_p† = Γ_p`), the same as those of the transmission
     /// block of the scattering matrix. Their sum is the transmission.
