@@ -11,7 +11,10 @@ color 1 to x - 1), spin configuration s (bit e is the spin of edge e = (e, e + 1
 Initial state: walker on color 0 of node 0, every spin along +x.
 
 Usage: python reference.py METHOD N STEPS [THETA J]
-Prints one JSON line: seconds per step, the build time (sparse), and p(x) after the steps.
+       python reference.py phase N STEPS THETA J SPINS   (SPINS: x or z)
+Prints one JSON line: seconds per step, the build time (sparse), and p(x) after the steps; or,
+for `phase`, the time of a whole run of the phase-space scan (Fig. 21 of the paper): the
+time-averaged p(x) and its Kolmogorov-Smirnov distance to the uniform distribution.
 """
 
 import json
@@ -74,7 +77,44 @@ def numpy_step(P, n, c, s, p, alpha, beta):
         B[:, 1] = p * a1
 
 
+def initial_at(n, x0, spins):
+    """Walker on color 0 of node x0; spins all up ('z') or all along +x ('x')."""
+    L = 1 << n
+    psi = np.zeros(2 * n * L, dtype=np.complex128)
+    row = 2 * x0 * L
+    if spins == "z":
+        psi[row] = 1.0
+    else:
+        psi[row:row + L] = 2.0 ** (-n / 2)
+    return psi
+
+
+def phase_point(n, steps, theta, J, spins):
+    """Time-averaged position distribution over `steps` steps and its Kolmogorov-Smirnov
+    distance to the uniform one (Sellapillay & Verga, Eq. 31), the walker starting at the
+    middle node."""
+    L = 1 << n
+    t0 = time.perf_counter()
+    u = build_u(n, theta, J)
+    psi = initial_at(n, (n - 1) // 2, spins)
+    acc = np.zeros(n)
+    for _ in range(steps):
+        psi = u @ psi
+        prob = (np.abs(psi.reshape(2 * n, L)) ** 2).sum(axis=1)
+        acc += prob[0::2] + prob[1::2]
+    elapsed = time.perf_counter() - t0
+    p = acc / acc.sum()
+    ks = np.max(np.abs(np.cumsum(p) - np.arange(1, n + 1) / n))
+    return elapsed, ks, p
+
+
 def main():
+    if sys.argv[1] == "phase":
+        n, steps, theta, J, spins = int(sys.argv[2]), int(sys.argv[3]), float(sys.argv[4]), float(sys.argv[5]), sys.argv[6]
+        elapsed, ks, p = phase_point(n, steps, theta, J, spins)
+        print(json.dumps({"method": "phase", "n": n, "steps": steps, "theta": theta, "J": J, "spins": spins,
+                          "seconds": elapsed, "ks": ks, "p": p.tolist()}))
+        return
     method, n, steps = sys.argv[1], int(sys.argv[2]), int(sys.argv[3])
     theta = float(sys.argv[4]) if len(sys.argv) > 4 else np.pi / 8
     J = float(sys.argv[5]) if len(sys.argv) > 5 else 0.2

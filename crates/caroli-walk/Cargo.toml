@@ -12,4 +12,6 @@ caroli-model.workspace = true
 caroli-dense.workspace = true
 caroli-gpu.workspace = true
 faer.workspace = true
+num-complex.workspace = true
+num-traits = "0.2"
 rayon.workspace = true

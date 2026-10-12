@@ -8,6 +8,7 @@ license.workspace = true
 repository.workspace = true
 
 [dependencies]
+caroli-gpu.workspace = true
 caroli-model.workspace = true
 caroli-torus.workspace = true
 faer.workspace = true

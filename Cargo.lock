@@ -132,6 +132,7 @@ dependencies = [
 name = "caroli-dynamics"
 version = "0.1.0"
 dependencies = [
+ "caroli-gpu",
  "caroli-lattice",
  "caroli-model",
  "caroli-torus",
@@ -183,6 +184,7 @@ version = "0.1.0"
 dependencies = [
  "caroli-dense",
  "caroli-disorder",
+ "caroli-gpu",
  "caroli-lattice",
  "caroli-model",
  "caroli-torus",
@@ -242,6 +244,8 @@ dependencies = [
  "caroli-gpu",
  "caroli-model",
  "faer",
+ "num-complex",
+ "num-traits",
  "rayon",
 ]
 

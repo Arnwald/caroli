@@ -66,3 +66,49 @@ pub(crate) fn doubled_moments(s1: &[c64], s2: &[c64], vectors: usize, kernel: &[
         })
         .collect()
 }
+
+/// Where a computation runs.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Device {
+    /// f64 on the CPU.
+    Cpu,
+    /// On the GPU (Metal) in this precision, checked against the CPU.
+    Gpu(Precision),
+}
+
+/// Where a checked computation runs, and the error it may take before the CPU takes over.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Options {
+    pub device: Device,
+    /// Largest relative error accepted, as measured against the CPU on a sample of the work.
+    pub tolerance: f64,
+}
+
+impl Options {
+    /// f64 on the CPU.
+    pub fn cpu() -> Self {
+        Self { device: Device::Cpu, tolerance: 0.0 }
+    }
+
+    /// Fast exploration: the GPU in f32, relative errors up to 10⁻³ accepted.
+    pub fn exploration() -> Self {
+        Self { device: Device::Gpu(Precision::Single), tolerance: 1e-3 }
+    }
+
+    /// The GPU in double-single, relative errors up to 10⁻⁹ accepted.
+    pub fn accurate() -> Self {
+        Self { device: Device::Gpu(Precision::DoubleSingle), tolerance: 1e-9 }
+    }
+}
+
+/// What a checked computation did.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct Report {
+    /// "CPU", or the GPU and its precision.
+    pub ran_on: String,
+    /// Relative deviation from the CPU measured on the checked sample (scaled to the whole
+    /// computation where it grows with it).
+    pub deviation: Option<f64>,
+    /// Why the CPU took over.
+    pub fallback: Option<String>,
+}

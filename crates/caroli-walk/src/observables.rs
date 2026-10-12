@@ -149,6 +149,32 @@ pub fn concurrence(rho: &CMat) -> f64 {
     (l[0] - l[1] - l[2] - l[3]).max(0.0)
 }
 
+/// Kolmogorov–Smirnov distance between a distribution over the nodes and the uniform one,
+/// `max_x |Σ_{y ≤ x} p(y) − (x + 1)/N|` (Sellapillay & Verga, Eq. 31): 0 for a walker spread
+/// evenly, larger for a localized one.
+pub fn ks_distance(p: &[f64]) -> f64 {
+    let (n, total) = (p.len() as f64, p.iter().sum::<f64>());
+    let mut cumulative = 0.0;
+    p.iter()
+        .enumerate()
+        .map(|(x, v)| {
+            cumulative += v / total;
+            (cumulative - (x + 1) as f64 / n).abs()
+        })
+        .fold(0.0, f64::max)
+}
+
+impl SpinWalk {
+    /// Adds `p(x)` to `acc` on the calling thread (for runs side by side, see
+    /// [`SpinWalk::step_serial`]).
+    pub fn accumulate_node_probabilities(&self, psi: &[c64], acc: &mut [f64]) {
+        let graph = self.graph();
+        for (h, row) in psi.chunks(self.row_len()).enumerate() {
+            acc[graph.node_and_color(h).0] += row.iter().map(|z| z.norm_sqr()).sum::<f64>();
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

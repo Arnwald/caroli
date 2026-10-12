@@ -15,7 +15,8 @@
 //! (`caroli_walk::evolve` in f32, tolerance 10⁻³) for 50 × `steps` steps.
 
 use caroli_model::c64;
-use caroli_walk::{Options, PLUS, Precision, SpinWalk, evolve};
+use caroli_walk::observables::ks_distance;
+use caroli_walk::{Options, PLUS, Precision, SpinWalk, UP, evolve, to_double, to_single};
 use serde_json::{Value, json};
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
@@ -47,9 +48,28 @@ fn max_diff(a: &[f64], b: &[f64]) -> f64 {
     a.iter().zip(b).map(|(x, y)| (x - y).abs()).fold(0.0, f64::max)
 }
 
-/// A GitHub runner job in progress (it would perturb the timings).
+/// Whether a GitHub runner job (it would perturb the timings) has been seen since the start: a
+/// thread looks every five seconds.
 fn runner_busy() -> bool {
-    !shell("pgrep", &["-f", "Runner.Worker"]).is_empty()
+    use std::sync::Once;
+    use std::sync::atomic::{AtomicBool, Ordering};
+    static SEEN: AtomicBool = AtomicBool::new(false);
+    static WATCH: Once = Once::new();
+    let look = || !shell("pgrep", &["-f", "Runner.Worker"]).is_empty();
+    WATCH.call_once(|| {
+        std::thread::spawn(move || {
+            loop {
+                if !shell("pgrep", &["-f", "Runner.Worker"]).is_empty() {
+                    SEEN.store(true, Ordering::Relaxed);
+                }
+                std::thread::sleep(std::time::Duration::from_secs(5));
+            }
+        });
+    });
+    if look() {
+        SEEN.store(true, Ordering::Relaxed);
+    }
+    SEEN.swap(false, Ordering::Relaxed)
 }
 
 fn run(args: &[String]) {
@@ -57,7 +77,7 @@ fn run(args: &[String]) {
     let sizes: Vec<usize> = opt("--sizes")
         .map(|s| s.split(',').map(|x| x.parse().expect("size")).collect())
         .unwrap_or_else(|| vec![13, 15, 17, 19]);
-    let steps: usize = opt("--steps").map_or(10, |s| s.parse().expect("steps"));
+    let fixed_steps: Option<usize> = opt("--steps").map(|s| s.parse().expect("steps"));
     let python_max: usize = opt("--python-max-n").map_or(19, |s| s.parse().expect("n"));
     let python = opt("--python").map(PathBuf::from).unwrap_or_else(|| {
         let env = root().join("benchmarks/envs/kwant-accelerate/bin/python");
@@ -71,6 +91,8 @@ fn run(args: &[String]) {
     for &n in &sizes {
         let w = walk(n);
         let dim = w.dimension();
+        // Steps: about a second of Python with U as a sparse matrix, at least 10.
+        let steps = fixed_steps.unwrap_or_else(|| ((5e8 / dim as f64) as usize).clamp(10, 2000));
         let busy_before = runner_busy();
         let mut records: Vec<Value> = Vec::new();
         let mut record = |method: &str, used: usize, seconds: f64, extra: Value| {
@@ -84,6 +106,10 @@ fn run(args: &[String]) {
             println!("{r}");
             records.push(r);
         };
+        // Warm-up (clock and caches): a quarter of the run on a scratch state.
+        let mut scratch = initial(&w);
+        w.steps(&mut scratch, steps / 4 + 1);
+        drop(scratch);
         // caroli, CPU, all threads: the reference p(x) after 1 + steps steps.
         let mut psi = initial(&w);
         w.step(&mut psi);
@@ -92,6 +118,16 @@ fn run(args: &[String]) {
         record("caroli-cpu", threads, start.elapsed().as_secs_f64(), json!({}));
         let p_ref = w.node_probabilities(&psi);
         drop(psi);
+        // caroli, CPU in f32, all threads.
+        {
+            let mut psi = to_single(&initial(&w));
+            w.step(&mut psi);
+            let start = Instant::now();
+            w.steps(&mut psi, steps);
+            let seconds = start.elapsed().as_secs_f64();
+            let dp = max_diff(&w.node_probabilities(&to_double(&psi)), &p_ref);
+            record("caroli-cpu-f32", threads, seconds, json!({"max_dp": dp}));
+        }
         // caroli, CPU, one thread.
         if n <= 21 {
             let one = rayon::ThreadPoolBuilder::new().num_threads(1).build().expect("pool");
@@ -199,7 +235,9 @@ fn gpu_runs(w: &SpinWalk, steps: usize, p_ref: &[f64], record: &mut impl FnMut(&
             continue;
         }
         let Ok(mut gw) = device.walk(&tables, &initial(w), precision) else { continue };
-        gw.steps(1).expect("warm-up");
+        gw.steps(steps / 4 + 1).expect("warm-up");
+        gw.set_state(&initial(w));
+        gw.steps(1).expect("first step");
         let start = Instant::now();
         gw.steps(steps).expect("steps");
         let seconds = start.elapsed().as_secs_f64();
@@ -220,6 +258,128 @@ fn gpu_runs(w: &SpinWalk, steps: usize, p_ref: &[f64], record: &mut impl FnMut(&
                "predicted_error": report.predicted_error, "norm_drift": report.norm_drift,
                "cpu_steps": report.cpu_steps, "gpu_steps": report.gpu_steps}),
     );
+}
+
+/// One run of the phase-space scan: the walker on color 0 of the middle node, spins all up
+/// (`'z'`) or along +x (`'x'`); the time-averaged `p(x)` over `steps` steps and its
+/// Kolmogorov–Smirnov distance to the uniform distribution. On the calling thread.
+fn phase_point(n: usize, steps: usize, theta: f64, j: f64, spins: char, single: bool) -> (f64, Vec<f64>) {
+    let w = SpinWalk::ring(n, theta, j);
+    let state = if spins == 'z' { UP } else { PLUS };
+    let psi = w.product_state(&w.localized((n - 1) / 2, 0), &vec![state; n]);
+    let mut acc = vec![0.0; 2 * n];
+    if single {
+        let mut psi = to_single(&psi);
+        for _ in 0..steps {
+            w.step_serial_accumulate(&mut psi, &mut acc);
+        }
+    } else {
+        let mut psi = psi;
+        for _ in 0..steps {
+            w.step_serial_accumulate(&mut psi, &mut acc);
+        }
+    }
+    let total: f64 = acc.iter().sum();
+    let p: Vec<f64> = acc.chunks(2).map(|h| (h[0] + h[1]) / total).collect();
+    (ks_distance(&p), p)
+}
+
+/// The phase-space scan of Fig. 21 (Sellapillay & Verga): the Kolmogorov–Smirnov distance on a
+/// `grid × grid` mesh of (θ ∈ (0, π/2), J ∈ (0, π)) for the initial spins 'x' and 'z', every
+/// run on one thread and the runs side by side; then the Python reference on a sample of the
+/// runs, extrapolated to the whole scan.
+fn phase(args: &[String]) {
+    use rayon::prelude::*;
+    let opt = |flag: &str| args.iter().position(|a| a == flag).and_then(|i| args.get(i + 1)).cloned();
+    let n: usize = opt("--n").map_or(13, |s| s.parse().expect("n"));
+    let grid: usize = opt("--grid").map_or(64, |s| s.parse().expect("grid"));
+    let steps: usize = opt("--steps").map_or(2000, |s| s.parse().expect("steps"));
+    let sample: usize = opt("--sample").map_or(6, |s| s.parse().expect("sample"));
+    let python = opt("--python").map(PathBuf::from).unwrap_or_else(|| {
+        let env = root().join("benchmarks/envs/kwant-accelerate/bin/python");
+        if env.exists() { env } else { PathBuf::from("python3") }
+    });
+    let thetas: Vec<f64> =
+        (0..grid).map(|i| (i as f64 + 0.5) * std::f64::consts::FRAC_PI_2 / grid as f64).collect();
+    let couplings: Vec<f64> =
+        (0..grid).map(|k| (k as f64 + 0.5) * std::f64::consts::PI / grid as f64).collect();
+    let runs: Vec<(char, usize, usize)> = ['x', 'z']
+        .into_iter()
+        .flat_map(|s| (0..grid).flat_map(move |i| (0..grid).map(move |k| (s, i, k))))
+        .collect();
+    let busy_before = runner_busy();
+    let start = Instant::now();
+    let ks: Vec<f64> = runs
+        .par_iter()
+        .map(|&(s, i, k)| phase_point(n, steps, thetas[i], couplings[k], s, false).0)
+        .collect();
+    let wall = start.elapsed().as_secs_f64();
+    // The same scan with f32 states, checked against f64 on every run.
+    let start = Instant::now();
+    let ks_single: Vec<f64> =
+        runs.par_iter().map(|&(s, i, k)| phase_point(n, steps, thetas[i], couplings[k], s, true).0).collect();
+    let wall_single = start.elapsed().as_secs_f64();
+    let max_dks_single = ks.iter().zip(&ks_single).map(|(a, b)| (a - b).abs()).fold(0.0, f64::max);
+    let threads = rayon::current_num_threads();
+    eprintln!("caroli: {} runs of {steps} steps in {wall:.1} s on {threads} threads", runs.len());
+    // The Python reference on evenly spaced runs of the scan.
+    let picked: Vec<usize> =
+        (0..sample).map(|q| q * runs.len() / sample + runs.len() / (2 * sample)).collect();
+    let mut seconds = Vec::new();
+    let mut max_dks: f64 = 0.0;
+    for &r in &picked {
+        let (s, i, k) = runs[r];
+        let script = root().join("benchmarks/walk/reference.py");
+        let output = Command::new(&python)
+            .args([
+                script.to_str().unwrap(),
+                "phase",
+                &n.to_string(),
+                &steps.to_string(),
+                &thetas[i].to_string(),
+                &couplings[k].to_string(),
+                &s.to_string(),
+            ])
+            .env("OMP_NUM_THREADS", "1")
+            .env("OPENBLAS_NUM_THREADS", "1")
+            .env("VECLIB_MAXIMUM_THREADS", "1")
+            .output()
+            .expect("python");
+        let text = String::from_utf8_lossy(&output.stdout);
+        let Some(line) = text.lines().last().and_then(|l| serde_json::from_str::<Value>(l).ok()) else {
+            eprintln!("python phase: {}", String::from_utf8_lossy(&output.stderr));
+            continue;
+        };
+        seconds.push(line["seconds"].as_f64().unwrap());
+        max_dks = max_dks.max((line["ks"].as_f64().unwrap() - ks[r]).abs());
+    }
+    let per_run = seconds.iter().sum::<f64>() / seconds.len().max(1) as f64;
+    let busy = busy_before || runner_busy();
+    let machine = shell("hostname", &["-s"]);
+    let record = json!({
+        "date": shell("date", &["-u", "+%Y-%m-%dT%H:%M:%SZ"]), "machine": machine,
+        "commit": shell("git", &["-C", root().to_str().unwrap(), "rev-parse", "--short", "HEAD"]),
+        "method": "phase-scan", "n": n, "dimension": walk(n).dimension(), "grid": grid, "steps": steps,
+        "runs": runs.len(), "threads": threads, "caroli_s": wall, "caroli_s_per_run_thread": wall * threads as f64 / runs.len() as f64,
+        "python_sampled": seconds.len(), "python_s_per_run": per_run, "python_s_extrapolated": per_run * runs.len() as f64,
+        "max_dks": max_dks, "caroli_f32_s": wall_single, "max_dks_f32": max_dks_single, "runner_busy": busy,
+    });
+    println!("{record}");
+    use std::io::Write;
+    let results = root().join("benchmarks/results");
+    let mut out = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(results.join(format!("walk-{machine}.jsonl")))
+        .expect("results file");
+    writeln!(out, "{record}").expect("write");
+    let maps: Value = json!({
+        "n": n, "steps": steps, "thetas": thetas, "couplings": couplings,
+        "x": (0..grid).map(|i| (0..grid).map(|k| ks[i * grid + k]).collect::<Vec<f64>>()).collect::<Vec<_>>(),
+        "z": (0..grid).map(|i| (0..grid).map(|k| ks[grid * grid + i * grid + k]).collect::<Vec<f64>>()).collect::<Vec<_>>(),
+    });
+    std::fs::write(results.join(format!("walk-phase-{machine}.json")), maps.to_string())
+        .expect("write the maps");
 }
 
 /// Markdown table of the latest record of each (n, method, threads).
@@ -243,6 +403,7 @@ fn report(args: &[String]) {
     let label = |m: &str, t: u64| match (m, t) {
         ("caroli-cpu", 1) => "caroli CPU, 1 thread".to_string(),
         ("caroli-cpu", t) => format!("caroli CPU, {t} threads"),
+        ("caroli-cpu-f32", t) => format!("caroli CPU f32, {t} threads"),
         ("caroli-csr", _) => "caroli, U as a CSR matrix".into(),
         ("caroli-gpu-f32", _) => "caroli GPU f32".into(),
         ("caroli-gpu-df64", _) => "caroli GPU double-single".into(),
@@ -295,6 +456,7 @@ fn main() {
     match args.get(1).map(String::as_str) {
         Some("run") => run(&args[2..]),
         Some("report") => report(&args[2..]),
+        Some("phase") => phase(&args[2..]),
         _ => eprintln!(
             "usage: walk run [--sizes 13,15,17,19] [--steps 10] [--python PATH] | walk report [FILE]"
         ),

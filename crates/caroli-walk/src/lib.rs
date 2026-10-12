@@ -31,4 +31,4 @@ pub mod walk;
 pub use caroli_gpu::Precision;
 pub use gpu::{Device, Options, Report, evolve};
 pub use graph::Graph;
-pub use walk::{PLUS, SpinWalk, UP, fourier, grover, rotation};
+pub use walk::{PLUS, Real, SpinWalk, UP, fourier, grover, rotation, to_double, to_single};

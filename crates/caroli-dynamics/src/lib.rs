@@ -9,6 +9,8 @@
 //! any geometry, GPU operators): `exp(−iH dt)` expanded in Chebyshev polynomials of the
 //! rescaled `H̃ = (H − centre)/half_width`, exact to the requested tolerance for any `dt`.
 
+pub mod accelerated;
+
 use caroli_model::{CMat, c64};
 use caroli_torus::Fft2;
 use faer::Side;
