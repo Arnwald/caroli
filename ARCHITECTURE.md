@@ -292,8 +292,8 @@ Golden cases with disorder use the same impurity configurations as the thesis.
         square lattice at W = 256 went from 4.9 s to 3.5 s per energy on the M5.
 11. Examples: the two thesis studies (TI with magnetic impurities: G maps, local currents, Born
     phase diagram; graphene under a field: current, pair creation, DOS).
-13. Speed: the fastest code of its kind, measured against the reference codes. Kwant comes
-    first; Quantica.jl, TBtrans/sisl and KITE come later.
+13. Speed: the fastest code of its kind, measured against the reference codes: Kwant, TBtrans and
+    Quantica.jl so far (`benchmarks/results/report-2026-10-12-53d13c9.md`); KITE (KPM) later.
     - `benchmarks/` and `caroli-bench`: every code solves the same exported Hamiltonians, the
       results must agree before times count, and each run gets its own process with its peak
       memory. The machine is a Mac mini M4 Pro.
@@ -346,3 +346,13 @@ Golden cases with disorder use the same impurity configurations as the thesis.
       small fronts are eliminated by plain Gaussian elimination without the dense library.
       +12 % on the square lattice at W = 256, +9 % at W = 512 (M5, one thread); graphene and
       BHZ, dominated by their leads, do not change.
+    - Second campaign (2026-10-12, commit 53d13c9), against Kwant (MUMPS on Accelerate), TBtrans
+      and Quantica.jl: Kwant is the fastest of them from W = 64 up, except on the long strips up
+      to W = 64 (Quantica.jl). caroli is 11–17× faster than the fastest on the square lattice,
+      14–20× on the cross, 6–12× on the strips, 4.7–9× on BHZ and 4.6–7.3× on graphene, on one
+      thread; on all the cores, 10× faster than a pool of Kwant processes on the largest square
+      samples, strips, cross and BHZ, 4.7–5.9× on graphene. Large samples scale 4–6× on 14
+      threads (shared matrix units and memory bandwidth); running fewer energies at once with
+      more threads each is slower.
+    - Next: BHZ is bound by the complex Schur decomposition of its leads (the real pencil does
+      not apply: a spin block breaks time reversal).

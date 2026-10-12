@@ -88,6 +88,14 @@ the latest run of each case.
 
 ## Latest results
 
-[results/report-2026-10-12-08246f7.md](results/report-2026-10-12-08246f7.md): caroli against
-Kwant on a Mac mini M4 Pro, one thread: 9–13× faster on square lattices, strips and the
-four-terminal cross, 3–11× on BHZ, 2–4× on graphene, with 2–8× less memory.
+[results/report-2026-10-12-53d13c9.md](results/report-2026-10-12-53d13c9.md): caroli against
+Kwant, TBtrans and Quantica.jl on a Mac mini M4 Pro.
+
+- Kwant is the fastest of the other codes from W = 64 up, except on the long strips up to
+  W = 64 (Quantica.jl).
+- One thread, against the fastest other code of each case: 11–17× on the square lattice,
+  14–20× on the four-terminal cross, 6–12× on the strips, 4.7–9× on BHZ, 4.6–7.3× on graphene.
+- All the cores (caroli on 14 threads, Kwant on 14 processes): 10× on the largest square
+  samples, strips, cross and BHZ, 4.7–5.9× on graphene.
+
+The first campaign, against Kwant only: [results/report-2026-10-12-08246f7.md](results/report-2026-10-12-08246f7.md).

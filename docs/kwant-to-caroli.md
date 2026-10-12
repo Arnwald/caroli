@@ -112,7 +112,12 @@ let hall = v[3] - v[2]; // ±h/(ν e²) on the plateaus
   let t = configuration.transmission_with(&sigma)?;
   ```
 
-- `transmissions(&energies)` runs the energies in parallel.
+- `transmissions(&energies)` runs the energies in parallel, and one energy runs the branches of
+  its dissection tree in parallel.
+- Measured against Kwant (and TBtrans, Quantica.jl) on the same Hamiltonians:
+  [`benchmarks/`](../benchmarks/README.md). On one thread caroli is 11–17× faster than Kwant on
+  square lattices, 5–9× on BHZ and graphene; on all the cores, 5–10× faster than a pool of Kwant
+  processes.
 
 ## Not yet in caroli
 
