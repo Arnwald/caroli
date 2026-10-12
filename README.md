@@ -12,9 +12,14 @@ calculation of a tunnelling current.
 > Green's functions: two- and multi-terminal transmissions by nested dissection, magnetic
 > fields, scattering states, local densities and currents, Keldysh observables. They are
 > validated against the Fortran codes of the author's PhD thesis (`reference/`), which the
-> toolbox will reproduce as its two worked examples, and benchmarked against Kwant
-> (`benchmarks/`). See [ARCHITECTURE.md](ARCHITECTURE.md) for the design and the roadmap, and
-> [docs/kwant-to-caroli.md](docs/kwant-to-caroli.md) if you come from Kwant.
+> toolbox will reproduce as its two worked examples, and benchmarked against Kwant, TBtrans and
+> Quantica.jl (`benchmarks/`). See [ARCHITECTURE.md](ARCHITECTURE.md) for the design and the
+> roadmap, and [docs/kwant-to-caroli.md](docs/kwant-to-caroli.md) if you come from Kwant.
+
+**How it is made.** caroli is written by Claude (Anthropic's AI model, in Claude Code) under the
+supervision of Arnaud Demion. He sets the scope from his PhD thesis, decides between the options
+and validates every result against the thesis codes. The story, the roles and the choice of Rust
+are in [docs/development.md](docs/development.md).
 
 ```rust
 use caroli::prelude::*;
