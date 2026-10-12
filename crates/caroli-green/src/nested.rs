@@ -27,7 +27,7 @@ use caroli_lattice::Region;
 use caroli_model::{CMat, Model, SparseMatrix, c64};
 
 /// Domains with at most this many orbitals are not split further.
-const LEAF_ORBITALS: usize = 64;
+const LEAF_ORBITALS: usize = 16;
 /// A pivot below this fraction of the largest entry of a separator block delays the block.
 const PIVOT_TOL: f64 = 1e-11;
 

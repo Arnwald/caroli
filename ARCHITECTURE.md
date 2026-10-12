@@ -243,3 +243,6 @@ Golden cases with disorder use the same impurity configurations as the thesis.
       `NestedTwoTerminal` takes 0.127 s per energy at W = 256 and 0.026 s at W = 128 (M5, one
       thread). The elimination is now the main cost there. BHZ leads keep the general
       algorithm.
+    - Leaves of 16 orbitals instead of 64: a dense leaf of L sites costs L³, so the leaves
+      cost N L² in all and outweighed the top separators. Square lattice at W = 256: 0.106 s
+      per energy (was 0.134 s).
