@@ -1,0 +1,35 @@
+| problem | W | orbitals | code | threads | build (s) | per energy (s) | all energies (s) | peak (MB) | max |ΔT| vs caroli |
+|---|---|---|---|---|---|---|---|---|---|
+| bhz-anderson | 32 | 4 | caroli | 1 | 0.003 | 0.0398 | 0.318 | 34 | 0.0e0 |
+| bhz-anderson | 32 | 4 | caroli | 14 | 0.003 | 0.0617 | 0.060 | 77 | 0.0e0 |
+| bhz-anderson | 32 | 4 | kwant | 1 | 0.014 | 0.1170 | 0.920 | 160 | 5.3e-13 |
+| bhz-anderson | 64 | 4 | caroli | 1 | 0.020 | 0.4656 | 3.737 | 243 | 0.0e0 |
+| bhz-anderson | 64 | 4 | caroli | 14 | 0.022 | 0.4528 | 0.520 | 359 | 5.1e-13 |
+| bhz-anderson | 64 | 4 | kwant | 1 | 0.038 | 0.7600 | 6.242 | 469 | 3.8e-12 |
+| bhz-anderson | 128 | 4 | caroli | 1 | 0.150 | 5.7993 | 46.273 | 1684 | 0.0e0 |
+| bhz-anderson | 128 | 4 | caroli | 14 | 0.162 | 3.6489 | 5.967 | 2183 | 1.7e-12 |
+| bhz-anderson | 128 | 4 | kwant | 1 | 0.131 | 5.1662 | 41.992 | 1177 | 3.9e-12 |
+| square-anderson | 32 | 1 | caroli | 1 | 0.000 | 0.0031 | 0.024 | 7 | 0.0e0 |
+| square-anderson | 32 | 1 | caroli | 14 | 0.000 | 0.0084 | 0.008 | 18 | 0.0e0 |
+| square-anderson | 32 | 1 | kwant | 1 | 0.014 | 0.0107 | 0.086 | 90 | 2.2e-13 |
+| square-anderson | 64 | 1 | caroli | 1 | 0.002 | 0.0302 | 0.242 | 18 | 0.0e0 |
+| square-anderson | 64 | 1 | caroli | 14 | 0.002 | 0.0518 | 0.044 | 55 | 0.0e0 |
+| square-anderson | 64 | 1 | kwant | 1 | 0.037 | 0.0374 | 0.297 | 117 | 3.8e-13 |
+| square-anderson | 128 | 1 | caroli | 1 | 0.010 | 0.3749 | 2.995 | 113 | 0.0e0 |
+| square-anderson | 128 | 1 | caroli | 14 | 0.011 | 0.3666 | 0.434 | 222 | 2.3e-13 |
+| square-anderson | 128 | 1 | kwant | 1 | 0.128 | 0.1756 | 1.408 | 204 | 2.4e-12 |
+| square-anderson | 256 | 1 | caroli | 1 | 0.063 | 4.9502 | 39.539 | 656 | 0.0e0 |
+| square-anderson | 256 | 1 | caroli | 14 | 0.068 | 2.8246 | 5.227 | 1153 | 4.9e-13 |
+| square-anderson | 256 | 1 | kwant | 1 | 0.511 | 1.1150 | 9.122 | 646 | 8.9e-12 |
+| square-clean | 32 | 1 | caroli | 1 | 0.000 | 0.0035 | 0.028 | 7 | 0.0e0 |
+| square-clean | 32 | 1 | caroli | 14 | 0.000 | 0.0085 | 0.007 | 19 | 0.0e0 |
+| square-clean | 32 | 1 | kwant | 1 | 0.013 | 0.0105 | 0.083 | 91 | 1.3e-13 |
+| square-clean | 64 | 1 | caroli | 1 | 0.002 | 0.0297 | 0.236 | 18 | 0.0e0 |
+| square-clean | 64 | 1 | caroli | 14 | 0.002 | 0.0521 | 0.046 | 56 | 0.0e0 |
+| square-clean | 64 | 1 | kwant | 1 | 0.033 | 0.0366 | 0.289 | 115 | 2.9e-13 |
+| square-clean | 128 | 1 | caroli | 1 | 0.009 | 0.3664 | 2.935 | 93 | 0.0e0 |
+| square-clean | 128 | 1 | caroli | 14 | 0.010 | 0.3624 | 0.424 | 217 | 9.9e-14 |
+| square-clean | 128 | 1 | kwant | 1 | 0.110 | 0.1730 | 1.377 | 199 | 3.0e-12 |
+| square-clean | 256 | 1 | caroli | 1 | 0.061 | 4.8984 | 39.038 | 656 | 0.0e0 |
+| square-clean | 256 | 1 | caroli | 14 | 0.066 | 2.7881 | 5.199 | 1148 | 1.4e-13 |
+| square-clean | 256 | 1 | kwant | 1 | 0.422 | 1.0848 | 9.048 | 621 | 1.1e-11 |

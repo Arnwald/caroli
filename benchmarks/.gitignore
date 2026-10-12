@@ -1,0 +1,6 @@
+# Toolchains and environments of the other codes (installed by hand, see README).
+.tools/
+.mamba/
+envs/
+# Inputs written by `caroli-bench prepare`.
+data/

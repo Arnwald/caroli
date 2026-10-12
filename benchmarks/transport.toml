@@ -1,0 +1,29 @@
+# Two-terminal transmission problems shared by every code.
+#
+# - model: "square" (one orbital, hopping −1) or "bhz" (the thesis BHZ preset, 4 orbitals).
+# - The sample is length × width sites (length defaults to the width), cut along x; both leads
+#   are the clean model.
+# - anderson: on-site energies uniform in [−w/2, w/2] (same on every orbital of a site),
+#   reproducible from `seed` and the width.
+
+[[problem]]
+name = "square-clean"
+model = "square"
+widths = [32, 64, 128, 256]
+energies = [-3.3, -2.5, -1.7, -0.9, 0.1, 0.9, 1.7, 2.5]
+
+[[problem]]
+name = "square-anderson"
+model = "square"
+widths = [32, 64, 128, 256]
+anderson = 2.0
+seed = 1
+energies = [-3.3, -2.5, -1.7, -0.9, 0.1, 0.9, 1.7, 2.5]
+
+[[problem]]
+name = "bhz-anderson"
+model = "bhz"
+widths = [32, 64, 128]
+anderson = 0.5
+seed = 2
+energies = [-0.3, -0.1, 0.0, 0.05, 0.1, 0.3, 0.6, 1.0]

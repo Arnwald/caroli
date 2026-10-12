@@ -1,0 +1,325 @@
+//! Benchmarks of caroli against other codes on shared problems (`benchmarks/`).
+//!
+//! - `caroli-bench prepare`: writes, for every problem, the model (on-site and hopping
+//!   matrices) and the disorder of every width to `benchmarks/data/`. The other codes build
+//!   their systems from these files, so all of them solve the same Hamiltonian.
+//! - `caroli-bench run [--code caroli|kwant|all] [--problem NAME] [--width W] [--threads N]`:
+//!   runs each (problem, width, code) in its own process under `/usr/bin/time -l`, and appends
+//!   one JSON line per run to `benchmarks/results/<machine>.jsonl`. The line includes the peak
+//!   memory, and flags a GitHub runner job that was busy during the run.
+//! - `caroli-bench solve PROBLEM WIDTH`: the caroli runner for one case (one JSON line).
+//! - `caroli-bench report [FILE]`: agreement between the codes, and timing tables.
+//!
+//! Times are wall-clock seconds. `times_s` holds one entry per energy, computed one after the
+//! other (single-energy latency). `parallel_s`, for caroli, is the time for all the energies
+//! at once on the threads given.
+
+use caroli_disorder::rng::Xoshiro256;
+use caroli_green::TwoTerminal;
+use caroli_lattice::{Lattice, Region, Site};
+use caroli_model::presets::{BhzParams, bhz};
+use caroli_model::{CMat, Model, c64};
+use rayon::prelude::*;
+use serde::{Deserialize, Serialize};
+use serde_json::{Value, json};
+use std::collections::BTreeMap;
+use std::path::{Path, PathBuf};
+use std::process::Command;
+use std::time::Instant;
+
+#[derive(Deserialize)]
+struct Problems {
+    problem: Vec<Problem>,
+}
+
+#[derive(Deserialize, Serialize, Clone)]
+struct Problem {
+    name: String,
+    model: String,
+    widths: Vec<usize>,
+    length: Option<usize>,
+    anderson: Option<f64>,
+    seed: Option<u64>,
+    energies: Vec<f64>,
+}
+
+fn root() -> PathBuf {
+    Path::new(env!("CARGO_MANIFEST_DIR")).join("../..").canonicalize().expect("repository root")
+}
+
+fn bench_dir() -> PathBuf {
+    root().join("benchmarks")
+}
+
+fn problems() -> Vec<Problem> {
+    let text = std::fs::read_to_string(bench_dir().join("transport.toml")).expect("transport.toml");
+    toml::from_str::<Problems>(&text).expect("transport.toml").problem
+}
+
+fn problem(name: &str) -> Problem {
+    problems().into_iter().find(|p| p.name == name).unwrap_or_else(|| panic!("unknown problem {name}"))
+}
+
+fn scalar(x: f64, n: usize) -> CMat {
+    CMat::from_fn(n, n, |i, j| if i == j { c64::new(x, 0.0) } else { c64::new(0.0, 0.0) })
+}
+
+/// The clean model of a problem (also the leads).
+fn clean_model(name: &str) -> Model {
+    match name {
+        "square" => Model::new(Lattice::square(1.0, 1))
+            .hopping(0, 0, [1, 0, 0], scalar(-1.0, 1))
+            .hopping(0, 0, [0, 1, 0], scalar(-1.0, 1)),
+        "bhz" => bhz(BhzParams::default()),
+        _ => panic!("unknown model {name}"),
+    }
+}
+
+fn data_dir(p: &Problem) -> PathBuf {
+    bench_dir().join("data").join(&p.name)
+}
+
+fn length(p: &Problem, w: usize) -> usize {
+    p.length.unwrap_or(w)
+}
+
+/// On-site disorder of a (problem, width): `length × width` values, x slowest.
+fn disorder(p: &Problem, w: usize) -> Option<Vec<f64>> {
+    let strength = p.anderson?;
+    let mut rng = Xoshiro256::seed_from_u64(p.seed.unwrap_or(0) * 1_000_003 + w as u64);
+    Some(rng.uniforms(length(p, w) * w).into_iter().map(|u| strength * (u - 0.5)).collect())
+}
+
+fn matrix_json(m: &CMat) -> Value {
+    json!((0..m.nrows()).map(|i| (0..m.ncols()).map(|j| [m[(i, j)].re, m[(i, j)].im]).collect::<Vec<_>>()).collect::<Vec<_>>())
+}
+
+/// Writes `problem.json` (model, energies) and the disorder files of every problem.
+fn prepare() {
+    for p in problems() {
+        let dir = data_dir(&p);
+        std::fs::create_dir_all(&dir).expect("data directory");
+        let model = clean_model(&p.model);
+        let lattice = model.lattice();
+        assert_eq!(lattice.sublattices().len(), 1, "the export handles one site per cell");
+        let orbitals = lattice.sublattices()[0].orbitals;
+        let onsite = model.onsite_matrix(&Site { cell: [0, 0, 0], sub: 0 });
+        let hoppings: Vec<Value> = model
+            .hoppings()
+            .iter()
+            .map(|h| json!({"offset": [h.offset[0], h.offset[1]], "matrix": matrix_json(&h.matrix)}))
+            .collect();
+        let spec = json!({
+            "name": p.name, "model": p.model, "orbitals": orbitals, "length": p.length,
+            "anderson": p.anderson, "energies": p.energies,
+            "onsite": matrix_json(&onsite), "hoppings": hoppings,
+            "convention": "hopping matrix = <R|H|R + offset>",
+        });
+        std::fs::write(dir.join("problem.json"), serde_json::to_string_pretty(&spec).unwrap()).unwrap();
+        for &w in &p.widths {
+            if let Some(v) = disorder(&p, w) {
+                let bytes: Vec<u8> = v.iter().flat_map(|x| x.to_le_bytes()).collect();
+                std::fs::write(dir.join(format!("disorder_W{w}.f64")), bytes).unwrap();
+            }
+        }
+        println!("{}: {orbitals} orbitals, widths {:?}", p.name, p.widths);
+    }
+}
+
+/// caroli on one (problem, width): one JSON line on stdout.
+fn solve(name: &str, w: usize) {
+    let p = problem(name);
+    let l = length(&p, w);
+    let clean = clean_model(&p.model);
+    let n = clean.lattice().sublattices()[0].orbitals;
+    let pot = disorder(&p, w);
+    let t0 = Instant::now();
+    let device = clean_model(&p.model).with_onsite_term(move |site: &Site| {
+        pot.as_ref().map(|v| scalar(v[site.cell[0] as usize * w + site.cell[1] as usize], n))
+    });
+    let sys = TwoTerminal::from_model(&device, &clean, &Region::cuboid(clean.lattice(), [l, w, 0]), 0);
+    // Independent blocks (e.g. the spin blocks of BHZ) are solved on their own.
+    let blocks = sys.blocks();
+    let parts: Vec<TwoTerminal> =
+        if blocks.len() > 1 { blocks.iter().map(|b| sys.restricted(b)).collect() } else { vec![sys] };
+    let build = t0.elapsed().as_secs_f64();
+    let (mut times, mut ts) = (Vec::new(), Vec::new());
+    for &e in &p.energies {
+        let t = Instant::now();
+        ts.push(parts.iter().map(|s| s.transmission(e).expect("transmission")).sum::<f64>());
+        times.push(t.elapsed().as_secs_f64());
+    }
+    // All the energies at once; on one thread this is the sum of the single-energy times.
+    let parallel = if rayon::current_num_threads() > 1 {
+        let t = Instant::now();
+        let _: Vec<f64> = p
+            .energies
+            .par_iter()
+            .map(|&e| parts.iter().map(|s| s.transmission(e).expect("transmission")).sum())
+            .collect();
+        t.elapsed().as_secs_f64()
+    } else {
+        times.iter().sum()
+    };
+    let line = json!({
+        "code": "caroli", "version": env!("CARGO_PKG_VERSION"), "problem": p.name, "width": w,
+        "length": l, "orbitals": n, "threads": rayon::current_num_threads(), "blocks": parts.len(),
+        "build_s": build, "times_s": times, "parallel_s": parallel, "energies": p.energies,
+        "transmissions": ts,
+    });
+    println!("{line}");
+}
+
+fn shell(cmd: &str, args: &[&str]) -> String {
+    Command::new(cmd).args(args).output().map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string()).unwrap_or_default()
+}
+
+/// A GitHub runner job in progress (it would perturb the timings).
+fn runner_busy() -> bool {
+    !shell("pgrep", &["-f", "Runner.Worker"]).is_empty()
+}
+
+fn run(args: &[String]) {
+    let opt = |flag: &str| args.iter().position(|a| a == flag).and_then(|i| args.get(i + 1)).cloned();
+    let codes: Vec<String> = match opt("--code").as_deref() {
+        None | Some("all") => vec!["caroli".into(), "kwant".into()],
+        Some(c) => vec![c.to_string()],
+    };
+    let threads = opt("--threads").unwrap_or_else(|| "1".into());
+    let machine = shell("hostname", &["-s"]);
+    let cpu = shell("sysctl", &["-n", "machdep.cpu.brand_string"]);
+    let commit = shell("git", &["-C", root().to_str().unwrap(), "rev-parse", "--short", "HEAD"]);
+    let out = bench_dir().join("results");
+    std::fs::create_dir_all(&out).unwrap();
+    let file = out.join(format!("{machine}.jsonl"));
+    let exe = std::env::current_exe().unwrap();
+    let python = bench_dir().join("envs/kwant/bin/python");
+    let script = bench_dir().join("kwant/transport.py");
+    for p in problems() {
+        if opt("--problem").is_some_and(|n| n != p.name) {
+            continue;
+        }
+        for &w in &p.widths {
+            if opt("--width").is_some_and(|x| x.parse::<usize>().unwrap() != w) {
+                continue;
+            }
+            for code in &codes {
+                let busy_before = runner_busy();
+                let mut cmd = Command::new("/usr/bin/time");
+                cmd.arg("-l");
+                match code.as_str() {
+                    "caroli" => cmd.arg(&exe).args(["solve", &p.name, &w.to_string()]),
+                    "kwant" => cmd.arg(&python).arg(&script).args([data_dir(&p).parent().unwrap().to_str().unwrap(), &p.name, &w.to_string()]),
+                    other => panic!("unknown code {other}"),
+                };
+                for var in ["OMP_NUM_THREADS", "OPENBLAS_NUM_THREADS", "MKL_NUM_THREADS", "VECLIB_MAXIMUM_THREADS"] {
+                    cmd.env(var, "1");
+                }
+                cmd.env("RAYON_NUM_THREADS", &threads);
+                let output = cmd.output().expect("runner");
+                let stdout = String::from_utf8_lossy(&output.stdout);
+                let stderr = String::from_utf8_lossy(&output.stderr);
+                let Some(json_line) = stdout.lines().rev().find(|l| l.starts_with('{')) else {
+                    eprintln!("{code} {} W={w} failed:\n{stderr}", p.name);
+                    continue;
+                };
+                let mut v: Value = serde_json::from_str(json_line).expect("runner JSON");
+                let rss = stderr
+                    .lines()
+                    .find(|l| l.contains("maximum resident set size"))
+                    .and_then(|l| l.split_whitespace().next())
+                    .and_then(|x| x.parse::<f64>().ok())
+                    .unwrap_or(f64::NAN);
+                let obj = v.as_object_mut().unwrap();
+                obj.insert("peak_rss_mb".into(), json!(rss / 1048576.0));
+                obj.insert("runner_busy".into(), json!(busy_before || runner_busy()));
+                obj.insert("machine".into(), json!(machine));
+                obj.insert("cpu".into(), json!(cpu));
+                obj.insert("caroli_commit".into(), json!(commit));
+                obj.insert("unix_time".into(), json!(std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_secs()));
+                let line = serde_json::to_string(&v).unwrap();
+                use std::io::Write;
+                let mut f = std::fs::OpenOptions::new().create(true).append(true).open(&file).unwrap();
+                writeln!(f, "{line}").unwrap();
+                let times: Vec<f64> = v["times_s"].as_array().unwrap().iter().filter_map(|x| x.as_f64()).collect();
+                println!(
+                    "{code:7} {:16} W={w:<5} build {:8.3} s, median per energy {:9.4} s, peak {:8.1} MB",
+                    p.name,
+                    v["build_s"].as_f64().unwrap_or(f64::NAN),
+                    median(&times),
+                    rss / 1048576.0
+                );
+            }
+        }
+    }
+    println!("results appended to {}", file.display());
+}
+
+fn median(v: &[f64]) -> f64 {
+    let mut s = v.to_vec();
+    s.sort_by(|a, b| a.partial_cmp(b).unwrap());
+    if s.is_empty() { f64::NAN } else { s[s.len() / 2] }
+}
+
+/// Latest run of every (problem, width, code, threads) in a results file: agreement with
+/// caroli and timings.
+fn report(args: &[String]) {
+    let file = args.first().map(PathBuf::from).unwrap_or_else(|| {
+        bench_dir().join("results").join(format!("{}.jsonl", shell("hostname", &["-s"])))
+    });
+    let text = std::fs::read_to_string(&file).expect("results file");
+    let mut latest: BTreeMap<(String, u64, String, u64), Value> = BTreeMap::new();
+    for line in text.lines().filter(|l| !l.trim().is_empty()) {
+        let v: Value = serde_json::from_str(line).unwrap();
+        let key = (
+            v["problem"].as_str().unwrap().to_string(),
+            v["width"].as_u64().unwrap(),
+            v["code"].as_str().unwrap().to_string(),
+            v["threads"].as_u64().unwrap_or(1),
+        );
+        latest.insert(key, v);
+    }
+    let mut cases: BTreeMap<(String, u64), Vec<&Value>> = BTreeMap::new();
+    for ((p, w, _, _), v) in &latest {
+        cases.entry((p.clone(), *w)).or_default().push(v);
+    }
+    println!("| problem | W | orbitals | code | threads | build (s) | per energy (s) | all energies (s) | peak (MB) | max |ΔT| vs caroli |");
+    println!("|---|---|---|---|---|---|---|---|---|---|");
+    for ((p, w), runs) in &cases {
+        let reference: Option<Vec<f64>> = runs
+            .iter()
+            .find(|v| v["code"] == "caroli")
+            .map(|v| v["transmissions"].as_array().unwrap().iter().map(|x| x.as_f64().unwrap()).collect());
+        for v in runs {
+            let ts: Vec<f64> = v["transmissions"].as_array().unwrap().iter().map(|x| x.as_f64().unwrap()).collect();
+            let times: Vec<f64> = v["times_s"].as_array().unwrap().iter().map(|x| x.as_f64().unwrap()).collect();
+            let diff = reference
+                .as_ref()
+                .map(|r| r.iter().zip(&ts).map(|(a, b)| (a - b).abs()).fold(0.0, f64::max))
+                .map_or("—".to_string(), |d| format!("{d:.1e}"));
+            let all = v["parallel_s"].as_f64().unwrap_or(times.iter().sum());
+            let busy = if v["runner_busy"].as_bool() == Some(true) { " (runner busy)" } else { "" };
+            println!(
+                "| {p} | {w} | {} | {}{busy} | {} | {:.3} | {:.4} | {:.3} | {:.0} | {diff} |",
+                v["orbitals"],
+                v["code"].as_str().unwrap(),
+                v["threads"],
+                v["build_s"].as_f64().unwrap_or(f64::NAN),
+                median(&times),
+                all,
+                v["peak_rss_mb"].as_f64().unwrap_or(f64::NAN),
+            );
+        }
+    }
+}
+
+fn main() {
+    let args: Vec<String> = std::env::args().collect();
+    match args.get(1).map(String::as_str) {
+        Some("prepare") => prepare(),
+        Some("solve") => solve(&args[2], args[3].parse().expect("width")),
+        Some("run") => run(&args[2..]),
+        Some("report") => report(&args[2..]),
+        _ => eprintln!("usage: caroli-bench prepare | run [--code C] [--problem P] [--width W] [--threads N] | solve P W | report [FILE]"),
+    }
+}
