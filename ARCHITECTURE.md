@@ -131,6 +131,11 @@ The dependencies only go downward: lattice ← model ← green ← caroli, and d
     it stays as the reference in the tests (crosses of square and BHZ lattices, graphene with a
     narrow lead).
   - The two nested solvers share the elimination (`SiteTree`, `Tree`).
+  - `NestedTwoTerminal::scattering_states`: the elimination keeps `X = F11⁻¹ F12` of every
+    front, and a back-substitution from the lead slices gives `ψ_p = G W_p` (`W_p W_p† = Γ_p`)
+    on the whole device. From them come the occupied densities and the bond currents of the
+    Keldysh conventions (`G^< = i Σ_p f_p ψ_p ψ_p†`), which match `caroli-keldysh`'s recursive
+    `Lesser` to 1e-10 (square, BHZ, graphene, field).
   - Both solvers split independent blocks of orbitals, such as the spin blocks of BHZ.
   - `NestedTwoTerminal::self_energies` and `transmission_with` reuse the lead self-energies of
     one energy for every disorder configuration with the same leads. For BHZ at W = 128 the

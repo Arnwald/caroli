@@ -11,7 +11,7 @@
 //! the part of every lead it reaches.
 
 use crate::multi::{AttachedLead, Interface, attach_leads};
-use crate::nested::{Components, SiteTree, Tree, schur};
+use crate::nested::{Components, Root, SiteTree, Tree, schur};
 use crate::{GreenError, SelfEnergyMethod, broadening, trace};
 use caroli_dense::Lu;
 use caroli_lattice::Region;
@@ -162,7 +162,8 @@ impl NestedMultiTerminal {
         let index = |l: &AttachedLead| -> Vec<usize> {
             l.orbitals.iter().map(|o| kept.binary_search(o).expect("lead orbital kept")).collect()
         };
-        let (nd, mut f) = block.tree.root(&self.h, c64::new(energy, 0.0), &kept)?;
+        let Root { delayed, mut f, .. } = block.tree.root(&self.h, c64::new(energy, 0.0), &kept, false)?;
+        let nd = delayed.len();
         for (l, s) in block.leads.iter().zip(&sigmas) {
             if let (Some(l), Some(s)) = (l, s) {
                 let at = index(l);
@@ -173,7 +174,7 @@ impl NestedMultiTerminal {
                 }
             }
         }
-        let s = if nd > 0 { schur(&f, nd).ok_or(GreenError::Singular(energy))? } else { f };
+        let s = if nd > 0 { schur(&f, nd).ok_or(GreenError::Singular(energy))?.0 } else { f };
         let k = kept.len();
         let g = Lu::new(s.as_ref()).solve(CMat::identity(k, k).as_ref());
         if !g.norm_max().is_finite() {

@@ -11,8 +11,8 @@
 //! `T(E) [f_L(E) − f_R(E)]` (Landauer). The occupied spectral density of orbital `a` is
 //! `Im G^<_aa(E) / 2π`.
 
+pub use caroli_green::BondCurrent;
 use caroli_green::{GreenError, SelfEnergyMethod, TwoTerminal, broadening};
-use caroli_lattice::Site;
 use caroli_model::{CMat, c64};
 
 /// Fermi–Dirac occupation; at `temperature = 0` a step with `f(μ) = 1`.
@@ -171,14 +171,6 @@ fn bond(
         }
     }
     coupled.then_some(2.0 * acc.re)
-}
-
-/// Spectral particle current through a bond.
-#[derive(Clone, Copy, Debug, PartialEq)]
-pub struct BondCurrent {
-    pub from: Site,
-    pub to: Site,
-    pub current: f64,
 }
 
 #[cfg(test)]

@@ -26,7 +26,7 @@ use crate::gauge::Gauge;
 use crate::modes::{sigma_left, sigma_right};
 use crate::{GreenError, Lead, broadening, trace};
 use caroli_dense::{Accum, Lu, Op, matmul};
-use caroli_lattice::Region;
+use caroli_lattice::{Region, Site};
 use caroli_model::{CMat, Model, SparseMatrix, c64};
 
 /// Domains with at most this many orbitals are not split further.
@@ -101,15 +101,78 @@ pub(crate) struct Tree {
     top: Vec<usize>,
 }
 
+/// What a front passes to its parent: its remaining variables and their Schur complement, and,
+/// when the factors are kept, what the back-substitution needs.
+struct Front {
+    vars: Vec<usize>,
+    s: CMat,
+    factor: Option<Factor>,
+}
+
+/// Back-substitution data of a front: with a right-hand side that vanishes on the eliminated
+/// variables, `ψ_elim = −X ψ_boundary`. A delayed front eliminates nothing and only holds its
+/// children.
+pub(crate) struct Factor {
+    elim: Vec<usize>,
+    boundary: Vec<usize>,
+    x: CMat,
+    children: Vec<Factor>,
+}
+
+impl Factor {
+    /// Fills the rows of the eliminated variables of `psi` (rows: orbitals) from those of their
+    /// boundaries, from this front down to the leaves.
+    pub(crate) fn back_substitute(&self, psi: &mut CMat) {
+        if !self.elim.is_empty() {
+            let cols = psi.ncols();
+            let b = CMat::from_fn(self.boundary.len(), cols, |a, c| psi[(self.boundary[a], c)]);
+            let mut e = CMat::zeros(self.elim.len(), cols);
+            matmul(
+                e.as_mut(),
+                Accum::Replace,
+                self.x.as_ref(),
+                Op::Plain,
+                b.as_ref(),
+                Op::Plain,
+                c64::new(-1.0, 0.0),
+            );
+            for (a, &o) in self.elim.iter().enumerate() {
+                for c in 0..cols {
+                    psi[(o, c)] = e[(a, c)];
+                }
+            }
+        }
+        for child in &self.children {
+            child.back_substitute(psi);
+        }
+    }
+}
+
+/// The root front of a [`Tree`] (see [`Tree::root`]).
+pub(crate) struct Root {
+    /// Variables delayed up to the root (first in `f`), then the kept orbitals.
+    pub(crate) delayed: Vec<usize>,
+    pub(crate) f: CMat,
+    /// Back-substitution data of the top fronts, when kept.
+    pub(crate) factors: Vec<Factor>,
+}
+
 impl Tree {
-    /// Front of the root on the `kept` orbitals, which are never eliminated: returns `(nd, f)`,
-    /// where `f` holds the `nd` variables delayed up to the root, then `kept` in order. The
-    /// entries of `z − H` between kept orbitals are included; the caller adds the leads.
-    pub(crate) fn root(&self, h: &SparseMatrix, z: c64, kept: &[usize]) -> Result<(usize, CMat), GreenError> {
-        let kids = self.fronts(h, &self.top, z)?;
+    /// Front of the root on the `kept` orbitals, which are never eliminated: `f` holds the
+    /// variables delayed up to the root, then `kept` in order. The entries of `z − H` between
+    /// kept orbitals are included; the caller adds the leads. With `keep`, the fronts also keep
+    /// their back-substitution data.
+    pub(crate) fn root(
+        &self,
+        h: &SparseMatrix,
+        z: c64,
+        kept: &[usize],
+        keep: bool,
+    ) -> Result<Root, GreenError> {
+        let kids = self.fronts(h, &self.top, z, keep)?;
         let in_kept = Positions::new(kept);
         let mut delayed: Vec<usize> =
-            kids.iter().flat_map(|(v, _)| v.iter().copied()).filter(|&o| in_kept.get(o).is_none()).collect();
+            kids.iter().flat_map(|k| k.vars.iter().copied()).filter(|&o| in_kept.get(o).is_none()).collect();
         delayed.sort_unstable();
         delayed.dedup();
         let vars: Vec<usize> = delayed.iter().chain(kept).copied().collect();
@@ -124,38 +187,39 @@ impl Tree {
                 }
             }
         }
-        extend_add(&mut f, &pos, &kids);
-        Ok((delayed.len(), f))
+        let factors = extend_add(&mut f, &pos, kids);
+        Ok(Root { delayed, f, factors })
     }
 
-    /// Fronts of the given nodes, in parallel: `(variables, Schur complement)` of each.
+    /// Fronts of the given nodes, in parallel.
     fn fronts(
         &self,
         h: &SparseMatrix,
         nodes: &[usize],
         z: c64,
-    ) -> Result<Vec<(Vec<usize>, CMat)>, GreenError> {
+        keep: bool,
+    ) -> Result<Vec<Front>, GreenError> {
         match nodes {
             [] => Ok(Vec::new()),
-            [a] => Ok(vec![self.front(h, *a, z)?]),
+            [a] => Ok(vec![self.front(h, *a, z, keep)?]),
             [a, b] => {
-                let (x, y) = rayon::join(|| self.front(h, *a, z), || self.front(h, *b, z));
+                let (x, y) = rayon::join(|| self.front(h, *a, z, keep), || self.front(h, *b, z, keep));
                 Ok(vec![x?, y?])
             }
-            _ => nodes.iter().map(|&k| self.front(h, k, z)).collect(),
+            _ => nodes.iter().map(|&k| self.front(h, k, z, keep)).collect(),
         }
     }
 
     /// Eliminates node `k` (after its children) and returns the variables left in its front and
     /// their Schur complement.
-    fn front(&self, h: &SparseMatrix, k: usize, z: c64) -> Result<(Vec<usize>, CMat), GreenError> {
+    fn front(&self, h: &SparseMatrix, k: usize, z: c64, keep: bool) -> Result<Front, GreenError> {
         let node = &self.nodes[k];
-        let kids = self.fronts(h, &node.children, z)?;
+        let kids = self.fronts(h, &node.children, z, keep)?;
         let in_boundary = |o: usize| node.boundary.binary_search(&o).is_ok();
         // Own separator, plus variables the children could not eliminate.
         let mut elim: Vec<usize> = node.eliminate.clone();
-        for (vars, _) in &kids {
-            elim.extend(vars.iter().copied().filter(|&o| !in_boundary(o)));
+        for kid in &kids {
+            elim.extend(kid.vars.iter().copied().filter(|&o| !in_boundary(o)));
         }
         elim.sort_unstable();
         elim.dedup();
@@ -181,15 +245,29 @@ impl Tree {
                 }
             }
         }
-        extend_add(&mut f, &pos, &kids);
+        let children = extend_add(&mut f, &pos, kids);
         let ne = elim.len();
+        let delayed = |vars: Vec<usize>, f: CMat, children: Vec<Factor>| Front {
+            factor: keep.then(|| Factor {
+                elim: Vec::new(),
+                boundary: Vec::new(),
+                x: CMat::zeros(0, 0),
+                children,
+            }),
+            vars,
+            s: f,
+        };
         if ne == 0 {
-            return Ok((vars, f));
+            return Ok(delayed(vars, f, children));
         }
         match schur(&f, ne) {
-            Some(s) => Ok((node.boundary.clone(), s)),
+            Some((s, x)) => Ok(Front {
+                vars: node.boundary.clone(),
+                s,
+                factor: keep.then(|| Factor { elim, boundary: node.boundary.clone(), x, children }),
+            }),
             // Singular separator block: hand the whole front to the parent.
-            None => Ok((vars, f)),
+            None => Ok(delayed(vars, f, children)),
         }
     }
 }
@@ -283,7 +361,44 @@ fn same_lead(a: &Lead, b: &Lead) -> bool {
 #[derive(Clone, Debug)]
 pub struct NestedTwoTerminal {
     h: SparseMatrix,
+    region: Region,
     blocks: Vec<Block>,
+}
+
+/// Scattering states of a two-terminal device at one energy (see
+/// [`NestedTwoTerminal::scattering_states`]).
+#[derive(Clone, Debug)]
+pub struct ScatteringStates {
+    pub energy: f64,
+    /// `ψ_L = G W_L` on every device orbital (rows, in the order of the region), one column per
+    /// channel of the left lead: `W_L W_L† = Γ_L`, so `ψ_L ψ_L† = G Γ_L G†` is the spectral
+    /// function of the electrons the left lead injects.
+    pub left: CMat,
+    /// The same for the right lead.
+    pub right: CMat,
+}
+
+impl ScatteringStates {
+    /// Occupied spectral density `Im G^<_aa / 2π = (f_L |ψ_L,a|² + f_R |ψ_R,a|²) / 2π` of every
+    /// orbital, for the lead occupations `f_left` and `f_right` (`G^< = i Σ_p f_p ψ_p ψ_p†`).
+    pub fn occupation(&self, f_left: f64, f_right: f64) -> Vec<f64> {
+        let weight = |m: &CMat, a: usize| (0..m.ncols()).map(|c| m[(a, c)].norm_sqr()).sum::<f64>();
+        (0..self.left.nrows())
+            .map(|a| {
+                (f_left * weight(&self.left, a) + f_right * weight(&self.right, a))
+                    / (2.0 * std::f64::consts::PI)
+            })
+            .collect()
+    }
+}
+
+/// Spectral particle current through a bond, `j_{i→j}(E) = 2 Re Tr[H_ij G^<_ji(E)]`: summed over
+/// a cross-section, it equals `T(E) [f_L(E) − f_R(E)]`.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct BondCurrent {
+    pub from: Site,
+    pub to: Site,
+    pub current: f64,
 }
 
 /// Position of each item of `vars` (any order): a sorted index for binary search.
@@ -374,7 +489,7 @@ impl NestedTwoTerminal {
             })
             .filter(|b: &Block| !b.left_orbitals.is_empty() && !b.right_orbitals.is_empty())
             .collect();
-        Self { h, blocks }
+        Self { h, region: region.clone(), blocks }
     }
 
     /// Number of independent blocks solved separately.
@@ -458,14 +573,38 @@ impl NestedTwoTerminal {
 
     /// `G_LR`, the block of `(z − H − Σ)⁻¹` between the first and last slices.
     fn lead_green(&self, block: &Block, z: c64, sigma_l: &CMat, sigma_r: &CMat) -> Result<CMat, GreenError> {
+        let root = self.root_with_leads(block, z, sigma_l, sigma_r, false)?;
+        let (nl, nr) = (block.left_orbitals.len(), block.right_orbitals.len());
+        // Columns of the right slice of S⁻¹, rows of the left slice.
+        let rhs = CMat::from_fn(root.s.nrows(), nr, |i, j| {
+            if i == root.right + j { c64::new(1.0, 0.0) } else { c64::new(0.0, 0.0) }
+        });
+        let x = Lu::new(root.s.as_ref()).solve(rhs.as_ref());
+        if !x.norm_max().is_finite() {
+            return Err(GreenError::Singular(z.re));
+        }
+        Ok(CMat::from_fn(nl, nr, |i, j| x[(i, j)]))
+    }
+
+    /// The Schur complement `S` of `z − H − Σ` on the lead slices of a block (left slice first,
+    /// then the right one unless they coincide), with the delayed variables eliminated.
+    fn root_with_leads(
+        &self,
+        block: &Block,
+        z: c64,
+        sigma_l: &CMat,
+        sigma_r: &CMat,
+        keep: bool,
+    ) -> Result<LeadRoot, GreenError> {
         let same = block.left_orbitals == block.right_orbitals;
         let mut kept: Vec<usize> = block.left_orbitals.clone();
         if !same {
             kept.extend_from_slice(&block.right_orbitals);
         }
-        let (nd, mut f) = block.tree.root(&self.h, z, &kept)?;
+        let Root { delayed, mut f, factors } = block.tree.root(&self.h, z, &kept, keep)?;
+        let nd = delayed.len();
         let (nl, nr) = (block.left_orbitals.len(), block.right_orbitals.len());
-        let r0 = if same { nd } else { nd + nl };
+        let right = if same { 0 } else { nl };
         for a in 0..nl {
             for c in 0..nl {
                 f[(nd + a, nd + c)] -= sigma_l[(a, c)];
@@ -473,20 +612,136 @@ impl NestedTwoTerminal {
         }
         for a in 0..nr {
             for c in 0..nr {
-                f[(r0 + a, r0 + c)] -= sigma_r[(a, c)];
+                f[(nd + right + a, nd + right + c)] -= sigma_r[(a, c)];
             }
         }
-        let s = if nd > 0 { schur(&f, nd).ok_or(GreenError::Singular(z.re))? } else { f };
-        // Columns of the right slice of S⁻¹, rows of the left slice.
-        let rhs = CMat::from_fn(s.nrows(), nr, |i, j| {
-            if i == r0 - nd + j { c64::new(1.0, 0.0) } else { c64::new(0.0, 0.0) }
-        });
-        let x = Lu::new(s.as_ref()).solve(rhs.as_ref());
-        if !x.norm_max().is_finite() {
-            return Err(GreenError::Singular(z.re));
-        }
-        Ok(CMat::from_fn(nl, nr, |i, j| x[(i, j)]))
+        let (s, x) = if nd > 0 {
+            schur(&f, nd).ok_or(GreenError::Singular(z.re))?
+        } else {
+            (f, CMat::zeros(0, kept.len()))
+        };
+        Ok(LeadRoot {
+            kept,
+            right,
+            s,
+            delayed: Factor { elim: delayed, boundary: Vec::new(), x, children: factors },
+        })
     }
+
+    /// Scattering states at `energy`: `ψ_p = G W_p` on every device orbital for each lead `p`,
+    /// with `W_p W_p† = Γ_p` (one column per channel). The elimination keeps its factors, and a
+    /// back-substitution from the lead slices gives the states everywhere: memory grows with the
+    /// factors (O(N log N) for a 2D sample of N orbitals) and with N times the channels.
+    pub fn scattering_states(&self, energy: f64) -> Result<ScatteringStates, GreenError> {
+        let sigma = self.self_energies(energy)?;
+        let z = c64::new(energy, 0.0);
+        let n = self.h.n;
+        let (mut left, mut right): (Vec<CMat>, Vec<CMat>) = (Vec::new(), Vec::new());
+        for (block, s) in self.blocks.iter().zip(&sigma.blocks) {
+            let (wl, wr) = (gamma_root(&s.sigma_l)?, gamma_root(&s.sigma_r)?);
+            let (cl, cr) = (wl.ncols(), wr.ncols());
+            let root = self.root_with_leads(block, z, &s.sigma_l, &s.sigma_r, true)?;
+            // Sources on the lead slices: W_L on the left slice, W_R on the right one.
+            let mut rhs = CMat::zeros(root.kept.len(), cl + cr);
+            for a in 0..wl.nrows() {
+                for c in 0..cl {
+                    rhs[(a, c)] = wl[(a, c)];
+                }
+            }
+            for a in 0..wr.nrows() {
+                for c in 0..cr {
+                    rhs[(root.right + a, cl + c)] = wr[(a, c)];
+                }
+            }
+            let x = Lu::new(root.s.as_ref()).solve(rhs.as_ref());
+            if !x.norm_max().is_finite() {
+                return Err(GreenError::Singular(energy));
+            }
+            let mut psi = CMat::zeros(n, cl + cr);
+            for (a, &o) in root.kept.iter().enumerate() {
+                for c in 0..cl + cr {
+                    psi[(o, c)] = x[(a, c)];
+                }
+            }
+            let LeadRoot { kept, delayed, .. } = root;
+            let delayed = Factor { boundary: kept, ..delayed };
+            delayed.back_substitute(&mut psi);
+            left.push(psi.as_ref().subcols(0, cl).to_owned());
+            right.push(psi.as_ref().subcols(cl, cr).to_owned());
+        }
+        let concat = |parts: Vec<CMat>| {
+            let cols: usize = parts.iter().map(|m| m.ncols()).sum();
+            let mut out = CMat::zeros(n, cols);
+            let mut c0 = 0;
+            for m in parts {
+                out.as_mut().subcols_mut(c0, m.ncols()).copy_from(&m);
+                c0 += m.ncols();
+            }
+            out
+        };
+        Ok(ScatteringStates { energy, left: concat(left), right: concat(right) })
+    }
+
+    /// Spectral bond currents `2 Re Tr[H_ij G^<_ji]` between every pair of coupled sites, from
+    /// the scattering states and the lead occupations (`G^< = i Σ_p f_p ψ_p ψ_p†`). Each bond
+    /// appears once, from the site of lower index in the region.
+    pub fn bond_currents(&self, states: &ScatteringStates, f_left: f64, f_right: f64) -> Vec<BondCurrent> {
+        // Rows of ψ as contiguous vectors: (ψ_L ψ_L†)_ba = ⟨row a, row b⟩.
+        let (tl, tr) = (states.left.transpose().to_owned(), states.right.transpose().to_owned());
+        let lesser = |b: usize, a: usize| -> c64 {
+            let dot = |t: &CMat| (0..t.nrows()).map(|k| t[(k, b)] * t[(k, a)].conj()).sum::<c64>();
+            c64::new(0.0, 1.0) * (dot(&tl) * f_left + dot(&tr) * f_right)
+        };
+        let region = &self.region;
+        let mut owner = vec![0usize; self.h.n];
+        for i in 0..region.len() {
+            owner[region.offset(i)..region.offset(i) + region.site_orbitals(i)].fill(i);
+        }
+        let mut currents: std::collections::BTreeMap<(usize, usize), c64> = Default::default();
+        for a in 0..self.h.n {
+            for (b, hab) in self.h.row(a) {
+                let (i, j) = (owner[a], owner[b]);
+                if i < j {
+                    *currents.entry((i, j)).or_default() += hab * lesser(b, a);
+                }
+            }
+        }
+        currents
+            .into_iter()
+            .map(|((i, j), acc)| BondCurrent {
+                from: region.sites()[i],
+                to: region.sites()[j],
+                current: 2.0 * acc.re,
+            })
+            .collect()
+    }
+
+    /// The device region (orbital layout of the scattering states).
+    pub fn region(&self) -> &Region {
+        &self.region
+    }
+}
+
+/// The root of a two-terminal block: `S` on the kept lead orbitals (`right` is the position of
+/// the right slice), and the delayed variables with their back-substitution data.
+struct LeadRoot {
+    kept: Vec<usize>,
+    right: usize,
+    s: CMat,
+    delayed: Factor,
+}
+
+/// `W` with `W W† = Γ = i(Σ − Σ†)`: the eigenvectors of `Γ` with positive eigenvalues, scaled by
+/// their square roots (one column per channel).
+fn gamma_root(sigma: &CMat) -> Result<CMat, GreenError> {
+    let g = broadening(sigma);
+    let n = g.nrows();
+    let g = CMat::from_fn(n, n, |i, j| (g[(i, j)] + g[(j, i)].conj()) * 0.5);
+    let evd = g.self_adjoint_eigen(faer::Side::Lower).map_err(|_| GreenError::Eigen)?;
+    let (values, vectors) = (evd.S(), evd.U());
+    let top = (0..n).map(|k| values[k].re.abs()).fold(0.0, f64::max);
+    let channels: Vec<usize> = (0..n).filter(|&k| values[k].re > 1e-12 * top).collect();
+    Ok(CMat::from_fn(n, channels.len(), |i, c| vectors[(i, channels[c])] * values[channels[c]].re.sqrt()))
 }
 
 /// Builds the elimination tree over `sites` (indices in `region`) in post-order: each node is
@@ -564,22 +819,26 @@ fn symbolic(h: &SparseMatrix, nodes: &mut [Node]) {
     }
 }
 
-/// Adds the children's Schur complements into the front `f` (variables at `pos`).
-fn extend_add(f: &mut CMat, pos: &Positions, kids: &[(Vec<usize>, CMat)]) {
-    for (vars, u) in kids {
+/// Adds the children's Schur complements into the front `f` (variables at `pos`), and returns
+/// their back-substitution data (when kept).
+fn extend_add(f: &mut CMat, pos: &Positions, kids: Vec<Front>) -> Vec<Factor> {
+    let mut factors = Vec::new();
+    for kid in kids {
         let map: Vec<usize> =
-            vars.iter().map(|&o| pos.get(o).expect("child variable in the parent front")).collect();
+            kid.vars.iter().map(|&o| pos.get(o).expect("child variable in the parent front")).collect();
         for (b, &pb) in map.iter().enumerate() {
             for (a, &pa) in map.iter().enumerate() {
-                f[(pa, pb)] += u[(a, b)];
+                f[(pa, pb)] += kid.s[(a, b)];
             }
         }
+        factors.extend(kid.factor);
     }
+    factors
 }
 
-/// Schur complement of the leading `ne × ne` block of `f`, or `None` if that block is
-/// numerically singular.
-pub(crate) fn schur(f: &CMat, ne: usize) -> Option<CMat> {
+/// Schur complement `S = f22 − f21 X` of the leading `ne × ne` block of `f`, with
+/// `X = f11⁻¹ f12`; `None` if that block is numerically singular.
+pub(crate) fn schur(f: &CMat, ne: usize) -> Option<(CMat, CMat)> {
     let n = f.nrows();
     let f11 = f.as_ref().submatrix(0, 0, ne, ne);
     let scale = f11.norm_max();
@@ -591,7 +850,7 @@ pub(crate) fn schur(f: &CMat, ne: usize) -> Option<CMat> {
     }
     let nb = n - ne;
     if nb == 0 {
-        return Some(CMat::zeros(0, 0));
+        return Some((CMat::zeros(0, 0), CMat::zeros(ne, 0)));
     }
     let x = lu.solve(f.as_ref().submatrix(0, ne, ne, nb));
     let mut s = f.as_ref().submatrix(ne, ne, nb, nb).to_owned();
@@ -605,5 +864,5 @@ pub(crate) fn schur(f: &CMat, ne: usize) -> Option<CMat> {
         Op::Plain,
         minus_one,
     );
-    Some(s)
+    Some((s, x))
 }

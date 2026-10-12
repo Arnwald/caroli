@@ -18,7 +18,7 @@ pub mod nested_multi;
 mod two_terminal;
 
 pub use multi::{AttachedLead, Interface, MultiSolution, MultiTerminal};
-pub use nested::{LeadSelfEnergies, NestedTwoTerminal};
+pub use nested::{BondCurrent, LeadSelfEnergies, NestedTwoTerminal, ScatteringStates};
 pub use nested_multi::NestedMultiTerminal;
 pub use two_terminal::{EndToEnd, Lead, SelfEnergyMethod, Sweeps, TwoTerminal};
 
