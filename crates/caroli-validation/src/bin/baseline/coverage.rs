@@ -1,12 +1,11 @@
-//! Checks that reference/thesis covers all the thesis code of the original tree, and rewrites
-//! reference/thesis/MANIFEST.tsv.
+//! Checks that the thesis reference (`THESIS_SRC`) covers all the thesis code of the original
+//! tree, and rewrites its MANIFEST.tsv.
 //!
 //! A code file of the original tree (`~/Projects/electronic-transport`, excluding the
 //! `thesis-code` link and LAPACK95) is covered if its content (sha1) exists in
-//! reference/thesis, if it is listed in EXCLUDED.tsv (per-run copy or off-topic), or if it is
+//! the thesis reference, if it is listed in EXCLUDED.tsv (per-run copy or off-topic), or if it is
 //! third-party code kept out of the repository for want of a license (THIRD_PARTY.tsv).
 
-use crate::compile::repo;
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 
@@ -14,7 +13,7 @@ const CODE_EXT: &[&str] = &[
     "f90", "f", "F90", "c", "py", "sh", "nb", "ipynb", "m", "ma", "jl", "asy", "gp", "plt", "pbs", "slurm",
     "job",
 ];
-/// Documentation files of reference/thesis itself.
+/// Documentation files of the thesis reference itself.
 const OWN_FILES: &[&str] = &["README.md", "CLAUDE.md", "MANIFEST.tsv", "EXCLUDED.tsv", "THIRD_PARTY.tsv"];
 
 pub(crate) fn sha1(path: &Path) -> String {
@@ -42,7 +41,7 @@ fn walk(root: &Path, skip: &dyn Fn(&Path) -> bool, out: &mut Vec<PathBuf>) {
 }
 
 pub fn run(orig: Option<&str>, manifest: bool) -> bool {
-    let here = repo().join("reference/thesis");
+    let here = crate::compile::thesis_root();
     let orig = PathBuf::from(match orig {
         Some(p) => p.to_owned(),
         None => std::env::var("THESIS_ORIG").unwrap_or_else(|_| {
@@ -67,7 +66,7 @@ pub fn run(orig: Option<&str>, manifest: bool) -> bool {
         by_hash.entry(sha1(f)).or_default().push(rel);
     }
 
-    // reference/thesis contents (without its own documentation and tooling).
+    // The reference's contents (without its own documentation and tooling).
     let mut own = Vec::new();
     let skip_here = |p: &Path| {
         let n = p.file_name().and_then(|n| n.to_str()).unwrap_or("");
@@ -111,7 +110,7 @@ pub fn run(orig: Option<&str>, manifest: bool) -> bool {
         by_hash.len()
     );
     println!(
-        "reference/thesis: {} files; documented exclusions: {}; third-party contents kept out: {}",
+        "thesis reference: {} files; documented exclusions: {}; third-party contents kept out: {}",
         present.len(),
         excluded.len(),
         third_party.len()
@@ -147,7 +146,7 @@ pub fn run(orig: Option<&str>, manifest: bool) -> bool {
             }
         }
         let mut out = String::from(
-            "# file in reference/thesis\tsha1\torigin (copied from)\tidentical copies elsewhere in electronic-transport\n",
+            "# file in the thesis reference\tsha1\torigin (copied from)\tidentical copies elsewhere in electronic-transport\n",
         );
         for (rel, h) in &present {
             let srcs = sources.get(rel).cloned().unwrap_or_default();

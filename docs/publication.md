@@ -29,9 +29,9 @@ From the [submission guide](https://joss.readthedocs.io/en/latest/submitting.htm
 | requirement | status |
 |---|---|
 | OSI license | MIT |
-| public repository, browsable, with an open issue tracker | private until the toolbox is ready |
-| at least six months of public history before submission | starts when the repository goes public |
-| no third-party code without a license | removed from the tree and from the history (`reference/thesis/THIRD_PARTY.tsv`) |
+| public repository, browsable, with an open issue tracker | public since October 2026 |
+| at least six months of public history before submission | from October 2026: April 2027 at the earliest |
+| no code without the right to publish it | the thesis codes and the code of collaborators are out of the tree and the history; only the thesis outputs stay, as regression data |
 | feature-complete ("no half-baked solutions") | transport done; time evolution, KPM, Born and the interface to finish |
 | documentation, automated tests | API docs, tutorials, `cargo test --workspace` |
 | packaging per the language's standards | crates.io release to prepare |

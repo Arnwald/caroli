@@ -6,7 +6,7 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::sync::LazyLock;
 
-/// Program id → source directory under reference/thesis. Directories with several main
+/// Program id → source directory in the thesis reference (see [`thesis_root`]). Directories with several main
 /// programs produce one executable per main, named `<id>-<main file stem>`.
 pub const PROGRAMS: &[(&str, &str)] = &[
     ("conductance-2t", "ti/conductance/conductance-2t/src"),
@@ -42,7 +42,7 @@ const FFLAGS: &[&str] = &[
 const CHECK_FFLAGS: &[&str] = &["-O0", "-fcheck=bounds,do,mem,pointer"];
 
 /// A minimal build-time fix, applied to a copy of the sources so that a modern gfortran accepts
-/// them or so that runs are reproducible; reference/thesis is never edited. A patch must not
+/// them or so that runs are reproducible; the thesis reference is never edited. A patch must not
 /// change any value the original program computed correctly.
 struct Patch {
     name: &'static str,
@@ -327,6 +327,16 @@ fn build_order(files: &[PathBuf], info: &BTreeMap<PathBuf, SourceInfo>, roots: &
     order
 }
 
+/// The thesis reference: the thesis codes, organised and documented, kept out of this public
+/// repository (`THESIS_SRC`, by default `~/Projects/caroli-thesis/thesis`).
+pub fn thesis_root() -> PathBuf {
+    let raw = env_or("THESIS_SRC", "~/Projects/caroli-thesis/thesis");
+    match raw.strip_prefix("~/") {
+        Some(rest) => PathBuf::from(std::env::var("HOME").unwrap_or_default()).join(rest),
+        None => PathBuf::from(raw),
+    }
+}
+
 /// The original thesis tree (`THESIS_ORIG`, by default `~/Projects/electronic-transport`).
 fn original_tree() -> PathBuf {
     let raw = env_or("THESIS_ORIG", "~/Projects/electronic-transport");
@@ -336,11 +346,11 @@ fn original_tree() -> PathBuf {
     }
 }
 
-/// Third-party sources of `dir` (a directory of reference/thesis) that the repository leaves
-/// out for want of a license (`reference/thesis/THIRD_PARTY.tsv`), taken from the original tree
+/// Third-party sources of `dir` (a directory of the thesis reference) that it leaves out for
+/// want of a license (its `THIRD_PARTY.tsv`), taken from the original tree
 /// and checked against their sha1.
 fn third_party_sources(dir: &str) -> Result<Vec<PathBuf>, String> {
-    let list = std::fs::read_to_string(repo().join("reference/thesis/THIRD_PARTY.tsv")).unwrap_or_default();
+    let list = std::fs::read_to_string(thesis_root().join("THIRD_PARTY.tsv")).unwrap_or_default();
     let mut out = Vec::new();
     for line in list.lines().filter(|l| !l.starts_with('#')) {
         let cols: Vec<&str> = line.split('\t').collect();
@@ -353,7 +363,7 @@ fn third_party_sources(dir: &str) -> Result<Vec<PathBuf>, String> {
         let origin = original_tree().join(cols[2].split(" | ").next().unwrap_or_default());
         if !origin.is_file() || crate::coverage::sha1(&origin) != cols[1] {
             return Err(format!(
-                "{} is third-party code kept out of the repository: expected at {} (set THESIS_ORIG)",
+                "{} is third-party code kept out of the thesis reference: expected at {} (set THESIS_ORIG)",
                 file.display(),
                 origin.display()
             ));
@@ -363,7 +373,7 @@ fn third_party_sources(dir: &str) -> Result<Vec<PathBuf>, String> {
     Ok(out)
 }
 
-/// Copies the Fortran sources of `src` (the directory `dir` of reference/thesis) into `dst`,
+/// Copies the Fortran sources of `src` (the directory `dir` of the thesis reference) into `dst`,
 /// with the third-party ones from the original tree, applying the patches; returns those
 /// applied.
 fn patched_copy(src: &Path, dir: &str, dst: &Path) -> Result<Vec<String>, String> {
@@ -421,7 +431,11 @@ fn program(id: &str, dir: &str, check: bool) -> bool {
     let (shims, lapack95) = (t.join("shims"), t.join("lapack95"));
     let src = t.join(format!("src{tag}")).join(id);
     let _ = std::fs::remove_dir_all(&src);
-    let patches = match patched_copy(&repo().join("reference/thesis").join(dir), dir, &src) {
+    if !thesis_root().is_dir() {
+        eprintln!("FAIL  {id}: the thesis reference is not at {} (set THESIS_SRC)", thesis_root().display());
+        return false;
+    }
+    let patches = match patched_copy(&thesis_root().join(dir), dir, &src) {
         Ok(p) => p,
         Err(e) => {
             eprintln!("FAIL  {id}: {e}");

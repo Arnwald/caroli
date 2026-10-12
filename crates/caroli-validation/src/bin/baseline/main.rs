@@ -8,13 +8,13 @@
 //! baseline show FILE…                   records of a Fortran output file
 //! baseline list                         programs and cases
 //! baseline coverage [--orig PATH] [--manifest]
-//!                                       check that reference/thesis covers the original tree
+//!                                       check that the thesis reference covers the original tree
 //! ```
 //!
-//! Run it with `cargo run -p caroli-validation --bin baseline -- <command>`. The sources in
-//! reference/thesis are compiled as they are, with a few build-time patches (see `compile.rs`).
-//! Products go to target/reference/. Environment overrides: FC, CC, LAPACK95_SRC, FFTW_PREFIX,
-//! LAPACK_LIBS.
+//! Run it with `cargo run -p caroli-validation --bin baseline -- <command>`. The sources of the
+//! thesis reference (`THESIS_SRC`, kept out of this repository) are compiled as they are, with a
+//! few build-time patches (see `compile.rs`). Products go to target/reference/. Environment
+//! overrides: FC, CC, THESIS_SRC, THESIS_ORIG, LAPACK95_SRC, FFTW_PREFIX, LAPACK_LIBS.
 
 mod cases;
 mod compile;

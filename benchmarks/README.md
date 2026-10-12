@@ -88,6 +88,9 @@ the latest run of each case.
 
 ## Latest results
 
+Interactive page, with the figures and the Hamiltonians:
+[caroli benchmarks](https://claude.ai/artifact/Mvd6XU9f71A38wuHoynoWi).
+
 [results/report-2026-10-12-53d13c9.md](results/report-2026-10-12-53d13c9.md): caroli against
 Kwant, TBtrans and Quantica.jl on a Mac mini M4 Pro.
 

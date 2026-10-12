@@ -11,10 +11,14 @@ calculation of a tunnelling current.
 > Status: early development. The crates build tight-binding systems and compute transport with
 > Green's functions: two- and multi-terminal transmissions by nested dissection, magnetic
 > fields, scattering states, local densities and currents, Keldysh observables. They are
-> validated against the Fortran codes of the author's PhD thesis (`reference/`), which the
-> toolbox will reproduce as its two worked examples, and benchmarked against Kwant, TBtrans and
+> validated against the outputs of the Fortran codes of the author's PhD thesis
+> (`reference/baseline`), whose two studies the toolbox will reproduce as worked examples, and benchmarked against Kwant, TBtrans and
 > Quantica.jl (`benchmarks/`). See [ARCHITECTURE.md](ARCHITECTURE.md) for the design and the
 > roadmap, and [docs/kwant-to-caroli.md](docs/kwant-to-caroli.md) if you come from Kwant.
+
+**Benchmarks and figures:** [caroli benchmarks](https://claude.ai/artifact/Mvd6XU9f71A38wuHoynoWi),
+caroli against Kwant, TBtrans and Quantica.jl, with local spin currents, quantum Hall edges and
+the Hamiltonians.
 
 **How it is made.** caroli is written by Claude (Anthropic's AI model, in Claude Code) under my
 supervision: I set the scope from my PhD thesis, decide between the options and validate every
@@ -65,8 +69,6 @@ assert!((device.transmission(0.0)? - 2.0).abs() < 1e-8);
 
 ```
 crates/              Rust workspace (cargo test --workspace); see ARCHITECTURE.md
-reference/thesis/    frozen copy of the thesis codes (Fortran 90 + MPI, Python 2), documented;
-                     see reference/thesis/README.md
-reference/baseline/  builds the thesis codes and records golden outputs of 26 small cases,
-                     the regression baseline for caroli; see reference/baseline/README.md
+reference/baseline/  golden outputs of 26 small cases run by the thesis codes, the regression
+                     baseline for caroli; see reference/baseline/README.md
 ```

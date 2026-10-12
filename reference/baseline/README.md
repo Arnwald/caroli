@@ -1,7 +1,9 @@
 # reference/baseline — golden outputs of the thesis codes
 
-This folder compiles the thesis programs in `reference/thesis/` and runs small, fast cases. The
-outputs it records are the regression baseline for caroli. The thesis sources are compiled as
+This folder compiles the thesis programs and runs small, fast cases. The outputs it records are
+the regression baseline for caroli. The thesis codes are not in this repository: the `baseline`
+tool reads them from a private copy (`THESIS_SRC`, default `~/Projects/caroli-thesis/thesis`).
+Without it, `cargo test -p caroli-validation` still compares caroli with the recorded outputs. The thesis sources are compiled as
 they are; a few minimal fixes are applied at build time to a copy (see [Build-time patches](#build-time-patches)).
 
 ```bash
@@ -32,7 +34,8 @@ Status (2026-10-11):
 | gfortran (tested: Homebrew GCC 16.1), a C compiler | `FC`, `CC` |
 | FFTW 3 (double, threads) | `brew install fftw`; `FFTW_PREFIX` to override |
 | LAPACK + BLAS | Accelerate on macOS, `-llapack -lblas` elsewhere; `LAPACK_LIBS` to override |
-| Third-party modules (`contact.f90`, `fft_mod.f90`) | not in the repository (no license, see `reference/thesis/THIRD_PARTY.tsv`): taken from the original tree, `THESIS_ORIG`, default `~/Projects/electronic-transport`, and checked against their sha1 |
+| Thesis codes | not in this repository: `THESIS_SRC`, default `~/Projects/caroli-thesis/thesis` |
+| Third-party modules (`contact.f90`, `fft_mod.f90`) | not in the thesis copy either (no license, see its `THIRD_PARTY.tsv`): taken from the original tree, `THESIS_ORIG`, default `~/Projects/electronic-transport`, and checked against their sha1 |
 | LAPACK95 sources (netlib) | not in the repository: `LAPACK95_SRC`, default `~/Projects/electronic-transport/TI/Fortran/librairies/LAPACK95/SRC` (on another machine: netlib `lapack95.tgz`). Only the double and double-complex routines are built. |
 | MPI | not needed: `shims/` provides a serial stand-in |
 | Rust (cargo) | builds and runs the `baseline` tool |

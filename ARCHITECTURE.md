@@ -214,7 +214,7 @@ Golden cases with disorder use the same impurity configurations as the thesis.
 `caroli_validation::thesis` rebuilds each thesis setup.
 
 **Thesis bug found this way:** all conductance codes use `real(IM*(Σ − Σ†))` for the broadening
-(see `reference/thesis/README.md`).
+(recorded in the README of the thesis reference, which is kept out of this repository).
 
 ## Roadmap
 
@@ -231,7 +231,7 @@ Golden cases with disorder use the same impurity configurations as the thesis.
    windows. Validated on `ti-lcur-*` (exact).
 6. ✅ Self-consistent Born approximation (`caroli-born`), validated on `ti-scba-*` (exact).
    The reduced (analytic) thesis SCBA differs from the general one by the sign of the mass
-   self-energy (see `reference/thesis/ti/born/scba-magnetic-analytic/README.md`).
+   self-energy (recorded in the thesis reference).
 7. ✅ Spectral tools: KPM (Chebyshev moments, Jackson kernel, stochastic trace) on tori
    (`caroli-torus`); validated on the TI and graphene KPM codes (exact). Kubo–Bastin
    conductivities (`caroli_kpm::kubo`, García, Covaci and Rappoport 2015, as Kwant's

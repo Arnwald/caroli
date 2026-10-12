@@ -26,8 +26,10 @@ every commit says it too (`Co-Authored-By: Claude`).
 
 Nothing is accepted on the AI's word. Every result is checked:
 
-- **Against my thesis.** `reference/baseline` compiles the original Fortran programs and records
-  the outputs of 26 cases; caroli must reproduce all of them (`cargo test -p caroli-validation`).
+- **Against my thesis.** My original Fortran programs, run on 26 small cases, gave the outputs
+  in `reference/baseline/golden`; caroli must reproduce all of them
+  (`cargo test -p caroli-validation`). The thesis codes themselves are not published: the models
+  and the maths are clear enough for anyone to code the systems.
 - **Against itself.** Each solver is tested against an independent one: nested dissection
   against the recursive Green's function, mode matching against decimation, the fast lead path
   against the general one, the real pencil against the complex one.
@@ -46,7 +48,7 @@ other strengths, for a scientific library:
   cost nothing at run time, so performance is predictable: no just-in-time warm-up and no
   collection pauses.
 - **Memory safety.** Safe Rust has no out-of-bounds writes, use-after-free or data races. My
-  thesis codes had several such bugs (`reference/thesis/README.md`); here they are compile errors
+  thesis codes had several such bugs; here they are compile errors
   or immediate panics.
 - **Parallelism without fear.** Energies, disorder realisations and the branches of a
   dissection tree run in parallel (rayon), and the compiler rejects any data race.

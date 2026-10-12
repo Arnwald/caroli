@@ -1,7 +1,8 @@
 //! Validation of caroli against the thesis reference codes.
 //!
-//! - The `baseline` binary builds the thesis programs (`reference/thesis`) and records or checks
-//!   their golden outputs (`reference/baseline/golden`); see `reference/baseline/README.md`.
+//! - The `baseline` binary builds the thesis programs (from the thesis reference, kept out of
+//!   this repository: `THESIS_SRC`) and records or checks their golden outputs
+//!   (`reference/baseline/golden`); see `reference/baseline/README.md`.
 //! - The integration tests (`tests/`) compare caroli with those golden outputs.
 
 pub mod fortran;
