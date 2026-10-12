@@ -9,7 +9,7 @@ crates/
                       dense / sparse (CSR) / Bloch Hamiltonians, transport blocks; BHZ Dirac
                       matrices and presets
   caroli-green        steady state: lead modes and self-energies, recursive Green's function,
-                      Caroli transmission
+                      nested dissection, Caroli transmission
   caroli-disorder     reproducible random streams (xoshiro256**, gfortran-compatible seeding),
                       Anderson disorder, classical magnetic impurities
   caroli-keldysh      non-equilibrium steady state: lesser Green's function by lead injection,
@@ -25,6 +25,7 @@ crates/
                       CUDA (f64)
   caroli              facade: re-exports and prelude
   caroli-validation   (not published) comparisons with the thesis golden outputs
+  caroli-bench        (not published) benchmarks against other codes (`benchmarks/`)
 ```
 
 The dependencies only go downward: lattice ← model ← green ← caroli.
@@ -65,6 +66,18 @@ The dependencies only go downward: lattice ← model ← green ← caroli.
   - Decimation (Lopez Sancho – Rubio) is kept as a cross-check only. It loses all accuracy when
     E is close to an eigenvalue of the lead cell: T of a clean chain at E = 1e-9 is off by 0.5
     with η = 1e-12.
+- **Two-terminal solvers** (`caroli_green`):
+  - `TwoTerminal`: the recursive Green's function, slice by slice. One dense inversion of the
+    slice size per slice: O(L W³) for a length × width strip, O(n⁴) for an n × n sample.
+  - `NestedTwoTerminal`: geometric nested dissection (the multifrontal method). Separator layers
+    cut the device recursively. Each node eliminates its separator from a dense front and passes
+    the Schur complement on its boundary to its parent. The two lead slices are never
+    eliminated: the root holds the Schur complement on them and gives `G_LR`. The cost is O(n³)
+    for an n × n sample and O(L W²) for a long strip. Only pending Schur complements are kept.
+  - In `NestedTwoTerminal`, a separator block that cannot be eliminated stably is delayed to the
+    parent. This happens for a piece of a clean lattice at one of its eigenvalues. Independent
+    branches run in parallel.
+  - Both solvers split independent blocks of orbitals, such as the spin blocks of BHZ.
 - **Dev builds** optimise dependencies (`[profile.dev.package."*"] opt-level = 3`); faer is
   unusable unoptimised.
 
@@ -171,3 +184,14 @@ Golden cases with disorder use the same impurity configurations as the thesis.
       - dense algebra through Accelerate (AMX).
 11. Examples: the two thesis studies (TI with magnetic impurities: G maps, local currents, Born
     phase diagram; graphene under a field: current, pair creation, DOS).
+13. Speed: the fastest code of its kind, measured against the reference codes. Kwant comes
+    first; Quantica.jl, TBtrans/sisl and KITE come later.
+    - `benchmarks/` and `caroli-bench`: every code solves the same exported Hamiltonians, the
+      results must agree before times count, and each run gets its own process with its peak
+      memory. The machine is a Mac mini M4 Pro.
+    - First baseline: two-terminal transmission per energy, on 1 thread. The RGF is slower than
+      Kwant (MUMPS) beyond W = 64 on the square lattice: 4.9 s against 1.1 s at W = 256.
+    - `NestedTwoTerminal` closes the gap on large samples. First measurement, on one thread with
+      a CI job running on the machine: 1.6 s at W = 256 (square; Kwant 1.1 s) and 2.8 s for BHZ
+      at W = 128 (Kwant 5.2 s), with far less memory. At that size the lead modes take most of
+      the time (1.25 of 1.43 s).

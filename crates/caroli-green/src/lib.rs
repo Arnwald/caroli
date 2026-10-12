@@ -5,14 +5,18 @@
 //! - [`TwoTerminal`]: a device cut into slices between two leads; the recursive Green's
 //!   function gives the Caroli transmission `T = Tr[Γ_L G_1N Γ_R G_1N†]`.
 //! - [`MultiTerminal`]: any geometry with any number of leads, solved directly.
+//! - [`NestedTwoTerminal`]: the same two-terminal problem by geometric nested dissection,
+//!   O(n³) for an n × n sample instead of O(n⁴).
 
 pub mod decimation;
 pub mod modes;
 pub mod multi;
+pub mod nested;
 mod schur;
 mod two_terminal;
 
 pub use multi::{AttachedLead, Interface, MultiSolution, MultiTerminal};
+pub use nested::NestedTwoTerminal;
 pub use two_terminal::{EndToEnd, Lead, SelfEnergyMethod, Sweeps, TwoTerminal};
 
 use caroli_model::{CMat, c64};

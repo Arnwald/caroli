@@ -7,7 +7,9 @@
 //!   runs each (problem, width, code) in its own process under `/usr/bin/time -l`, and appends
 //!   one JSON line per run to `benchmarks/results/<machine>.jsonl`. The line includes the peak
 //!   memory, and flags a GitHub runner job that was busy during the run.
-//! - `caroli-bench solve PROBLEM WIDTH`: the caroli runner for one case (one JSON line).
+//! - `caroli-bench solve PROBLEM WIDTH [nd|rgf]`: the caroli runner for one case (one JSON
+//!   line), by nested dissection (`caroli`, default) or recursive Green's function
+//!   (`caroli-rgf`).
 //! - `caroli-bench report [FILE]`: agreement between the codes, and timing tables.
 //!
 //! Times are wall-clock seconds. `times_s` holds one entry per energy, computed one after the
@@ -15,7 +17,7 @@
 //! at once on the threads given.
 
 use caroli_disorder::rng::Xoshiro256;
-use caroli_green::TwoTerminal;
+use caroli_green::{NestedTwoTerminal, TwoTerminal};
 use caroli_lattice::{Lattice, Region, Site};
 use caroli_model::presets::{BhzParams, bhz};
 use caroli_model::{CMat, Model, c64};
@@ -127,7 +129,7 @@ fn prepare() {
 }
 
 /// caroli on one (problem, width): one JSON line on stdout.
-fn solve(name: &str, w: usize) {
+fn solve(name: &str, w: usize, solver: &str) {
     let p = problem(name);
     let l = length(&p, w);
     let clean = clean_model(&p.model);
@@ -137,33 +139,42 @@ fn solve(name: &str, w: usize) {
     let device = clean_model(&p.model).with_onsite_term(move |site: &Site| {
         pot.as_ref().map(|v| scalar(v[site.cell[0] as usize * w + site.cell[1] as usize], n))
     });
-    let sys = TwoTerminal::from_model(&device, &clean, &Region::cuboid(clean.lattice(), [l, w, 0]), 0);
-    // Independent blocks (e.g. the spin blocks of BHZ) are solved on their own.
-    let blocks = sys.blocks();
-    let parts: Vec<TwoTerminal> =
-        if blocks.len() > 1 { blocks.iter().map(|b| sys.restricted(b)).collect() } else { vec![sys] };
+    let region = Region::cuboid(clean.lattice(), [l, w, 0]);
+    // Independent blocks (e.g. the spin blocks of BHZ) are solved on their own by both solvers.
+    let (transmission, block_count): (Box<dyn Fn(f64) -> f64 + Sync>, usize) = match solver {
+        "rgf" => {
+            let sys = TwoTerminal::from_model(&device, &clean, &region, 0);
+            let blocks = sys.blocks();
+            let parts: Vec<TwoTerminal> =
+                if blocks.len() > 1 { blocks.iter().map(|b| sys.restricted(b)).collect() } else { vec![sys] };
+            let count = parts.len();
+            (Box::new(move |e| parts.iter().map(|s| s.transmission(e).expect("transmission")).sum()), count)
+        }
+        _ => {
+            let sys = NestedTwoTerminal::from_model(&device, &clean, &region, 0);
+            let count = sys.block_count();
+            (Box::new(move |e| sys.transmission(e).expect("transmission")), count)
+        }
+    };
     let build = t0.elapsed().as_secs_f64();
     let (mut times, mut ts) = (Vec::new(), Vec::new());
     for &e in &p.energies {
         let t = Instant::now();
-        ts.push(parts.iter().map(|s| s.transmission(e).expect("transmission")).sum::<f64>());
+        ts.push(transmission(e));
         times.push(t.elapsed().as_secs_f64());
     }
     // All the energies at once; on one thread this is the sum of the single-energy times.
     let parallel = if rayon::current_num_threads() > 1 {
         let t = Instant::now();
-        let _: Vec<f64> = p
-            .energies
-            .par_iter()
-            .map(|&e| parts.iter().map(|s| s.transmission(e).expect("transmission")).sum())
-            .collect();
+        let _: Vec<f64> = p.energies.par_iter().map(|&e| transmission(e)).collect();
         t.elapsed().as_secs_f64()
     } else {
         times.iter().sum()
     };
     let line = json!({
-        "code": "caroli", "version": env!("CARGO_PKG_VERSION"), "problem": p.name, "width": w,
-        "length": l, "orbitals": n, "threads": rayon::current_num_threads(), "blocks": parts.len(),
+        "code": if solver == "rgf" { "caroli-rgf" } else { "caroli" }, "version": env!("CARGO_PKG_VERSION"),
+        "problem": p.name, "width": w, "length": l, "orbitals": n, "threads": rayon::current_num_threads(),
+        "blocks": block_count,
         "build_s": build, "times_s": times, "parallel_s": parallel, "energies": p.energies,
         "transmissions": ts,
     });
@@ -182,7 +193,7 @@ fn runner_busy() -> bool {
 fn run(args: &[String]) {
     let opt = |flag: &str| args.iter().position(|a| a == flag).and_then(|i| args.get(i + 1)).cloned();
     let codes: Vec<String> = match opt("--code").as_deref() {
-        None | Some("all") => vec!["caroli".into(), "kwant".into()],
+        None | Some("all") => vec!["caroli".into(), "caroli-rgf".into(), "kwant".into()],
         Some(c) => vec![c.to_string()],
     };
     let threads = opt("--threads").unwrap_or_else(|| "1".into());
@@ -204,11 +215,22 @@ fn run(args: &[String]) {
                 continue;
             }
             for code in &codes {
-                let busy_before = runner_busy();
+              for attempt in 0..3 {
+                // Wait for the GitHub runner to be idle (a CI job would perturb the timings).
+                let mut waited = false;
+                while runner_busy() {
+                    if !waited {
+                        eprintln!("waiting for the GitHub runner job to finish…");
+                        waited = true;
+                    }
+                    std::thread::sleep(std::time::Duration::from_secs(15));
+                }
+                let busy_before = false;
                 let mut cmd = Command::new("/usr/bin/time");
                 cmd.arg("-l");
                 match code.as_str() {
-                    "caroli" => cmd.arg(&exe).args(["solve", &p.name, &w.to_string()]),
+                    "caroli" => cmd.arg(&exe).args(["solve", &p.name, &w.to_string(), "nd"]),
+                    "caroli-rgf" => cmd.arg(&exe).args(["solve", &p.name, &w.to_string(), "rgf"]),
                     "kwant" => cmd.arg(&python).arg(&script).args([data_dir(&p).parent().unwrap().to_str().unwrap(), &p.name, &w.to_string()]),
                     other => panic!("unknown code {other}"),
                 };
@@ -230,9 +252,14 @@ fn run(args: &[String]) {
                     .and_then(|l| l.split_whitespace().next())
                     .and_then(|x| x.parse::<f64>().ok())
                     .unwrap_or(f64::NAN);
+                let busy = busy_before || runner_busy();
+                if busy && attempt < 2 {
+                    eprintln!("{code} {} W={w}: a runner job started during the run, measuring again", p.name);
+                    continue;
+                }
                 let obj = v.as_object_mut().unwrap();
                 obj.insert("peak_rss_mb".into(), json!(rss / 1048576.0));
-                obj.insert("runner_busy".into(), json!(busy_before || runner_busy()));
+                obj.insert("runner_busy".into(), json!(busy));
                 obj.insert("machine".into(), json!(machine));
                 obj.insert("cpu".into(), json!(cpu));
                 obj.insert("caroli_commit".into(), json!(commit));
@@ -249,6 +276,8 @@ fn run(args: &[String]) {
                     median(&times),
                     rss / 1048576.0
                 );
+                break;
+              }
             }
         }
     }
@@ -277,20 +306,26 @@ fn report(args: &[String]) {
             v["code"].as_str().unwrap().to_string(),
             v["threads"].as_u64().unwrap_or(1),
         );
+        // Runs before the nested-dissection solver were the recursive one.
+        let key = if key.2 == "caroli" && v["blocks"].is_u64() && v.get("solver").is_none() && v["caroli_commit"] == "1807a24" {
+            (key.0, key.1, "caroli-rgf".to_string(), key.3)
+        } else {
+            key
+        };
         latest.insert(key, v);
     }
-    let mut cases: BTreeMap<(String, u64), Vec<&Value>> = BTreeMap::new();
-    for ((p, w, _, _), v) in &latest {
-        cases.entry((p.clone(), *w)).or_default().push(v);
+    let mut cases: BTreeMap<(String, u64), Vec<(&str, &Value)>> = BTreeMap::new();
+    for ((p, w, code, _), v) in &latest {
+        cases.entry((p.clone(), *w)).or_default().push((code.as_str(), v));
     }
     println!("| problem | W | orbitals | code | threads | build (s) | per energy (s) | all energies (s) | peak (MB) | max |ΔT| vs caroli |");
     println!("|---|---|---|---|---|---|---|---|---|---|");
     for ((p, w), runs) in &cases {
         let reference: Option<Vec<f64>> = runs
             .iter()
-            .find(|v| v["code"] == "caroli")
-            .map(|v| v["transmissions"].as_array().unwrap().iter().map(|x| x.as_f64().unwrap()).collect());
-        for v in runs {
+            .find(|(code, _)| *code == "caroli")
+            .map(|(_, v)| v["transmissions"].as_array().unwrap().iter().map(|x| x.as_f64().unwrap()).collect());
+        for &(code, v) in runs {
             let ts: Vec<f64> = v["transmissions"].as_array().unwrap().iter().map(|x| x.as_f64().unwrap()).collect();
             let times: Vec<f64> = v["times_s"].as_array().unwrap().iter().map(|x| x.as_f64().unwrap()).collect();
             let diff = reference
@@ -302,7 +337,7 @@ fn report(args: &[String]) {
             println!(
                 "| {p} | {w} | {} | {}{busy} | {} | {:.3} | {:.4} | {:.3} | {:.0} | {diff} |",
                 v["orbitals"],
-                v["code"].as_str().unwrap(),
+                code,
                 v["threads"],
                 v["build_s"].as_f64().unwrap_or(f64::NAN),
                 median(&times),
@@ -313,11 +348,31 @@ fn report(args: &[String]) {
     }
 }
 
+/// Time of the lead modes against the whole nested-dissection transmission, at one energy.
+fn profile(name: &str, w: usize) {
+    let p = problem(name);
+    let l = length(&p, w);
+    let clean = clean_model(&p.model);
+    let region = Region::cuboid(clean.lattice(), [l, w, 0]);
+    let first = &region.slices(0)[0];
+    let lead = caroli_green::Lead { h00: clean.hamiltonian(first), h01: clean.coupling(first, &first.translated([1, 0, 0])) };
+    let e = p.energies[p.energies.len() / 2];
+    let t = Instant::now();
+    let _ = lead.modes(e).expect("modes");
+    let modes = t.elapsed().as_secs_f64();
+    let sys = NestedTwoTerminal::from_model(&clean, &clean, &region, 0);
+    let t = Instant::now();
+    let _ = sys.transmission(e).expect("transmission");
+    let total = t.elapsed().as_secs_f64();
+    println!("{name} W={w} E={e}: lead modes of the whole cell {modes:.3} s, nested transmission {total:.3} s ({} blocks)", sys.block_count());
+}
+
 fn main() {
     let args: Vec<String> = std::env::args().collect();
     match args.get(1).map(String::as_str) {
+        Some("profile") => profile(&args[2], args[3].parse().expect("width")),
         Some("prepare") => prepare(),
-        Some("solve") => solve(&args[2], args[3].parse().expect("width")),
+        Some("solve") => solve(&args[2], args[3].parse().expect("width"), args.get(4).map_or("nd", String::as_str)),
         Some("run") => run(&args[2..]),
         Some("report") => report(&args[2..]),
         _ => eprintln!("usage: caroli-bench prepare | run [--code C] [--problem P] [--width W] [--threads N] | solve P W | report [FILE]"),
