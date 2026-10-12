@@ -6,6 +6,8 @@
 //! this estimates the density of states (stochastic trace); with a site orbital it gives the
 //! local density of states.
 
+pub mod kubo;
+
 use caroli_disorder::rng::Xoshiro256;
 use caroli_model::c64;
 use rayon::prelude::*;

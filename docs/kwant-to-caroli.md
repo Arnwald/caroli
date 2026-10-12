@@ -77,6 +77,7 @@ A lead must be the same from cell to cell. The constructors check it, and in a u
 | `kwant.operator.Current(fsys)(ψ)` | `sys.bond_currents(&states, &occupations)` |
 | `lead.modes(E)` | `Lead::modes(E)` (channels, velocities) |
 | `kwant.physics.Bands(lead)` | `Lead::bands(k)` |
+| `kwant.kpm.conductivity` | `caroli::kpm::kubo::{kubo_moments, kubo_bastin}` with `Model::sparse_velocity` |
 
 `ScatteringStates` holds one matrix per lead (rows: device orbitals; columns: channels). The
 scattering states mix the channels of a lead by a unitary, which leaves densities, currents and
@@ -111,5 +112,5 @@ let hall = v[3] - v[2]; // ±h/(ν e²) on the plateaus
 
 ## Not yet in caroli
 
-The scattering matrix in the basis of lead modes, KPM conductivities, discretisation of
-continuum (k·p) models, symmetry analysis (qsymm) and plotting.
+The scattering matrix in the basis of lead modes, discretisation of continuum (k·p) models,
+symmetry analysis (qsymm) and plotting.

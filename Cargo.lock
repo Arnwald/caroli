@@ -176,7 +176,9 @@ dependencies = [
 name = "caroli-kpm"
 version = "0.1.0"
 dependencies = [
+ "caroli-dense",
  "caroli-disorder",
+ "caroli-lattice",
  "caroli-model",
  "caroli-torus",
  "rayon",

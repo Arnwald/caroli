@@ -20,7 +20,8 @@ crates/
                       (mean field + cumulant vertices; Anderson and magnetic impurities)
   caroli-torus        Hamiltonians on periodic 2D supercells: k-space part through FFTs (rustfft),
                       local terms in real space
-  caroli-kpm          kernel polynomial method: Chebyshev moments, Jackson kernel, densities
+  caroli-kpm          kernel polynomial method: Chebyshev moments, Jackson kernel, densities,
+                      Kubo–Bastin conductivities
   caroli-dynamics     time evolution: split-operator on tori, Chebyshev propagation, fourth-order
                       commutator-free Magnus integrator
   caroli-gpu          Chebyshev kernels (KPM, propagation) on Metal (f32, double-single) and
@@ -205,7 +206,10 @@ Golden cases with disorder use the same impurity configurations as the thesis.
    The reduced (analytic) thesis SCBA differs from the general one by the sign of the mass
    self-energy (see `reference/thesis/ti/born/scba-magnetic-analytic/README.md`).
 7. ✅ Spectral tools: KPM (Chebyshev moments, Jackson kernel, stochastic trace) on tori
-   (`caroli-torus`); validated on the TI and graphene KPM codes (exact).
+   (`caroli-torus`); validated on the TI and graphene KPM codes (exact). Kubo–Bastin
+   conductivities (`caroli_kpm::kubo`, García, Covaci and Rappoport 2015, as Kwant's
+   `kpm.conductivity` and KITE) with `Model::sparse_velocity`: the Qi–Wu–Zhang Chern insulator
+   gives `σ_xy = ∓1.004 e²/h` and `σ_xx ≈ 1e-6` in its gap (32 × 32 torus, 256 moments).
 8. ✅ Time evolution: split-operator on tori (`caroli-dynamics`); graphene current, pair
    creation, wave-packet width and density validated (exact).
 9. Interface: declarative system and simulation files with a CLI; Python bindings to consider.

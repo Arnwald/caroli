@@ -331,6 +331,52 @@ impl Model {
         }
     }
 
+    /// Velocity operator `v = i[H, r·d]` (ħ = 1) along `direction`, as a sparse matrix, on a
+    /// region with periodic directions as [`Self::sparse_bloch_hamiltonian`]:
+    /// `v_ij = i H_ij (r_j − r_i)·d`. The displacement is that of the hopping itself, not
+    /// reduced into the region, so it is also the velocity of a torus. On-site terms do not
+    /// contribute.
+    pub fn sparse_velocity(
+        &self,
+        region: &Region,
+        periods: &[Cell],
+        phases: &[f64],
+        direction: Vec3,
+    ) -> SparseMatrix {
+        assert_eq!(periods.len(), phases.len());
+        let mut t = Triplets(Vec::new());
+        let images = (!periods.is_empty()).then(|| Images::new(region, periods));
+        for (i, site) in region.sites().iter().enumerate() {
+            let ri = self.lattice.position(*site);
+            for hop in &self.hoppings {
+                let ends =
+                    [(hop.from == site.sub, 1, hop.to, false), (hop.to == site.sub, -1, hop.from, true)];
+                for (applies, sign, sub, adjoint) in ends {
+                    if !applies {
+                        continue;
+                    }
+                    let partner = shifted(site, hop.offset, sign, sub);
+                    let (j, phase) = match &images {
+                        None => match region.index_of(&partner) {
+                            Some(j) => (j, 0.0),
+                            None => continue,
+                        },
+                        Some(images) => match images.locate(&partner) {
+                            Some((j, n)) => (j, n.iter().zip(phases).map(|(n, k)| *n as f64 * k).sum()),
+                            None => continue,
+                        },
+                    };
+                    let rj = self.lattice.position(partner);
+                    let along: f64 = (0..3).map(|c| (rj[c] - ri[c]) * direction[c]).sum();
+                    let (s, cs) = phase.sin_cos();
+                    let factor = self.phased(c64::new(cs, s), site, &partner) * c64::new(0.0, along);
+                    t.block(region.offset(i), region.offset(j), &hop.matrix, factor, adjoint);
+                }
+            }
+        }
+        SparseMatrix::from_triplets(region.orbitals(), t.0)
+    }
+
     /// Coupling matrix `⟨a| H |b⟩` between two disjoint regions (rows: `a`, columns: `b`).
     pub fn coupling(&self, a: &Region, b: &Region) -> CMat {
         let mut h = CMat::zeros(a.orbitals(), b.orbitals());

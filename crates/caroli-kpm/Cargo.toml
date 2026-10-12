@@ -8,7 +8,11 @@ license.workspace = true
 repository.workspace = true
 
 [dependencies]
+caroli-dense.workspace = true
 caroli-model.workspace = true
 caroli-torus.workspace = true
 caroli-disorder.workspace = true
 rayon.workspace = true
+
+[dev-dependencies]
+caroli-lattice.workspace = true
