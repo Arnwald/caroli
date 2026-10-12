@@ -24,6 +24,8 @@ use caroli_model::{CMat, Model, SparseMatrix, c64};
 struct MultiBlock {
     tree: Tree,
     leads: Vec<Option<AttachedLead>>,
+    /// For each lead: the orbitals of its cell kept in the block (indices into the full cell).
+    cells: Vec<Vec<usize>>,
 }
 
 /// A device with any number of attached leads, solved by nested dissection (see the module
@@ -33,6 +35,8 @@ pub struct NestedMultiTerminal {
     h: SparseMatrix,
     region: Region,
     lead_count: usize,
+    /// For each lead, the index of every orbital of its cell within its site.
+    orbital_kinds: Vec<Vec<usize>>,
     blocks: Vec<MultiBlock>,
 }
 
@@ -105,10 +109,19 @@ impl NestedMultiTerminal {
                 if block_leads.iter().all(Option::is_none) {
                     return None;
                 }
-                Some(MultiBlock { tree: sites.tree(region, &h, mine), leads: block_leads })
+                let cells = leads
+                    .iter()
+                    .zip(&offsets)
+                    .map(|(l, &off)| (0..l.h00.nrows()).filter(|&k| mine(off + k)).collect())
+                    .collect();
+                Some(MultiBlock { tree: sites.tree(region, &h, mine), leads: block_leads, cells })
             })
             .collect();
-        Self { h, region: region.clone(), lead_count: leads.len(), blocks }
+        let orbital_kinds = interfaces
+            .iter()
+            .map(|itf| (0..itf.slice.len()).flat_map(|i| 0..itf.slice.site_orbitals(i)).collect())
+            .collect();
+        Self { h, region: region.clone(), lead_count: leads.len(), orbital_kinds, blocks }
     }
 
     /// Number of leads.
@@ -141,24 +154,121 @@ impl NestedMultiTerminal {
     /// function `g` computed once per distinct lead (opposite leads of a symmetric device often
     /// share h00 and h01).
     fn self_energies(block: &MultiBlock, energy: f64) -> Result<Vec<Option<CMat>>, GreenError> {
-        let mut surfaces: Vec<(&AttachedLead, CMat)> = Vec::new();
-        let mut sigmas: Vec<Option<CMat>> = Vec::with_capacity(block.leads.len());
+        let surfaces = Self::surfaces(block, energy)?;
+        Ok(block
+            .leads
+            .iter()
+            .zip(&surfaces)
+            .map(|(l, g)| l.as_ref().zip(g.as_ref()).map(|(l, g)| &l.coupling * g * l.coupling.adjoint()))
+            .collect())
+    }
+
+    /// Surface Green's functions `g` of the leads a block reaches, computed once per distinct
+    /// lead.
+    fn surfaces(block: &MultiBlock, energy: f64) -> Result<Vec<Option<CMat>>, GreenError> {
+        let mut done: Vec<(&AttachedLead, CMat)> = Vec::new();
+        let mut out = Vec::with_capacity(block.leads.len());
         for l in &block.leads {
             let Some(l) = l else {
-                sigmas.push(None);
+                out.push(None);
                 continue;
             };
-            let g = match surfaces.iter().find(|(m, _)| m.h00 == l.h00 && m.h01 == l.h01) {
+            let g = match done.iter().find(|(m, _)| m.h00 == l.h00 && m.h01 == l.h01) {
                 Some((_, g)) => g.clone(),
                 None => {
                     let g = l.surface_green(energy, SelfEnergyMethod::Modes)?;
-                    surfaces.push((l, g.clone()));
+                    done.push((l, g.clone()));
                     g
                 }
             };
-            sigmas.push(Some(&l.coupling * g * l.coupling.adjoint()));
+            out.push(Some(g));
         }
-        Ok(sigmas)
+        Ok(out)
+    }
+
+    /// Transmissions between sectors of the leads (spin, electrons and holes...).
+    /// `sectors[p]` labels the orbitals of each site of lead `p` (e.g. `[0, 1]` for electrons and
+    /// holes, `[0, 0, 1, 1]` with spin), or is `None` to take the lead as a whole; the lead
+    /// Hamiltonian must not couple different sectors.
+    ///
+    /// Returns `(labels, t)`: `labels[k] = (lead, sector)` and `t[k][l] = Tr[Γ_k G Γ_l G†]` from
+    /// `l` into `k`, with `Γ_k` the broadening of lead `p` projected on its sector. Between two
+    /// sectors of the same lead it is a reflection probability (Andreev reflection for electrons
+    /// and holes); the diagonal is not a reflection (use unitarity).
+    pub fn sector_transmissions(
+        &self,
+        energy: f64,
+        sectors: &[Option<Vec<usize>>],
+    ) -> Result<(Vec<(usize, usize)>, Vec<Vec<f64>>), GreenError> {
+        assert_eq!(sectors.len(), self.lead_count, "one sector labelling per lead");
+        let label = |p: usize, cell_orbital: usize| -> usize {
+            sectors[p].as_ref().map_or(0, |s| s[self.orbital_kinds[p][cell_orbital]])
+        };
+        let mut labels: Vec<(usize, usize)> = Vec::new();
+        for (p, kinds) in self.orbital_kinds.iter().enumerate() {
+            let mut own: Vec<usize> = (0..kinds.len()).map(|o| label(p, o)).collect();
+            own.sort_unstable();
+            own.dedup();
+            labels.extend(own.into_iter().map(|a| (p, a)));
+        }
+        let mut t = vec![vec![0.0; labels.len()]; labels.len()];
+        for block in &self.blocks {
+            let surfaces = Self::surfaces(block, energy)?;
+            // Γ of every (lead, sector) on the orbitals the lead couples to:
+            // Γ_{p,a} = V P_a i(g − g†) P_a V†.
+            let mut gammas: Vec<Option<CMat>> = vec![None; labels.len()];
+            for (p, (l, g)) in block.leads.iter().zip(&surfaces).enumerate() {
+                let (Some(l), Some(g)) = (l, g) else { continue };
+                let cell = &block.cells[p];
+                let tags: Vec<usize> = cell.iter().map(|&o| label(p, o)).collect();
+                for m in [&l.h00, &l.h01] {
+                    let mixed = (0..cell.len())
+                        .flat_map(|a| (0..cell.len()).map(move |b| (a, b)))
+                        .any(|(a, b)| tags[a] != tags[b] && m[(a, b)] != c64::new(0.0, 0.0));
+                    assert!(!mixed, "the Hamiltonian of lead {p} couples different sectors");
+                }
+                let gamma = broadening(g);
+                for (k, &(lead, sector)) in labels.iter().enumerate() {
+                    if lead != p {
+                        continue;
+                    }
+                    let n = cell.len();
+                    let projected = CMat::from_fn(n, n, |a, b| {
+                        if tags[a] == sector && tags[b] == sector {
+                            gamma[(a, b)]
+                        } else {
+                            c64::new(0.0, 0.0)
+                        }
+                    });
+                    gammas[k] = Some(&l.coupling * projected * l.coupling.adjoint());
+                }
+            }
+            let sigmas: Vec<Option<CMat>> = block
+                .leads
+                .iter()
+                .zip(&surfaces)
+                .map(|(l, g)| l.as_ref().zip(g.as_ref()).map(|(l, g)| &l.coupling * g * l.coupling.adjoint()))
+                .collect();
+            let (kept, s, _) = self.root(block, energy, &sigmas, false)?;
+            let k = kept.len();
+            let green = Lu::new(s.as_ref()).solve(CMat::identity(k, k).as_ref());
+            if !green.norm_max().is_finite() {
+                return Err(GreenError::Singular(energy));
+            }
+            for (a, &(pa, _)) in labels.iter().enumerate() {
+                for (b, &(pb, _)) in labels.iter().enumerate() {
+                    let (Some(la), Some(lb), Some(ga), Some(gb)) =
+                        (&block.leads[pa], &block.leads[pb], &gammas[a], &gammas[b])
+                    else {
+                        continue;
+                    };
+                    let (ia, ib) = (index(&kept, la), index(&kept, lb));
+                    let gab = CMat::from_fn(ia.len(), ib.len(), |x, y| green[(ia[x], ib[y])]);
+                    t[a][b] += trace(&(ga * &gab * gb * gab.adjoint())).re;
+                }
+            }
+        }
+        Ok((labels, t))
     }
 
     /// The Schur complement `S` of `z − H − Σ` on the orbitals the leads couple to (`kept`, in

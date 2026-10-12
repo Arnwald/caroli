@@ -229,3 +229,93 @@ fn cross_currents() {
         }
     }
 }
+
+/// Spin sectors of BHZ leads (orbitals E↑, H↑, E↓, H↓): the sector transmissions add up to the
+/// transmissions, and spin-conserving disorder never flips the spin.
+#[test]
+fn spin_sectors() {
+    let clean = bhz(BhzParams::default());
+    let (region, interfaces) = cross(clean.lattice(), 8, 6, 2);
+    let sys = NestedMultiTerminal::from_model(
+        &disordered(bhz(BhzParams::default()), 0.5, 4),
+        &clean,
+        &region,
+        &interfaces,
+    );
+    let spins = vec![Some(vec![0, 0, 1, 1]); 4];
+    for e in [-0.2, 0.02, 0.3] {
+        let t = sys.transmissions(e).unwrap();
+        let (labels, ts) = sys.sector_transmissions(e, &spins).unwrap();
+        assert_eq!(labels.len(), 8);
+        for (a, &(p, sa)) in labels.iter().enumerate() {
+            for (b, &(q, sb)) in labels.iter().enumerate() {
+                if sa != sb {
+                    assert!(ts[a][b].abs() < 1e-10, "E = {e}: spin flip {p}{sa} <- {q}{sb}: {}", ts[a][b]);
+                }
+            }
+        }
+        for p in 0..4 {
+            for q in (0..4).filter(|&q| q != p) {
+                let sum: f64 = labels
+                    .iter()
+                    .enumerate()
+                    .flat_map(|(a, la)| labels.iter().enumerate().map(move |(b, lb)| (a, la, b, lb)))
+                    .filter(|(_, la, _, lb)| la.0 == p && lb.0 == q)
+                    .map(|(a, _, b, _)| ts[a][b])
+                    .sum();
+                assert!(
+                    (sum - t[p][q]).abs() < 1e-10,
+                    "E = {e}: T[{p}][{q}] = {} vs Σ sectors {sum}",
+                    t[p][q]
+                );
+            }
+        }
+    }
+}
+
+/// A normal–superconductor junction (spinless Bogoliubov–de Gennes, orbitals e and h): below
+/// the gap nothing enters the superconductor, and a transparent interface reflects electrons as
+/// holes (Andreev reflection) in nearly every channel.
+#[test]
+fn andreev_reflection() {
+    let (t, mu, delta) = (1.0, 1.0, 0.05);
+    let x_sc = 12; // superconducting from this column on, and in the right lead
+    let tau_z = CMat::from_fn(2, 2, |i, j| {
+        if i != j { c64::new(0.0, 0.0) } else { c64::new(if i == 0 { 1.0 } else { -1.0 }, 0.0) }
+    });
+    let scaled = |x: f64| CMat::from_fn(2, 2, |i, j| tau_z[(i, j)] * x);
+    let bdg = || {
+        Model::new(Lattice::square(1.0, 2))
+            .onsite(0, scaled(4.0 * t - mu))
+            .hopping(0, 0, [1, 0, 0], scaled(-t))
+            .hopping(0, 0, [0, 1, 0], scaled(-t))
+            .with_onsite_term(move |s: &Site| {
+                (s.cell[0] >= x_sc).then(|| {
+                    CMat::from_fn(2, 2, |i, j| if i != j { c64::new(delta, 0.0) } else { c64::new(0.0, 0.0) })
+                })
+            })
+    };
+    let region = Region::cuboid(&Lattice::square(1.0, 2), [24, 10, 0]);
+    let slices = region.slices(0);
+    let interfaces = [
+        Interface { slice: slices[0].clone(), outward: [-1, 0, 0] },
+        Interface { slice: slices[23].clone(), outward: [1, 0, 0] },
+    ];
+    let sys = NestedMultiTerminal::from_model(&bdg(), &bdg(), &region, &interfaces);
+    // Electron channels of the normal lead: a clean normal wire at the same energy.
+    let normal = Model::new(Lattice::square(1.0, 1))
+        .onsite(0, 4.0 * t - mu)
+        .hopping(0, 0, [1, 0, 0], -t)
+        .hopping(0, 0, [0, 1, 0], -t);
+    let wire = Region::cuboid(normal.lattice(), [4, 10, 0]);
+    let channels =
+        |e: f64| NestedTwoTerminal::from_model(&normal, &normal, &wire, 0).transmission(e).unwrap();
+    for e in [0.0, 0.02, -0.03] {
+        let (labels, ts) = sys.sector_transmissions(e, &[Some(vec![0, 1]), None]).unwrap();
+        assert_eq!(labels, vec![(0, 0), (0, 1), (1, 0)]);
+        let (into_sc, andreev) = (ts[2][0], ts[1][0]);
+        let n = channels(e).round();
+        assert!(into_sc.abs() < 1e-8, "E = {e}: {into_sc} enters the superconductor");
+        assert!((andreev - n).abs() < 0.05 * n, "E = {e}: R_he = {andreev}, {n} channels");
+    }
+}
