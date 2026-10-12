@@ -29,9 +29,13 @@ pub use caroli_torus as torus;
 pub mod prelude {
     pub use caroli_disorder::rng::Xoshiro256;
     pub use caroli_disorder::{Anderson, MagneticImpurities, Moments};
-    pub use caroli_green::{Lead, SelfEnergyMethod, TwoTerminal};
+    pub use caroli_green::{
+        BondCurrent, Interface, Lead, LeadSelfEnergies, MultiTerminal, NestedMultiTerminal,
+        NestedTwoTerminal, ScatteringStates, SelfEnergyMethod, TwoTerminal, lead_voltages,
+    };
     pub use caroli_keldysh::{Lesser, fermi};
     pub use caroli_lattice::{Lattice, Region, Site};
+    pub use caroli_model::pauli::{kron, s0, sx, sy, sz};
     pub use caroli_model::presets::{BhzParams, GFactors, bhz, bhz_exchange, bhz_spin};
-    pub use caroli_model::{CMat, Model, SparseMatrix, c64};
+    pub use caroli_model::{CMat, Model, SparseMatrix, c64, combine, gauge};
 }

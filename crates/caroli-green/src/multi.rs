@@ -134,6 +134,33 @@ pub(crate) fn attach_leads(lead: &Model, region: &Region, interfaces: &[Interfac
         .collect()
 }
 
+/// Lead voltages of a multi-terminal device in linear response (Landauer–Büttiker): from the
+/// transmissions `t[p][q]` (from lead `q` into lead `p`) and the currents `currents[p]` that flow
+/// into the device from each lead, with lead `ground` at zero. Currents in units of
+/// `(e²/h) × voltage` (spin included in the transmissions); they must add up to zero.
+///
+/// `I_p = Σ_q (T_qp V_p − T_pq V_q)`. With a unit current from a source to a drain, the voltage
+/// differences are resistances in units of `h/e²` (e.g. the Hall resistance of a Hall bar).
+pub fn lead_voltages(t: &[Vec<f64>], currents: &[f64], ground: usize) -> Vec<f64> {
+    let n = t.len();
+    assert!(currents.len() == n && t.iter().all(|row| row.len() == n), "one current per lead");
+    assert!(
+        currents.iter().sum::<f64>().abs() <= 1e-12 * currents.iter().map(|c| c.abs()).sum::<f64>().max(1.0)
+    );
+    let g = |p: usize, q: usize| {
+        if p == q { (0..n).filter(|&r| r != p).map(|r| t[r][p]).sum() } else { -t[p][q] }
+    };
+    let free: Vec<usize> = (0..n).filter(|&p| p != ground).collect();
+    let a = CMat::from_fn(free.len(), free.len(), |i, j| c64::new(g(free[i], free[j]), 0.0));
+    let b = CMat::from_fn(free.len(), 1, |i, _| c64::new(currents[free[i]], 0.0));
+    let v = caroli_dense::Lu::new(a.as_ref()).solve(b.as_ref());
+    let mut out = vec![0.0; n];
+    for (i, &p) in free.iter().enumerate() {
+        out[p] = v[(i, 0)].re;
+    }
+    out
+}
+
 /// Result of [`MultiTerminal::solve`].
 #[derive(Clone, Debug)]
 pub struct MultiSolution {

@@ -19,6 +19,71 @@ pub use sparse::SparseMatrix;
 /// Complex dense matrix (orbital blocks and Hamiltonians).
 pub type CMat = Mat<c64>;
 
+/// A matrix argument of [`Model`]: a [`CMat`], or a number for a single orbital.
+pub trait IntoMatrix {
+    fn into_matrix(self) -> CMat;
+}
+
+impl IntoMatrix for CMat {
+    fn into_matrix(self) -> CMat {
+        self
+    }
+}
+
+impl IntoMatrix for &CMat {
+    fn into_matrix(self) -> CMat {
+        self.clone()
+    }
+}
+
+impl IntoMatrix for f64 {
+    fn into_matrix(self) -> CMat {
+        CMat::from_fn(1, 1, |_, _| c64::new(self, 0.0))
+    }
+}
+
+impl IntoMatrix for c64 {
+    fn into_matrix(self) -> CMat {
+        CMat::from_fn(1, 1, |_, _| self)
+    }
+}
+
+/// Pauli matrices and Kronecker products, for spin and orbital degrees of freedom.
+pub mod pauli {
+    use crate::{CMat, c64};
+
+    fn matrix(m: [[c64; 2]; 2]) -> CMat {
+        CMat::from_fn(2, 2, |i, j| m[i][j])
+    }
+
+    const O: c64 = c64::new(0.0, 0.0);
+    const L: c64 = c64::new(1.0, 0.0);
+    const I: c64 = c64::new(0.0, 1.0);
+
+    /// The 2 × 2 identity.
+    pub fn s0() -> CMat {
+        matrix([[L, O], [O, L]])
+    }
+
+    pub fn sx() -> CMat {
+        matrix([[O, L], [L, O]])
+    }
+
+    pub fn sy() -> CMat {
+        matrix([[O, -I], [I, O]])
+    }
+
+    pub fn sz() -> CMat {
+        matrix([[L, O], [O, -L]])
+    }
+
+    /// Kronecker product `a ⊗ b` (the index of `b` varies fastest).
+    pub fn kron(a: &CMat, b: &CMat) -> CMat {
+        let (p, q) = (b.nrows(), b.ncols());
+        CMat::from_fn(a.nrows() * p, a.ncols() * q, |i, j| a[(i / p, j / q)] * b[(i % p, j % q)])
+    }
+}
+
 /// A hopping term: `⟨(R, from)| H |(R + offset, to)⟩ = matrix`. Its Hermitian conjugate (the
 /// reverse hop) is added automatically.
 #[derive(Clone, Debug)]
@@ -120,16 +185,19 @@ impl Model {
         &self.hoppings
     }
 
-    /// Sets the on-site matrix of a sublattice.
-    pub fn onsite(mut self, sub: usize, matrix: CMat) -> Self {
+    /// Sets the on-site matrix of a sublattice (a number for one orbital).
+    pub fn onsite(mut self, sub: usize, matrix: impl IntoMatrix) -> Self {
+        let matrix = matrix.into_matrix();
         let n = self.lattice.sublattices()[sub].orbitals;
         assert_eq!((matrix.nrows(), matrix.ncols()), (n, n), "on-site matrix of sublattice {sub}");
         self.onsite[sub] = matrix;
         self
     }
 
-    /// Adds a hopping `⟨(R, from)| H |(R + offset, to)⟩ = matrix` (and its conjugate).
-    pub fn hopping(mut self, from: usize, to: usize, offset: Cell, matrix: CMat) -> Self {
+    /// Adds a hopping `⟨(R, from)| H |(R + offset, to)⟩ = matrix` (and its conjugate); a number
+    /// for one orbital.
+    pub fn hopping(mut self, from: usize, to: usize, offset: Cell, matrix: impl IntoMatrix) -> Self {
+        let matrix = matrix.into_matrix();
         let subs = self.lattice.sublattices();
         assert_eq!((matrix.nrows(), matrix.ncols()), (subs[from].orbitals, subs[to].orbitals));
         assert!(offset != [0; 3] || from != to, "an on-site term is not a hopping");
@@ -453,8 +521,9 @@ impl Sink for Triplets {
     }
 }
 
-/// `Σ_i c_i M_i` for small matrices of the same shape.
-pub fn combine(terms: &[(c64, &CMat)]) -> CMat {
+/// `Σ_i c_i M_i` for small matrices of the same shape, with real or complex coefficients:
+/// `combine(&[(4.0 * t, &s0()), (e_z, &sz())])`.
+pub fn combine<C: Into<c64> + Copy>(terms: &[(C, &CMat)]) -> CMat {
     let (n, m) = (terms[0].1.nrows(), terms[0].1.ncols());
-    CMat::from_fn(n, m, |i, j| terms.iter().map(|(c, mat)| *c * mat[(i, j)]).sum())
+    CMat::from_fn(n, m, |i, j| terms.iter().map(|(c, mat)| (*c).into() * mat[(i, j)]).sum())
 }
