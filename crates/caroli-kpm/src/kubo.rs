@@ -101,15 +101,17 @@ pub fn kubo_moments(
         .collect()
 }
 
-/// Zero-temperature conductivity `σ_αβ(μ)` in units of `e²/h` at the chemical potentials `mus`
-/// (unscaled energies), from the moments of [`kubo_moments`] for `H̃ = (H − center)/half_width`
-/// and a sample of area (volume) `omega`. The energy integral runs on `grid` Chebyshev nodes.
+/// Conductivity `σ_αβ(μ, T)` in units of `e²/h` at the chemical potentials `mus` and the
+/// temperature `temperature` (unscaled energies; 0 for a step), from the moments of
+/// [`kubo_moments`] for `H̃ = (H − center)/half_width` and a sample of area (volume) `omega`.
+/// The energy integral runs on `grid` Chebyshev nodes.
 pub fn kubo_bastin(
     mu: &[Vec<c64>],
     center: f64,
     half_width: f64,
     omega: f64,
     mus: &[f64],
+    temperature: f64,
     grid: usize,
 ) -> Vec<f64> {
     let m = mu.len();
@@ -134,18 +136,24 @@ pub fn kubo_bastin(
         })
         .collect();
     let prefactor = 8.0 / (omega * half_width * half_width);
+    // ∫ dε f(ε) F(ε) = ∫ dθ sin θ f(cos θ) F(cos θ), midpoint rule on the nodes.
+    let weight = pi / grid as f64;
     mus.iter()
         .map(|&chemical| {
-            let top = ((chemical - center) / half_width).clamp(-1.0, 1.0);
-            // ∫_{−1}^{top} dε F(ε) = ∫_{arccos top}^{π} dθ sin θ F(cos θ), midpoint rule.
-            let cut = top.acos();
-            let weight = pi / grid as f64;
+            let occupation = |theta: f64| {
+                let energy = center + half_width * theta.cos();
+                if temperature == 0.0 {
+                    if energy <= chemical { 1.0 } else { 0.0 }
+                } else {
+                    let x = (energy - chemical) / temperature;
+                    if x > 0.0 { (-x).exp() / (1.0 + (-x).exp()) } else { 1.0 / (1.0 + x.exp()) }
+                }
+            };
             prefactor
                 * thetas
                     .iter()
                     .zip(&integrand)
-                    .filter(|(theta, _)| **theta > cut)
-                    .map(|(theta, f)| theta.sin() * f * weight)
+                    .map(|(&theta, f)| occupation(theta) * theta.sin() * f * weight)
                     .sum::<f64>()
         })
         .collect()

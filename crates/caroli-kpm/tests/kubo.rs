@@ -38,9 +38,17 @@ fn conductivities(m: f64, mus: &[f64]) -> (Vec<f64>, Vec<f64>) {
     let omega = (l * l) as f64;
     let sigma = |va: &caroli_model::SparseMatrix, vb: &caroli_model::SparseMatrix| {
         let mu = kubo_moments(scaled, |x, y| va.apply(x, y), |x, y| vb.apply(x, y), &starts, &kernel);
-        kubo_bastin(&mu, center, half_width, omega, mus, 1024)
+        (
+            kubo_bastin(&mu, center, half_width, omega, mus, 0.0, 1024),
+            kubo_bastin(&mu, center, half_width, omega, mus, 0.05, 1024),
+        )
     };
-    (sigma(&vx, &vx), sigma(&vx, &vy))
+    let ((xx, xx_warm), (xy, xy_warm)) = (sigma(&vx, &vx), sigma(&vx, &vy));
+    // A temperature far below the gap (half-gap 1) changes nothing.
+    for (cold, warm) in xx.iter().zip(&xx_warm).chain(xy.iter().zip(&xy_warm)) {
+        assert!((cold - warm).abs() < 1e-3, "T = 0.05: {warm} vs {cold}");
+    }
+    (xx, xy)
 }
 
 #[test]
