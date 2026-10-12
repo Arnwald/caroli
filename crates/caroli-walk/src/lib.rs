@@ -26,9 +26,11 @@
 pub mod gpu;
 pub mod graph;
 pub mod observables;
+pub mod scan;
 pub mod walk;
 
 pub use caroli_gpu::Precision;
 pub use gpu::{Device, Options, Report, evolve};
 pub use graph::Graph;
+pub use scan::{ScanOptions, ScanReport, scan};
 pub use walk::{PLUS, Real, SpinWalk, UP, fourier, grover, rotation, to_double, to_single};

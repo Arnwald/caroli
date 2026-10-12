@@ -56,6 +56,8 @@ pub struct MetalDevice {
     queue: Retained<ProtocolObject<dyn objc2_metal::MTLCommandQueue>>,
     single: Kernels,
     double_single: Kernels,
+    /// Row probabilities of an f32 walk state, added to an accumulator.
+    pub(crate) walk_accumulate: Pipeline,
 }
 
 pub(crate) fn backend(context: &str, error: &objc2_foundation::NSError) -> GpuError {
@@ -147,8 +149,9 @@ impl MetalDevice {
             })
         };
         let (single, double_single) = (kernels("f32")?, kernels("df64")?);
+        let walk_accumulate = pipeline("walk_accumulate_f32")?;
         let queue = device.newCommandQueue().ok_or_else(|| GpuError::Backend("no command queue".into()))?;
-        Ok(Self { device, queue, single, double_single })
+        Ok(Self { device, queue, single, double_single, walk_accumulate })
     }
 
     /// The GPU's name, e.g. "Apple M5".

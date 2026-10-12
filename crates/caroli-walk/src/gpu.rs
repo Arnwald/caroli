@@ -66,6 +66,48 @@ pub struct Report {
     pub cpu_steps: usize,
 }
 
+/// The tables of a walk for the GPU kernels.
+#[cfg(target_os = "macos")]
+pub(crate) struct Tables {
+    bits: usize,
+    node_rows: Vec<usize>,
+    coins: Vec<Vec<c64>>,
+    halves: Vec<(usize, usize)>,
+    exchange: [c64; 3],
+}
+
+#[cfg(target_os = "macos")]
+impl Tables {
+    pub(crate) fn of(walk: &SpinWalk) -> Self {
+        let graph = walk.graph();
+        let (p, alpha, beta) = walk.exchange();
+        Self {
+            bits: graph.edges(),
+            node_rows: (0..graph.nodes())
+                .map(|x| graph.half_edges_of(x).start)
+                .chain([graph.half_edges()])
+                .collect(),
+            coins: walk
+                .coins()
+                .iter()
+                .map(|c| (0..c.nrows()).flat_map(|i| (0..c.ncols()).map(move |j| c[(i, j)])).collect())
+                .collect(),
+            halves: (0..graph.edges()).map(|e| graph.halves(e)).collect(),
+            exchange: [p, alpha, beta],
+        }
+    }
+
+    pub(crate) fn view(&self) -> caroli_gpu::WalkTables<'_> {
+        caroli_gpu::WalkTables {
+            bits: self.bits,
+            node_rows: &self.node_rows,
+            coins: &self.coins,
+            halves: &self.halves,
+            exchange: self.exchange,
+        }
+    }
+}
+
 /// Steps per calibration: 2 % of the run, at least one, at most 200.
 fn calibration_steps(steps: usize) -> usize {
     (steps / 50).clamp(1, 200)
@@ -136,7 +178,7 @@ fn run_gpu(
     observe: &mut impl FnMut(usize, &[c64]),
     report: &mut Report,
 ) -> usize {
-    use caroli_gpu::{MetalDevice, WalkTables};
+    use caroli_gpu::MetalDevice;
     let gpu = match MetalDevice::new() {
         Ok(g) => g,
         Err(e) => {
@@ -144,23 +186,8 @@ fn run_gpu(
             return 0;
         }
     };
-    let graph = walk.graph();
-    let node_rows: Vec<usize> =
-        (0..graph.nodes()).map(|x| graph.half_edges_of(x).start).chain([graph.half_edges()]).collect();
-    let coins: Vec<Vec<c64>> = walk
-        .coins()
-        .iter()
-        .map(|c| (0..c.nrows()).flat_map(|i| (0..c.ncols()).map(move |j| c[(i, j)])).collect())
-        .collect();
-    let halves: Vec<(usize, usize)> = (0..graph.edges()).map(|e| graph.halves(e)).collect();
-    let (p, alpha, beta) = walk.exchange();
-    let tables = WalkTables {
-        bits: graph.edges(),
-        node_rows: &node_rows,
-        coins: &coins,
-        halves: &halves,
-        exchange: [p, alpha, beta],
-    };
+    let owned = Tables::of(walk);
+    let tables = owned.view();
     let norm0: f64 = psi.iter().map(|z| z.norm_sqr()).sum();
     let candidates: &[Precision] = match precision {
         Precision::Single => &[Precision::Single, Precision::DoubleSingle],

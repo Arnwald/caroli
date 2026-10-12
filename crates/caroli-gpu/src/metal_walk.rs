@@ -18,6 +18,8 @@ struct WalkParams {
     bits: u32,
     nodes: u32,
     edges: u32,
+    batch: u32,
+    coin_len: u32,
 }
 
 /// What the kernels need to know about a walk.
@@ -35,7 +37,7 @@ pub struct WalkTables<'a> {
     pub exchange: [c64; 3],
 }
 
-/// A walk state resident on the GPU.
+/// A walk state resident on the GPU, or the states of a batch of walks of one graph.
 pub struct MetalWalk<'a> {
     gpu: &'a MetalDevice,
     precision: Precision,
@@ -47,6 +49,10 @@ pub struct MetalWalk<'a> {
     coins: Buffer,
     halves: Buffer,
     exchange: Buffer,
+    /// Accumulated row probabilities (f32), one per half-edge of each walk.
+    acc: Buffer,
+    /// Rows of all the walks.
+    rows: usize,
 }
 
 fn to_u32(x: usize, what: &str) -> Result<u32, GpuError> {
@@ -62,6 +68,18 @@ impl MetalDevice {
         psi: &[c64],
         precision: Precision,
     ) -> Result<MetalWalk<'_>, GpuError> {
+        self.walks(std::slice::from_ref(tables), psi, precision)
+    }
+
+    /// Uploads a batch of walks of one graph (their coins and couplings may differ) and their
+    /// states, one after the other in `psi`, in `precision`. They step together.
+    pub fn walks(
+        &self,
+        batch: &[WalkTables],
+        psi: &[c64],
+        precision: Precision,
+    ) -> Result<MetalWalk<'_>, GpuError> {
+        let tables = batch.first().ok_or_else(|| GpuError::Backend("an empty batch".into()))?;
         let nodes = tables.node_rows.len() - 1;
         let edges = tables.halves.len();
         let rows = tables.node_rows[nodes];
@@ -69,10 +87,16 @@ impl MetalDevice {
         if bits == 0 || bits != edges {
             return Err(GpuError::Backend("one spin per edge, and at least one edge".into()));
         }
+        if batch
+            .iter()
+            .any(|t| t.bits != bits || t.node_rows != tables.node_rows || t.halves != tables.halves)
+        {
+            return Err(GpuError::Backend("the walks of a batch must share their graph".into()));
+        }
         if (0..nodes).any(|x| tables.node_rows[x + 1] - tables.node_rows[x] > MAX_DEGREE) {
             return Err(GpuError::Backend(format!("node degrees above {MAX_DEGREE}")));
         }
-        let entries = rows << bits;
+        let entries = batch.len() * (rows << bits);
         if psi.len() != entries {
             return Err(GpuError::Backend(format!("state of {} entries, {entries} expected", psi.len())));
         }
@@ -83,19 +107,28 @@ impl MetalDevice {
                 self.max_buffer_length()
             )));
         }
-        to_u32(nodes << bits, "the coin grid")?;
+        to_u32(batch.len() * (nodes << bits), "the coin grid")?;
+        to_u32(entries, "the batch")?;
         let node_rows: Vec<u32> =
             tables.node_rows.iter().map(|&r| to_u32(r, "a row index")).collect::<Result<_, _>>()?;
         let mut coin_at = Vec::with_capacity(nodes);
-        let mut coins = Vec::new();
-        for (x, coin) in tables.coins.iter().enumerate() {
+        let mut coin_len = 0;
+        for x in 0..nodes {
             let d = tables.node_rows[x + 1] - tables.node_rows[x];
-            if coin.len() != d * d {
-                return Err(GpuError::Backend(format!("node {x}: a {d} × {d} coin expected")));
-            }
-            coin_at.push(to_u32(coins.len(), "the coin table")?);
-            coins.extend_from_slice(coin);
+            coin_at.push(to_u32(coin_len, "the coin table")?);
+            coin_len += d * d;
         }
+        let mut coins = Vec::with_capacity(batch.len() * coin_len);
+        for t in batch {
+            for (x, coin) in t.coins.iter().enumerate() {
+                let d = tables.node_rows[x + 1] - tables.node_rows[x];
+                if coin.len() != d * d {
+                    return Err(GpuError::Backend(format!("node {x}: a {d} × {d} coin expected")));
+                }
+                coins.extend_from_slice(coin);
+            }
+        }
+        let exchange: Vec<c64> = batch.iter().flat_map(|t| t.exchange).collect();
         let halves: Vec<[u32; 2]> = tables
             .halves
             .iter()
@@ -104,16 +137,25 @@ impl MetalDevice {
         let mut walk = MetalWalk {
             gpu: self,
             precision,
-            params: WalkParams { bits: bits as u32, nodes: nodes as u32, edges: edges as u32 },
+            params: WalkParams {
+                bits: bits as u32,
+                nodes: nodes as u32,
+                edges: edges as u32,
+                batch: batch.len() as u32,
+                coin_len: to_u32(coin_len, "the coin table")?,
+            },
             entries,
             psi: self.buffer(bytes)?,
             node_rows: self.buffer_from(&node_rows)?,
             coin_at: self.buffer_from(&coin_at)?,
             coins: self.buffer_from(&encode(&coins, precision))?,
             halves: self.buffer_from(&halves)?,
-            exchange: self.buffer_from(&encode(&tables.exchange, precision))?,
+            exchange: self.buffer_from(&encode(&exchange, precision))?,
+            acc: self.buffer(batch.len() * rows * std::mem::size_of::<f32>())?,
+            rows: batch.len() * rows,
         };
         walk.set_state(psi);
+        walk.reset_accumulated();
         Ok(walk)
     }
 }
@@ -241,12 +283,64 @@ impl MetalWalk<'_> {
             .sqrt()
     }
 
+    /// `n` steps (f32 states only), adding after each step the probability of every half-edge
+    /// to the accumulators ([`Self::accumulated`]): for time averages, without reading the
+    /// state back.
+    pub fn steps_accumulate(&mut self, n: usize) -> Result<(), GpuError> {
+        if self.precision != Precision::Single {
+            return Err(GpuError::Backend("the accumulation takes f32 states".into()));
+        }
+        let kernels = self.gpu.kernels(self.precision);
+        let p = self.params;
+        let coin_threads = p.batch as usize * ((p.nodes as usize) << p.bits);
+        let edge_threads = p.batch as usize * ((p.edges as usize) << (p.bits - 1));
+        let entries = self.entries;
+        self.gpu.run("running the walk kernels", 3 * n, |encoder, i| match i % 3 {
+            0 => {
+                encoder.setComputePipelineState(&kernels.walk_coin);
+                // SAFETY: `walk_coin(psi, node_rows, coin_at, coins, params)`.
+                unsafe {
+                    bind(encoder, &[&self.psi, &self.node_rows, &self.coin_at, &self.coins], &[as_bytes(&p)])
+                };
+                encoder.dispatchThreadgroups_threadsPerThreadgroup(threadgroups(coin_threads), GROUP_SIZE);
+            }
+            1 => {
+                encoder.setComputePipelineState(&kernels.walk_edge);
+                // SAFETY: `walk_edge(psi, halves, exchange, params)`.
+                unsafe { bind(encoder, &[&self.psi, &self.halves, &self.exchange], &[as_bytes(&p)]) };
+                encoder.dispatchThreadgroups_threadsPerThreadgroup(threadgroups(edge_threads), GROUP_SIZE);
+            }
+            _ => {
+                encoder.setComputePipelineState(&self.gpu.walk_accumulate);
+                // SAFETY: `walk_accumulate_f32(psi, acc, params)`.
+                unsafe { bind(encoder, &[&self.psi, &self.acc], &[as_bytes(&p)]) };
+                encoder.dispatchThreadgroups_threadsPerThreadgroup(threadgroups(entries), GROUP_SIZE);
+            }
+        })
+    }
+
+    /// The accumulated probability of every half-edge.
+    pub fn accumulated(&self) -> Vec<f64> {
+        // SAFETY: the buffer holds `rows` f32 written by completed commands.
+        let acc =
+            unsafe { std::slice::from_raw_parts(self.acc.contents().as_ptr() as *const f32, self.rows) };
+        acc.iter().map(|&v| v as f64).collect()
+    }
+
+    /// Sets the accumulators to zero.
+    pub fn reset_accumulated(&mut self) {
+        // SAFETY: the buffer holds `rows` f32 and no command is running (`&mut self`).
+        let acc =
+            unsafe { std::slice::from_raw_parts_mut(self.acc.contents().as_ptr() as *mut f32, self.rows) };
+        acc.fill(0.0);
+    }
+
     /// `n` steps.
     pub fn steps(&mut self, n: usize) -> Result<(), GpuError> {
         let kernels = self.gpu.kernels(self.precision);
         let p = self.params;
-        let coin_threads = (p.nodes as usize) << p.bits;
-        let edge_threads = (p.edges as usize) << (p.bits - 1);
+        let coin_threads = p.batch as usize * ((p.nodes as usize) << p.bits);
+        let edge_threads = p.batch as usize * ((p.edges as usize) << (p.bits - 1));
         self.gpu.run("running the walk kernels", 2 * n, |encoder, i| {
             if i % 2 == 0 {
                 encoder.setComputePipelineState(&kernels.walk_coin);

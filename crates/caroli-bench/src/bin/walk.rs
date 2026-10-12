@@ -16,7 +16,7 @@
 
 use caroli_model::c64;
 use caroli_walk::observables::ks_distance;
-use caroli_walk::{Options, PLUS, Precision, SpinWalk, UP, evolve, to_double, to_single};
+use caroli_walk::{Options, PLUS, Precision, ScanOptions, SpinWalk, UP, evolve, scan, to_double, to_single};
 use serde_json::{Value, json};
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
@@ -260,36 +260,25 @@ fn gpu_runs(w: &SpinWalk, steps: usize, p_ref: &[f64], record: &mut impl FnMut(&
     );
 }
 
-/// One run of the phase-space scan: the walker on color 0 of the middle node, spins all up
-/// (`'z'`) or along +x (`'x'`); the time-averaged `p(x)` over `steps` steps and its
-/// Kolmogorov–Smirnov distance to the uniform distribution. On the calling thread.
-fn phase_point(n: usize, steps: usize, theta: f64, j: f64, spins: char, single: bool) -> (f64, Vec<f64>) {
-    let w = SpinWalk::ring(n, theta, j);
-    let state = if spins == 'z' { UP } else { PLUS };
-    let psi = w.product_state(&w.localized((n - 1) / 2, 0), &vec![state; n]);
-    let mut acc = vec![0.0; 2 * n];
-    if single {
-        let mut psi = to_single(&psi);
-        for _ in 0..steps {
-            w.step_serial_accumulate(&mut psi, &mut acc);
-        }
-    } else {
-        let mut psi = psi;
-        for _ in 0..steps {
-            w.step_serial_accumulate(&mut psi, &mut acc);
-        }
-    }
-    let total: f64 = acc.iter().sum();
-    let p: Vec<f64> = acc.chunks(2).map(|h| (h[0] + h[1]) / total).collect();
-    (ks_distance(&p), p)
+/// The Kolmogorov–Smirnov distance of each walk's time-averaged node distribution, from its
+/// summed half-edge probabilities (two half-edges per node of the ring).
+fn ks_of(sums: &[Vec<f64>]) -> Vec<f64> {
+    sums.iter()
+        .map(|acc| {
+            let total: f64 = acc.iter().sum();
+            let p: Vec<f64> = acc.chunks(2).map(|h| (h[0] + h[1]) / total).collect();
+            ks_distance(&p)
+        })
+        .collect()
 }
 
 /// The phase-space scan of Fig. 21 (Sellapillay & Verga): the Kolmogorov–Smirnov distance on a
-/// `grid × grid` mesh of (θ ∈ (0, π/2), J ∈ (0, π)) for the initial spins 'x' and 'z', every
-/// run on one thread and the runs side by side; then the Python reference on a sample of the
+/// `grid × grid` mesh of (θ ∈ (0, π/2), J ∈ (0, π)) for the initial spins 'x' and 'z', the walker
+/// starting on color 0 of the middle node. caroli runs the walks side by side
+/// (`caroli_walk::scan`): in f64, in f32, and in f32 with the GPU joining the CPU threads, the
+/// reduced-precision walks checked against f64. Then the Python reference on a sample of the
 /// runs, extrapolated to the whole scan.
 fn phase(args: &[String]) {
-    use rayon::prelude::*;
     let opt = |flag: &str| args.iter().position(|a| a == flag).and_then(|i| args.get(i + 1)).cloned();
     let n: usize = opt("--n").map_or(13, |s| s.parse().expect("n"));
     let grid: usize = opt("--grid").map_or(64, |s| s.parse().expect("grid"));
@@ -307,21 +296,31 @@ fn phase(args: &[String]) {
         .into_iter()
         .flat_map(|s| (0..grid).flat_map(move |i| (0..grid).map(move |k| (s, i, k))))
         .collect();
+    let walks: Vec<SpinWalk> =
+        runs.iter().map(|&(_, i, k)| SpinWalk::ring(n, thetas[i], couplings[k])).collect();
+    let initial = |r: usize| {
+        let state = if runs[r].0 == 'z' { UP } else { PLUS };
+        walks[r].product_state(&walks[r].localized((n - 1) / 2, 0), &vec![state; n])
+    };
     let busy_before = runner_busy();
-    let start = Instant::now();
-    let ks: Vec<f64> = runs
-        .par_iter()
-        .map(|&(s, i, k)| phase_point(n, steps, thetas[i], couplings[k], s, false).0)
-        .collect();
-    let wall = start.elapsed().as_secs_f64();
-    // The same scan with f32 states, checked against f64 on every run.
-    let start = Instant::now();
-    let ks_single: Vec<f64> =
-        runs.par_iter().map(|&(s, i, k)| phase_point(n, steps, thetas[i], couplings[k], s, true).0).collect();
-    let wall_single = start.elapsed().as_secs_f64();
+    let timed = |options: &ScanOptions| {
+        let start = Instant::now();
+        let (sums, report) = scan(&walks, initial, steps, options);
+        (ks_of(&sums), report, start.elapsed().as_secs_f64())
+    };
+    let (ks, _, wall) = timed(&ScanOptions::default());
+    let (ks_single, report_single, wall_single) =
+        timed(&ScanOptions { single: true, ..ScanOptions::default() });
+    let (ks_hybrid, report_hybrid, wall_hybrid) =
+        timed(&ScanOptions { single: true, gpu: true, ..ScanOptions::default() });
     let max_dks_single = ks.iter().zip(&ks_single).map(|(a, b)| (a - b).abs()).fold(0.0, f64::max);
+    let max_dks_hybrid = ks.iter().zip(&ks_hybrid).map(|(a, b)| (a - b).abs()).fold(0.0, f64::max);
     let threads = rayon::current_num_threads();
-    eprintln!("caroli: {} runs of {steps} steps in {wall:.1} s on {threads} threads", runs.len());
+    eprintln!(
+        "caroli: {} runs of {steps} steps in {wall:.1} s (f64), {wall_single:.1} s (f32), {wall_hybrid:.1} s (f32 with the GPU: {} walks) on {threads} threads",
+        runs.len(),
+        report_hybrid.gpu_walks
+    );
     // The Python reference on evenly spaced runs of the scan.
     let picked: Vec<usize> =
         (0..sample).map(|q| q * runs.len() / sample + runs.len() / (2 * sample)).collect();
@@ -362,7 +361,11 @@ fn phase(args: &[String]) {
         "method": "phase-scan", "n": n, "dimension": walk(n).dimension(), "grid": grid, "steps": steps,
         "runs": runs.len(), "threads": threads, "caroli_s": wall, "caroli_s_per_run_thread": wall * threads as f64 / runs.len() as f64,
         "python_sampled": seconds.len(), "python_s_per_run": per_run, "python_s_extrapolated": per_run * runs.len() as f64,
-        "max_dks": max_dks, "caroli_f32_s": wall_single, "max_dks_f32": max_dks_single, "runner_busy": busy,
+        "max_dks": max_dks, "caroli_f32_s": wall_single, "max_dks_f32": max_dks_single,
+        "caroli_hybrid_s": wall_hybrid, "max_dks_hybrid": max_dks_hybrid, "gpu_walks": report_hybrid.gpu_walks,
+        "gpu": report_hybrid.gpu, "checked": report_single.checked + report_hybrid.checked,
+        "check_deviation": report_single.deviation.max(report_hybrid.deviation),
+        "fallback": report_single.fallback.or(report_hybrid.fallback), "runner_busy": busy,
     });
     println!("{record}");
     use std::io::Write;

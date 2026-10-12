@@ -3,7 +3,7 @@
 //! the GPU in f32 and double-single. One JSON line per size and method.
 //!
 //! ```text
-//! cargo run --release -p caroli-walk --example bench -- [n...] [--steps S] [--no-csr] [--no-gpu]
+//! cargo run --release -p caroli-walk --example timing -- [n...] [--steps S] [--no-csr] [--no-gpu]
 //! ```
 
 use caroli_model::c64;
