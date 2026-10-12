@@ -1,6 +1,6 @@
 /* Serial MPI stub (one rank) for the thesis reference codes.
  *
- * Implements the Fortran MPI calls used by reference/thesis with a single process:
+ * Implements the Fortran MPI calls used by the thesis codes with a single process:
  * collectives become copies, broadcasts are no-ops, point-to-point calls abort.
  * Datatype handles from mpif.h encode the element size: size = handle / 100.
  * Symbols follow gfortran's convention (lower case, trailing underscore,
