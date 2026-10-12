@@ -47,8 +47,12 @@ assert!((device.transmission(0.0)? - 2.0).abs() < 1e-8);
     Landauer–Büttiker/Caroli conductance, multi-terminal),
   - out of equilibrium with Keldysh (G^<, local currents, bias windows),
   - spectral tools (exact diagonalisation, ribbon bands, KPM density of states),
-  - disorder averaging (self-consistent Born approximation).
-- **Acceleration**: CUDA and Metal backends where possible.
+  - disorder averaging (self-consistent Born approximation),
+  - discrete-time quantum walks: a walker coupled to spins on the edges of a graph
+    (Sellapillay & Verga, `caroli-walk`).
+- **Acceleration**: all the cores, and the GPU for the Chebyshev kernels (Metal, and CUDA in
+  f64) and the quantum walks (Metal), in reduced precision if the user chooses it: the CPU
+  checks a sample of the work and takes over when the error would exceed the tolerance.
 - **Delivery**: a workspace of reusable crates plus a user-facing interface.
 
 ## Examples (from the thesis)

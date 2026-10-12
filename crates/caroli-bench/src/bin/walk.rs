@@ -55,11 +55,11 @@ fn runner_busy() -> bool {
     use std::sync::atomic::{AtomicBool, Ordering};
     static SEEN: AtomicBool = AtomicBool::new(false);
     static WATCH: Once = Once::new();
-    let look = || !shell("pgrep", &["-f", "Runner.Worker"]).is_empty();
+    let look = || !shell("pgrep", &["-x", "Runner.Worker"]).is_empty();
     WATCH.call_once(|| {
         std::thread::spawn(move || {
             loop {
-                if !shell("pgrep", &["-f", "Runner.Worker"]).is_empty() {
+                if !shell("pgrep", &["-x", "Runner.Worker"]).is_empty() {
                     SEEN.store(true, Ordering::Relaxed);
                 }
                 std::thread::sleep(std::time::Duration::from_secs(5));
@@ -389,8 +389,13 @@ fn report(args: &[String]) {
     });
     let text = std::fs::read_to_string(&file).expect("results file");
     let mut latest: BTreeMap<(u64, String, u64), Value> = BTreeMap::new();
+    let mut scan: Option<Value> = None;
     for line in text.lines() {
         let v: Value = serde_json::from_str(line).expect("JSON line");
+        if v["method"] == "phase-scan" {
+            scan = Some(v);
+            continue;
+        }
         let key = (
             v["n"].as_u64().unwrap(),
             v["method"].as_str().unwrap().to_string(),
@@ -428,13 +433,14 @@ fn report(args: &[String]) {
             match latest.get(&(n, m.clone(), t)) {
                 Some(v) => {
                     let ms = v["s_per_step"].as_f64().unwrap() * 1e3;
+                    let flag = if v["runner_busy"] == true { "*" } else { "" };
                     let base = latest
                         .iter()
                         .find(|(k, _)| k.0 == n && k.1 == "python-sparse")
                         .map(|(_, b)| b["s_per_step"].as_f64().unwrap() * 1e3);
                     match base {
-                        Some(b) if m != "python-sparse" => print!(" {ms:.3} ({:.0}×) |", b / ms),
-                        _ => print!(" {ms:.3} |"),
+                        Some(b) if m != "python-sparse" => print!(" {ms:.3}{flag} ({:.0}×) |", b / ms),
+                        _ => print!(" {ms:.3}{flag} |"),
                     }
                 }
                 None => print!(" — |"),
@@ -448,7 +454,48 @@ fn report(args: &[String]) {
             latest.iter().find(|(k, _)| k.0 == *n).map(|(_, v)| format!("n = {n}: {}", v["dimension"]))
         })
         .collect();
-    println!("\nDimensions: {}.", dims.join(", "));
+    println!("\nDimensions: {}. * a runner job was active during the measurement.", dims.join(", "));
+    if let Some(s) = scan {
+        let f = |k: &str| s[k].as_f64().unwrap_or(f64::NAN);
+        let duration = |t: f64| {
+            if t > 5400.0 {
+                format!("{:.1} h", t / 3600.0)
+            } else if t > 90.0 {
+                format!("{:.1} min", t / 60.0)
+            } else {
+                format!("{t:.1} s")
+            }
+        };
+        let python = f("python_s_extrapolated");
+        println!(
+            "\nPhase-space scan (Fig. 21 of the paper): n = {}, {} × {} points of (θ, J) for the initial spins x and z, {} runs of {} steps; the time-averaged p(x) and its Kolmogorov–Smirnov distance to the uniform distribution.\n",
+            s["n"], s["grid"], s["grid"], s["runs"], s["steps"]
+        );
+        println!("| method | time | speed-up |\n|---|---|---|");
+        println!(
+            "| Python, U as a SciPy sparse matrix, one process (from {} runs) | {} | 1× |",
+            s["python_sampled"],
+            duration(python)
+        );
+        println!(
+            "| caroli CPU, {} threads, f64 | {} | {:.0}× |",
+            s["threads"],
+            duration(f("caroli_s")),
+            python / f("caroli_s")
+        );
+        println!(
+            "| caroli CPU, {} threads, f32 | {} | {:.0}× |",
+            s["threads"],
+            duration(f("caroli_f32_s")),
+            python / f("caroli_f32_s")
+        );
+        println!(
+            "\nLargest difference of the distance: Python against caroli {:.1e}, f32 against f64 {:.1e}.{}",
+            f("max_dks"),
+            f("max_dks_f32"),
+            if s["runner_busy"] == true { " A runner job was active during the scan." } else { "" }
+        );
+    }
 }
 
 fn main() {

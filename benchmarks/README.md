@@ -102,3 +102,41 @@ Kwant, TBtrans and Quantica.jl on a Mac mini M4 Pro.
   samples, strips, cross and BHZ, 4.7–5.9× on graphene.
 
 The first campaign, against Kwant only: [results/report-2026-10-12-08246f7.md](results/report-2026-10-12-08246f7.md).
+
+## Quantum walk on a graph of spins (`walk/`)
+
+The model of K. Sellapillay and A. D. Verga (Phys. Rev. E 103, 032123 (2021)): a walker on a
+ring of n nodes with one spin per edge, coin angle θ, coupling J; the dimension is
+n · 2^(n+1), 2·10⁷ at n = 19, their largest system. Their code is not public: the competitor is
+the method their paper describes, written in Python by `walk/reference.py`, the way a Python
+code would:
+
+- `sparse`: the one-step operator U built as a SciPy sparse matrix, then `psi = U @ psi` at
+  every step;
+- `numpy`: the same step as vectorised NumPy operations on `psi[h, s]`, without a matrix.
+
+caroli applies the step without a matrix (`crates/caroli-walk`): on the CPU in f64 or f32, on
+all the cores or one, as the explicit sparse U for comparison, and on the GPU in f32 or
+double-single, raw or checked against the CPU (`caroli_walk::evolve`).
+
+- **Same results first.** Every method's position distribution p(x) after the same steps is
+  compared with caroli's in f64: 10⁻¹⁵ for the f64 methods, 10⁻⁷ for f32.
+- **Python on one thread** (one process, BLAS threads at 1); caroli on all the cores and on one.
+- **Steps**: about a second of the SciPy reference per size, after a warm-up.
+- **Two workloads.** The time per step on rings of 13 to 25 nodes (`walk run`), and the scan of
+  the (θ, J) plane of the paper's Fig. 21 (`walk phase`): for each point and for the initial
+  spins along z and along x, 2000 steps from the middle node, the time-averaged p(x) and its
+  Kolmogorov–Smirnov distance to the uniform distribution. caroli runs one walk per thread
+  (`step_serial_accumulate`), in f64 and in f32; Python runs a sample of the points, and its
+  time is extrapolated to the whole scan.
+
+```bash
+cargo build --release -p caroli-bench --bin walk
+./target/release/walk run --sizes 13,15,17,19,21 --python-max-n 21
+./target/release/walk run --sizes 23,25 --python-max-n 0
+./target/release/walk phase --n 13 --grid 64 --steps 2000 --sample 8
+./target/release/walk report > results/walk-report.md
+```
+
+Results go to `results/walk-<machine>.jsonl`, the maps of the scan to
+`results/walk-phase-<machine>.json`.

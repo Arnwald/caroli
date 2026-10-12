@@ -25,7 +25,10 @@ crates/
   caroli-dynamics     time evolution: split-operator on tori, Chebyshev propagation, fourth-order
                       commutator-free Magnus integrator
   caroli-gpu          Chebyshev kernels (KPM, propagation) on Metal (f32, double-single) and
-                      CUDA (f64)
+                      CUDA (f64), the sweeps of caroli-walk on Metal; the device, options and
+                      report shared by the runs checked against the CPU
+  caroli-walk         discrete-time quantum walks: a walker on a graph coupled to spins on its
+                      edges (Sellapillay & Verga), on the CPU (f64, f32) and the GPU
   caroli              facade: re-exports and prelude
   caroli-validation   (not published) comparisons with the thesis golden outputs
   caroli-bench        (not published) benchmarks against other codes (`benchmarks/`)
@@ -249,7 +252,28 @@ Golden cases with disorder use the same impurity configurations as the thesis.
       - Metal: f32, and double-single (~1e-14) for f64-like accuracy. Tested on an M5: KPM on
         a 1M-orbital torus is 4× (f32) or 2× (double-single) faster than 10 CPU cores.
       - CUDA: f64 through NVRTC, feature `cuda`. Not yet run on NVIDIA hardware.
-    - Not on the GPU: dense transport solves (RGF), and FFT-based torus operators.
+    - Checked runs in reduced precision (`caroli_gpu::{Device, Options, Report}`): the user
+      chooses the device and the precision; the CPU checks a sample of the work in f64 and takes
+      over when the error would exceed the tolerance or the GPU fails, and every run reports
+      where it ran and the error measured.
+      - `kpm::accelerated::moments`: one start vector in fifty recomputed on the CPU.
+      - `dynamics::accelerated::propagate`: 2 % of the steps on both (calibration, error scaled
+        to the whole run), the norms checked at the end.
+      - `walk::evolve`: the same calibration, then the norm checked at every checkpoint, f32
+        giving way to double-single and then to the CPU, which restarts from the last good
+        checkpoint.
+    - What the GPU of Apple silicon brings, measured:
+      - Memory-bound sweeps (the quantum walk): the CPU and the GPU share the same memory and
+        reach the same bandwidth (about 230 GB/s on the M4 Pro). What halves the time is f32,
+        on either: at n = 19 the CPU on 14 threads and the GPU take 2.5 ms per step in f32,
+        5.3 ms in f64 or double-single. The GPU wins on states that fit its cache (n ≤ 15).
+      - Dense algebra (`benchmarks`-sized fronts), M5: f32 products on the GPU (Metal
+        Performance Shaders, real embedding of the complex matrices) are 4× faster than
+        Accelerate's f64 complex products from n = 1024 up, the LU 1.6× at n = 1024 and 3–5×
+        from n = 2048; below n = 512 there is no gain. Only the top fronts of the largest
+        samples are that large: about 2× on those in f32, with the transport errors measured in
+        item 12. Not implemented; a CUDA card with fast f64 is the better target for transport.
+    - Not on the GPU: dense transport solves, and FFT-based torus operators.
 12. Transport precision, chosen by the user (planned). The RGF sweep would take a `Precision`:
     - `Double`: the default, on the CPU.
     - `Single`: GPU in f32, for previews.
@@ -356,3 +380,20 @@ Golden cases with disorder use the same impurity configurations as the thesis.
       more threads each is slower.
     - Next: BHZ is bound by the complex Schur decomposition of its leads (the real pencil does
       not apply: a spin block breaks time reversal).
+14. ✅ Quantum walks (`caroli-walk`): the walk of K. Sellapillay and A. D. Verga (Phys. Rev. E
+    103, 032123 (2021)), a walker on any graph with one spin per edge, `U = V(J) M C`.
+    - Layout `ψ[h · 2^|E| + s]` (half-edge, spin configuration fastest): the coin pairs the rows
+      of a node, `V M` the two rows of an edge and, in them, the configurations with that
+      edge's spin up and down, like a one-qubit gate of a state-vector simulator. A step is two
+      sweeps over memory, without a matrix; low spin bits are processed in whole blocks.
+    - Validated against the explicit sparse `U` (and its unitarity), the free walk, and the
+      curves of the paper's Fig. 3 (`examples/paper.rs`); the benchmark checks every method's
+      `p(x)` against caroli's f64.
+    - Kernels generic over f64 and f32; `step_serial` runs one walk per thread for scans of
+      parameters, `step_serial_accumulate` adds the half-edge probabilities without another
+      sweep; Metal kernels in f32 and double-single, run through `walk::evolve`.
+    - Benchmark (`benchmarks/walk`, Mac mini M4 Pro), against the method of the paper written
+      in Python (their code is not public): at n = 19 (dimension 2·10⁷, their largest),
+      51 ms per step with U as a SciPy sparse matrix, 5.3 ms for caroli in f64 on 14 threads
+      (10×), 2.5 ms in f32 on the CPU or the GPU (20×); caroli runs n = 25 (1.7·10⁹
+      amplitudes), 0.22 s per step on the GPU in f32.

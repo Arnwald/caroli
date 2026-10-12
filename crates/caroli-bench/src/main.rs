@@ -313,7 +313,7 @@ fn shell(cmd: &str, args: &[&str]) -> String {
 
 /// A GitHub runner job in progress (it would perturb the timings).
 fn runner_busy() -> bool {
-    !shell("pgrep", &["-f", "Runner.Worker"]).is_empty()
+    !shell("pgrep", &["-x", "Runner.Worker"]).is_empty()
 }
 
 /// The RGF costs O(L W³): beyond this width it takes minutes per energy, and the smaller widths
