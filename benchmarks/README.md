@@ -38,6 +38,7 @@ O(L W³).
 | `bhz-anderson` | thesis BHZ preset, 4 orbitals | 32–256 | uniform, w = 0.5 |
 | `square-strip` | square lattice, 1 orbital, length 2048 | 32–128 | uniform, w = 1 |
 | `graphene-anderson` | honeycomb, t = 1, zigzag axis (width in cells of 2 sites) | 32–256 | uniform, w = 1 |
+| `square-cross` | square lattice, W × W square with four arms of W/4 and four leads (every T_pq) | 32–256 | uniform, w = 1 |
 
 ## Setup (Mac mini, once)
 

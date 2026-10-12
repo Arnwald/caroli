@@ -17,7 +17,7 @@
 //! at once on the threads given.
 
 use caroli_disorder::rng::Xoshiro256;
-use caroli_green::{NestedTwoTerminal, TwoTerminal};
+use caroli_green::{Interface, NestedMultiTerminal, NestedTwoTerminal, TwoTerminal};
 use caroli_lattice::{Lattice, Region, Site};
 use caroli_model::presets::{BhzParams, bhz};
 use caroli_model::{CMat, Model, c64};
@@ -40,6 +40,8 @@ struct Problem {
     model: String,
     widths: Vec<usize>,
     length: Option<usize>,
+    /// "cross": a width × width square with four arms of length width / 4, one lead per arm.
+    geometry: Option<String>,
     anderson: Option<f64>,
     seed: Option<u64>,
     energies: Vec<f64>,
@@ -94,13 +96,54 @@ fn length(p: &Problem, w: usize) -> usize {
     p.length.unwrap_or(w)
 }
 
-/// On-site disorder of a (problem, width): one value per site, index `(x · width + y) ·
-/// sublattices + sublattice`.
+fn is_cross(p: &Problem) -> bool {
+    p.geometry.as_deref() == Some("cross")
+}
+
+/// Bounding box of the sample in cells, `(nx, ny)`, and the cell at its corner.
+fn sample_box(p: &Problem, w: usize) -> ((usize, usize), (i64, i64)) {
+    if is_cross(p) {
+        let arm = w / 4;
+        ((w + 2 * arm, w + 2 * arm), (-(arm as i64), -(arm as i64)))
+    } else {
+        ((length(p, w), w), (0, 0))
+    }
+}
+
+/// On-site disorder of a (problem, width): one value per site of the bounding box, index
+/// `(x · ny + y) · sublattices + sublattice` from its corner.
 fn disorder(p: &Problem, w: usize) -> Option<Vec<f64>> {
     let strength = p.anderson?;
     let subs = clean_model(&p.model).lattice().sublattices().len();
+    let ((nx, ny), _) = sample_box(p, w);
     let mut rng = Xoshiro256::seed_from_u64(p.seed.unwrap_or(0) * 1_000_003 + w as u64);
-    Some(rng.uniforms(length(p, w) * w * subs).into_iter().map(|u| strength * (u - 0.5)).collect())
+    Some(rng.uniforms(nx * ny * subs).into_iter().map(|u| strength * (u - 0.5)).collect())
+}
+
+/// A `w × w` square with arms of length `w / 4` on its four edges, as wide as the edges, and
+/// the interfaces of their leads: left, right, bottom, top.
+fn cross(lattice: &Lattice, w: usize) -> (Region, Vec<Interface>) {
+    let (w, arm) = (w as i64, (w / 4) as i64);
+    let subs = lattice.sublattices().len();
+    let sites = |cells: Vec<(i64, i64)>| -> Vec<Site> {
+        cells
+            .into_iter()
+            .flat_map(|(x, y)| (0..subs).map(move |s| Site { cell: [x, y, 0], sub: s }))
+            .collect()
+    };
+    let cells: Vec<(i64, i64)> = (-arm..w + arm)
+        .flat_map(|x| (-arm..w + arm).map(move |y| (x, y)))
+        .filter(|&(x, y)| (0..w).contains(&x) || (0..w).contains(&y))
+        .collect();
+    let column = |x: i64| Region::from_sites(lattice, sites((0..w).map(|y| (x, y)).collect()));
+    let row = |y: i64| Region::from_sites(lattice, sites((0..w).map(|x| (x, y)).collect()));
+    let interfaces = vec![
+        Interface { slice: column(-arm), outward: [-1, 0, 0] },
+        Interface { slice: column(w + arm - 1), outward: [1, 0, 0] },
+        Interface { slice: row(-arm), outward: [0, -1, 0] },
+        Interface { slice: row(w + arm - 1), outward: [0, 1, 0] },
+    ];
+    (Region::from_sites(lattice, sites(cells)), interfaces)
 }
 
 fn matrix_json(m: &CMat) -> Value {
@@ -139,7 +182,7 @@ fn prepare() {
             })
             .collect();
         let spec = json!({
-            "name": p.name, "model": p.model, "orbitals": orbitals, "length": p.length,
+            "name": p.name, "model": p.model, "orbitals": orbitals, "length": p.length, "geometry": p.geometry,
             "anderson": p.anderson, "energies": p.energies,
             "vectors": vectors, "sublattices": sublattices, "hoppings": hoppings,
             "convention": "hopping matrix = <(R, from)|H|(R + offset, to)>; disorder index (x W + y) S + s",
@@ -164,38 +207,64 @@ fn solve(name: &str, w: usize, solver: &str) {
     let pot = disorder(&p, w);
     let t0 = Instant::now();
     let subs = clean.lattice().sublattices().len();
+    let ((_, ny), (x0, y0)) = sample_box(&p, w);
     let device = clean_model(&p.model).with_onsite_term(move |site: &Site| {
-        let k = (site.cell[0] as usize * w + site.cell[1] as usize) * subs + site.sub;
-        pot.as_ref().map(|v| scalar(v[k], n))
+        let (x, y) = ((site.cell[0] - x0) as usize, (site.cell[1] - y0) as usize);
+        pot.as_ref().map(|v| scalar(v[(x * ny + y) * subs + site.sub], n))
     });
-    let region = Region::cuboid(clean.lattice(), [l, w, 0]);
-    // Independent blocks (e.g. the spin blocks of BHZ) are solved on their own by both solvers.
-    let (transmission, block_count): (Box<dyn Fn(f64) -> f64 + Sync>, usize) = match solver {
-        "rgf" => {
-            let sys = TwoTerminal::from_model(&device, &clean, &region, 0);
-            let blocks = sys.blocks();
-            let parts: Vec<TwoTerminal> =
-                if blocks.len() > 1 { blocks.iter().map(|b| sys.restricted(b)).collect() } else { vec![sys] };
-            let count = parts.len();
-            (Box::new(move |e| parts.iter().map(|s| s.transmission(e).expect("transmission")).sum()), count)
-        }
-        _ => {
-            let sys = NestedTwoTerminal::from_model(&device, &clean, &region, 0);
-            let count = sys.block_count();
-            (Box::new(move |e| sys.transmission(e).expect("transmission")), count)
+    // Each energy gives the transmission, or for a cross the T_pq (p ≠ q, p-major).
+    // Independent blocks (e.g. the spin blocks of BHZ) are solved on their own by every solver.
+    type Solver = Box<dyn Fn(f64) -> Vec<f64> + Sync>;
+    let (transmission, block_count): (Solver, usize) = if is_cross(&p) {
+        let (region, interfaces) = cross(clean.lattice(), w);
+        let sys = NestedMultiTerminal::from_model(&device, &clean, &region, &interfaces);
+        let count = sys.block_count();
+        let off_diagonal = move |e: f64| -> Vec<f64> {
+            let t = sys.transmissions(e).expect("transmissions");
+            let n = t.len();
+            (0..n)
+                .flat_map(|p| (0..n).filter(move |&q| q != p).map(move |q| (p, q)))
+                .map(|(p, q)| t[p][q])
+                .collect()
+        };
+        (Box::new(off_diagonal), count)
+    } else {
+        let region = Region::cuboid(clean.lattice(), [l, w, 0]);
+        match solver {
+            "rgf" => {
+                let sys = TwoTerminal::from_model(&device, &clean, &region, 0);
+                let blocks = sys.blocks();
+                let parts: Vec<TwoTerminal> = if blocks.len() > 1 {
+                    blocks.iter().map(|b| sys.restricted(b)).collect()
+                } else {
+                    vec![sys]
+                };
+                let count = parts.len();
+                (
+                    Box::new(move |e| {
+                        vec![parts.iter().map(|s| s.transmission(e).expect("transmission")).sum()]
+                    }),
+                    count,
+                )
+            }
+            _ => {
+                let sys = NestedTwoTerminal::from_model(&device, &clean, &region, 0);
+                let count = sys.block_count();
+                (Box::new(move |e| vec![sys.transmission(e).expect("transmission")]), count)
+            }
         }
     };
     let build = t0.elapsed().as_secs_f64();
     let (mut times, mut ts) = (Vec::new(), Vec::new());
     for &e in &p.energies {
         let t = Instant::now();
-        ts.push(transmission(e));
+        ts.extend(transmission(e));
         times.push(t.elapsed().as_secs_f64());
     }
     // All the energies at once; on one thread this is the sum of the single-energy times.
     let parallel = if rayon::current_num_threads() > 1 {
         let t = Instant::now();
-        let _: Vec<f64> = p.energies.par_iter().map(|&e| transmission(e)).collect();
+        let _: Vec<Vec<f64>> = p.energies.par_iter().map(|&e| transmission(e)).collect();
         t.elapsed().as_secs_f64()
     } else {
         times.iter().sum()
@@ -252,7 +321,7 @@ fn run(args: &[String]) {
                 continue;
             }
             for code in &codes {
-                if code == "caroli-rgf" && w > RGF_MAX_WIDTH {
+                if code == "caroli-rgf" && (w > RGF_MAX_WIDTH || is_cross(&p)) {
                     continue;
                 }
                 for attempt in 0..3 {

@@ -7,7 +7,8 @@ disorder. Every code therefore solves the same Hamiltonian. caroli's hopping mat
 (-offset, from, to).
 
 Kwant's fastest path is used: the MUMPS solver, only the lead 0 -> lead 1 block of the
-scattering matrix, and no Hermiticity check. The script prints one JSON line.
+scattering matrix (the whole matrix for a cross, which needs every T_pq), and no Hermiticity
+check. The script prints one JSON line.
 
     python transport.py DATA_DIR PROBLEM WIDTH
 """
@@ -35,37 +36,59 @@ def main():
     subs = spec["sublattices"]
     onsites = [matrix(s["onsite"]) for s in subs]
     hoppings = [(h["from"], h["to"], tuple(-k for k in h["offset"]), matrix(h["matrix"])) for h in spec["hoppings"]]
+    cross = spec.get("geometry") == "cross"
+    arm = width // 4
+    # Bounding box of the sample and its corner cell.
+    (nx, ny), (x0, y0) = ((width + 2 * arm,) * 2, (-arm, -arm)) if cross else ((length, width), (0, 0))
     pot = None
     if spec["anderson"]:
-        pot = np.fromfile(f"{data}/{name}/disorder_W{width}.f64", dtype="<f8").reshape(length, width, len(subs))
+        pot = np.fromfile(f"{data}/{name}/disorder_W{width}.f64", dtype="<f8").reshape(nx, ny, len(subs))
     eye = np.eye(n)
 
     t0 = time.perf_counter()
     lat = kwant.lattice.general(spec["vectors"], [s["offset"] for s in subs], norbs=n)
     fams = lat.sublattices
     syst = kwant.Builder()
-    for x in range(length):
-        for y in range(width):
+    for x in range(x0, x0 + nx):
+        for y in range(y0, y0 + ny):
+            if cross and not (0 <= x < width or 0 <= y < width):
+                continue
             for k, fam in enumerate(fams):
-                syst[fam(x, y)] = onsites[k] if pot is None else onsites[k] + pot[x, y, k] * eye
+                v = onsites[k] if pot is None else onsites[k] + pot[x - x0, y - y0, k] * eye
+                syst[fam(x, y)] = v
     for a, b, delta, m in hoppings:
         syst[kwant.builder.HoppingKind(delta, fams[a], fams[b])] = m
-    lead = kwant.Builder(kwant.TranslationalSymmetry(lat.vec((-1, 0))))
-    for y in range(width):
-        for k, fam in enumerate(fams):
-            lead[fam(0, y)] = onsites[k]
-    for a, b, delta, m in hoppings:
-        lead[kwant.builder.HoppingKind(delta, fams[a], fams[b])] = m
-    syst.attach_lead(lead)
-    syst.attach_lead(lead.reversed())
+
+    def lead(direction, cells):
+        lead = kwant.Builder(kwant.TranslationalSymmetry(lat.vec(direction)))
+        for x, y in cells:
+            for k, fam in enumerate(fams):
+                lead[fam(x, y)] = onsites[k]
+        for a, b, delta, m in hoppings:
+            lead[kwant.builder.HoppingKind(delta, fams[a], fams[b])] = m
+        return lead
+
+    along_x = lead((-1, 0), [(0, y) for y in range(width)])
+    syst.attach_lead(along_x)
+    syst.attach_lead(along_x.reversed())
+    if cross:
+        # Leads in the order of caroli's interfaces: left, right, bottom, top.
+        along_y = lead((0, -1), [(x, 0) for x in range(width)])
+        syst.attach_lead(along_y)
+        syst.attach_lead(along_y.reversed())
     fsys = syst.finalized()
     build = time.perf_counter() - t0
 
     times, ts = [], []
     for e in spec["energies"]:
         t = time.perf_counter()
-        s = kwant.smatrix(fsys, e, in_leads=[0], out_leads=[1], check_hermiticity=False)
-        ts.append(float(s.transmission(1, 0)))
+        if cross:
+            # Every T_pq, p ≠ q, p-major: the full scattering matrix.
+            s = kwant.smatrix(fsys, e, check_hermiticity=False)
+            ts += [float(s.transmission(p, q)) for p in range(4) for q in range(4) if p != q]
+        else:
+            s = kwant.smatrix(fsys, e, in_leads=[0], out_leads=[1], check_hermiticity=False)
+            ts.append(float(s.transmission(1, 0)))
         times.append(time.perf_counter() - t)
 
     print(json.dumps({
