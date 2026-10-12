@@ -28,13 +28,15 @@ preparation and reports are in Rust (`crates/caroli-bench`).
 ## Problems (`transport.toml`)
 
 Two-terminal transmission of a length × width sample (length = width by default) between clean
-leads:
+leads. caroli's recursive Green's function (`caroli-rgf`) runs up to W = 256 only: it costs
+O(L W³).
 
 | name | model | widths | disorder |
 |---|---|---|---|
-| `square-clean` | square lattice, 1 orbital | 32–256 | none |
-| `square-anderson` | square lattice, 1 orbital | 32–256 | uniform, w = 2 |
-| `bhz-anderson` | thesis BHZ preset, 4 orbitals | 32–128 | uniform, w = 0.5 |
+| `square-clean` | square lattice, 1 orbital | 32–512 | none |
+| `square-anderson` | square lattice, 1 orbital | 32–512 | uniform, w = 2 |
+| `bhz-anderson` | thesis BHZ preset, 4 orbitals | 32–256 | uniform, w = 0.5 |
+| `square-strip` | square lattice, 1 orbital, length 2048 | 32–128 | uniform, w = 1 |
 
 ## Setup (Mac mini, once)
 

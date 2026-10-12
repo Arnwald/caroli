@@ -9,13 +9,13 @@
 [[problem]]
 name = "square-clean"
 model = "square"
-widths = [32, 64, 128, 256]
+widths = [32, 64, 128, 256, 512]
 energies = [-3.3, -2.5, -1.7, -0.9, 0.1, 0.9, 1.7, 2.5]
 
 [[problem]]
 name = "square-anderson"
 model = "square"
-widths = [32, 64, 128, 256]
+widths = [32, 64, 128, 256, 512]
 anderson = 2.0
 seed = 1
 energies = [-3.3, -2.5, -1.7, -0.9, 0.1, 0.9, 1.7, 2.5]
@@ -23,7 +23,17 @@ energies = [-3.3, -2.5, -1.7, -0.9, 0.1, 0.9, 1.7, 2.5]
 [[problem]]
 name = "bhz-anderson"
 model = "bhz"
-widths = [32, 64, 128]
+widths = [32, 64, 128, 256]
 anderson = 0.5
 seed = 2
 energies = [-0.3, -0.1, 0.0, 0.05, 0.1, 0.3, 0.6, 1.0]
+
+# Long strips: 2048 slices.
+[[problem]]
+name = "square-strip"
+model = "square"
+widths = [32, 64, 128]
+length = 2048
+anderson = 1.0
+seed = 3
+energies = [-3.3, -2.5, -1.7, -0.9, 0.1, 0.9, 1.7, 2.5]

@@ -201,6 +201,10 @@ fn runner_busy() -> bool {
     !shell("pgrep", &["-f", "Runner.Worker"]).is_empty()
 }
 
+/// The RGF costs O(L W³): beyond this width it takes minutes per energy, and the smaller widths
+/// already show its scaling.
+const RGF_MAX_WIDTH: usize = 256;
+
 fn run(args: &[String]) {
     let opt = |flag: &str| args.iter().position(|a| a == flag).and_then(|i| args.get(i + 1)).cloned();
     let codes: Vec<String> = match opt("--code").as_deref() {
@@ -226,6 +230,9 @@ fn run(args: &[String]) {
                 continue;
             }
             for code in &codes {
+                if code == "caroli-rgf" && w > RGF_MAX_WIDTH {
+                    continue;
+                }
                 for attempt in 0..3 {
                     // Wait for the GitHub runner to be idle (a CI job would perturb the timings).
                     let mut waited = false;
