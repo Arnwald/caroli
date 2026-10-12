@@ -1,16 +1,18 @@
 //! The figures of the benchmark page, computed with caroli:
 //!
-//! - local spin currents along the helical edges of a BHZ ribbon (quantum spin Hall effect), with
-//!   Anderson disorder, then with magnetic impurities polarised along z;
+//! - local currents in a BHZ ribbon (quantum spin Hall effect) with magnetic impurities polarised
+//!   along z, as in the thesis: the current injected by the left lead over the spin-up fraction of
+//!   the injected density, for the same-g and opposite-g couplings, three regimes each;
 //! - the conductance of a clean BHZ ribbon;
 //! - a Hall bar in the quantum Hall regime: the local current and the Hall resistance;
 //! - the edge states of a zigzag graphene ribbon.
 //!
 //! ```text
-//! cargo run --release -p caroli --example gallery -- OUT_DIR
+//! cargo run --release -p caroli --example gallery -- OUT_DIR [FIGURE...]
 //! ```
 //!
-//! Each figure is a JSON array of rows in `OUT_DIR`.
+//! Each figure is a JSON array of rows in `OUT_DIR`. The figures are `spin_currents`,
+//! `bhz_conductance`, `hall_bar` and `graphene_edges`; all of them by default.
 
 use caroli::prelude::*;
 use serde_json::{Value, json};
@@ -48,11 +50,27 @@ fn spin_projectors() -> [CMat; 2] {
     [up, down]
 }
 
-/// Quantum spin Hall ribbon: spin-resolved local currents injected by the left lead, and the
-/// spin-resolved transmissions, for an Anderson-disordered device and for one with polarised
-/// magnetic impurities.
+/// `v` rounded to four significant digits, to keep the JSON small.
+fn round4(v: f64) -> f64 {
+    if v == 0.0 || !v.is_finite() {
+        return v;
+    }
+    let scale = 10f64.powi(3 - v.abs().log10().floor() as i32);
+    (v * scale).round() / scale
+}
+
+/// Local currents in a quantum spin Hall ribbon with magnetic impurities, as in the local-current
+/// figure of the thesis: a 400 × 64 BHZ ribbon whose 256 central columns carry impurities on 20 %
+/// of the sites, moments along z, between two clean buffers of 72 columns. The left lead injects
+/// the current in a bias window of ±0.001 around the Fermi energy (ten energies). For the same-g
+/// and opposite-g couplings, three exchange strengths J_I and Fermi energies each, from two
+/// channels to almost none: on every third site, as means over 3 × 3 blocks, the current and the
+/// spin-up fraction ρ↑/(ρ↑ + ρ↓) of the injected density; and the transmission and its
+/// spin-resolved parts, means over the window.
 fn spin_currents(dir: &str) {
-    let (l, w, e) = (48i64, 24i64, -0.05);
+    const BLOCK: i64 = 3;
+    let (l, w, disordered) = (400i64, 64i64, 256i64);
+    let buffer = (l - disordered) / 2;
     let clean = bhz(BhzParams::default());
     let lat = clean.lattice().clone();
     let region = Region::cuboid(&lat, [l as usize, w as usize, 0]);
@@ -61,35 +79,83 @@ fn spin_currents(dir: &str) {
         Interface { slice: slices[0].clone(), outward: [-1, 0, 0] },
         Interface { slice: slices[l as usize - 1].clone(), outward: [1, 0, 0] },
     ];
-    let interior: Vec<Site> =
-        region.sites().iter().copied().filter(|s| s.cell[0] > 0 && s.cell[0] < l - 1).collect();
-    let mut rng = Xoshiro256::seed_from_u64(11);
-    let anderson =
-        bhz(BhzParams::default()).with_onsite_term(Anderson::generate(&mut rng, &interior, 0.5).onsite(4));
+    let candidates: Vec<Site> = region
+        .sites()
+        .iter()
+        .copied()
+        .filter(|s| (buffer..buffer + disordered).contains(&s.cell[0]))
+        .collect();
     let mut rng = Xoshiro256::seed_from_u64(7);
     let impurities = MagneticImpurities::generate(
         &mut rng,
-        &interior,
-        (0.2 * interior.len() as f64).round() as usize,
+        &candidates,
+        (0.2 * candidates.len() as f64) as usize,
         Moments::Polarized { mz: 1.0 },
     );
-    let magnetic =
-        bhz(BhzParams::default()).with_onsite_term(impurities.exchange(1.0, &bhz_spin(GFactors::Same)));
+    let [up, down] = spin_projectors();
+    let block = |s: Site| (s.cell[0] / BLOCK, s.cell[1] / BLOCK);
     let (mut rows, mut totals) = (Vec::new(), Vec::new());
-    for (case, device) in [("anderson", anderson), ("magnetic", magnetic)] {
+    // The panels of the thesis figure: coupling, panel (top to bottom), E_F, J_I.
+    let panels = [
+        (GFactors::Opposite, 1, 0.053333, 0.2),
+        (GFactors::Opposite, 2, 0.053333, 0.666),
+        (GFactors::Opposite, 3, 0.053333, 1.6),
+        (GFactors::Same, 1, -0.08889, 0.2),
+        (GFactors::Same, 2, -0.08889, 1.0714),
+        (GFactors::Same, 3, 0.1, 1.4),
+    ];
+    for (coupling, panel, e_f, j_i) in panels {
+        let name = if coupling == GFactors::Same { "same" } else { "opposite" };
+        let device =
+            bhz(BhzParams::default()).with_onsite_term(impurities.exchange(j_i, &bhz_spin(coupling)));
         let sys = NestedMultiTerminal::from_model(&device, &clean, &region, &interfaces);
-        let states = sys.scattering_states(e).expect("scattering states");
-        let sectors =
-            sys.sector_transmissions(e, &[Some(vec![0, 0, 1, 1]), Some(vec![0, 0, 1, 1])]).expect("sectors");
-        let at = |p: (usize, usize)| sectors.labels.iter().position(|&x| x == p).expect("label");
-        for (k, (spin, op)) in ["up", "down"].into_iter().zip(spin_projectors()).enumerate() {
-            totals
-                .push(json!({"case": case, "spin": spin, "transmission": sectors.t[at((1, k))][at((0, k))]}));
-            let bonds = sys.operator_currents(&states, &[1.0, 0.0], &op);
-            for (site, j) in site_currents(&lat, &bonds) {
-                let r = lat.position(site);
-                rows.push(json!({"case": case, "spin": spin, "x": r[0], "y": r[1], "jx": j[0], "jy": j[1]}));
+        let energies: Vec<f64> = (0..10).map(|k| e_f - 0.0009 + 0.0002 * k as f64).collect();
+        // Per block: x, y, jx, jy, ρ↑, ρ↓ summed over its sites (and the currents and densities
+        // over the energies), and the number of sites.
+        let mut sums: BTreeMap<(i64, i64), [f64; 7]> = BTreeMap::new();
+        for site in region.sites() {
+            let r = lat.position(*site);
+            let b = sums.entry(block(*site)).or_insert([0.0; 7]);
+            b[0] += r[0];
+            b[1] += r[1];
+            b[6] += 1.0;
+        }
+        let (mut t, mut t_up, mut t_down) = (0.0, 0.0, 0.0);
+        for &e in &energies {
+            let states = sys.scattering_states(e).expect("scattering states");
+            for (site, j) in site_currents(&lat, &sys.bond_currents(&states, &[1.0, 0.0])) {
+                let b = sums.get_mut(&block(site)).expect("block");
+                b[2] += j[0];
+                b[3] += j[1];
             }
+            let rho_up = sys.site_densities(&states, &[1.0, 0.0], Some(&up));
+            let rho_down = sys.site_densities(&states, &[1.0, 0.0], Some(&down));
+            for ((site, ru), rd) in region.sites().iter().zip(&rho_up).zip(&rho_down) {
+                let b = sums.get_mut(&block(*site)).expect("block");
+                b[4] += ru;
+                b[5] += rd;
+            }
+            let sectors = sys
+                .sector_transmissions(e, &[Some(vec![0, 0, 1, 1]), Some(vec![0, 0, 1, 1])])
+                .expect("sectors");
+            let at = |p: (usize, usize)| sectors.labels.iter().position(|&x| x == p).expect("label");
+            // From spin b of the left lead to spin a of the right one.
+            let pair = |a: usize, b: usize| sectors.t[at((1, a))][at((0, b))];
+            t += pair(0, 0) + pair(0, 1) + pair(1, 0) + pair(1, 1);
+            t_up += pair(0, 0);
+            t_down += pair(1, 1);
+        }
+        let ne = energies.len() as f64;
+        totals.push(json!({
+            "coupling": name, "panel": panel, "e_f": e_f, "j_i": j_i,
+            "g": t / ne, "t_up": t_up / ne, "t_down": t_down / ne,
+        }));
+        for b in sums.values() {
+            let n = b[6];
+            rows.push(json!({
+                "coupling": name, "panel": panel, "x": b[0] / n, "y": b[1] / n,
+                "jx": round4(b[2] / (n * ne)), "jy": round4(b[3] / (n * ne)), "up": round4(b[4] / (b[4] + b[5])),
+            }));
         }
     }
     let imp: Vec<Value> = impurities
@@ -194,11 +260,23 @@ fn graphene_edges(dir: &str) {
     write(dir, "graphene_ldos", &rows);
 }
 
+/// A figure: its name and the function that writes its rows.
+type Figure = (&'static str, fn(&str));
+
 fn main() {
-    let dir = std::env::args().nth(1).unwrap_or_else(|| ".".into());
+    let args: Vec<String> = std::env::args().skip(1).collect();
+    let dir = args.first().cloned().unwrap_or_else(|| ".".into());
+    let only = args.get(1..).unwrap_or_default();
     std::fs::create_dir_all(&dir).expect("output directory");
-    spin_currents(&dir);
-    bhz_conductance(&dir);
-    hall_bar(&dir);
-    graphene_edges(&dir);
+    let figures: [Figure; 4] = [
+        ("spin_currents", spin_currents),
+        ("bhz_conductance", bhz_conductance),
+        ("hall_bar", hall_bar),
+        ("graphene_edges", graphene_edges),
+    ];
+    for (name, figure) in figures {
+        if only.is_empty() || only.iter().any(|o| o == name) {
+            figure(&dir);
+        }
+    }
 }
