@@ -53,6 +53,10 @@ The dependencies only go downward: lattice ← model ← green ← caroli, and d
 - **Model** = on-site matrix per sublattice + hoppings `⟨(R, a)| H |(R + offset, b)⟩` (their
   conjugates are implied) + site-dependent terms (`OnSite` trait: disorder, potentials).
   The Bloch convention is `H(k) = Σ_n H_{0n} e^{i k·n}`.
+- **Model inputs**: on-site and hopping terms take a `CMat` or, for one orbital, a number
+  (`IntoMatrix`). `pauli::{s0, sx, sy, sz, kron}` and `combine(&[(c, &M), ...])` (real or complex
+  coefficients) build spin and orbital matrices. `lead_voltages` solves the Landauer–Büttiker
+  equations of a multi-terminal device (Hall and longitudinal resistances).
 - **Magnetic field**: Peierls phases, `Model::with_peierls(φ)` multiplies every hopping
   `⟨i| H |j⟩` by `exp(i φ(r_i, r_j))`. `caroli_model::gauge` gives uniform fields in the Landau
   (x or y) and symmetric gauges; `b` is the phase per unit area, so the flux quantum is 2π.
@@ -169,6 +173,7 @@ The dependencies only go downward: lattice ← model ← green ← caroli, and d
 | 2013 recursive "spin DOS" | `ti-dos-spin-lesser` | replayed to 7e-11; the program never forms G^< and its up/down sums are a split by position |
 | 2014 manuscript code: G, LDOS, bond currents with Anderson disorder | `ti-cond-ldos-current` | reproduced to 1e-14 (its leads sit at −ev while the boundary slices carry +ev) |
 | QSH plateau, modes vs decimation, T_LR = T_RL, current conservation = Landauer | — | internal consistency |
+| Kwant's tutorials (`caroli/tests/tutorials.rs`): quantum wire steps, Rashba wire, Aharonov–Bohm ring, zigzag graphene ribbon, Hall bar resistances | — | the physics each one shows |
 
 Golden cases with disorder use the same impurity configurations as the thesis.
 `caroli_disorder::rng::Xoshiro256::gfortran` reproduces gfortran's `random_seed(put=…)` and
