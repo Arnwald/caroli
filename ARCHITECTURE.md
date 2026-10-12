@@ -292,6 +292,12 @@ Golden cases with disorder use the same impurity configurations as the thesis.
       `NestedTwoTerminal` takes 0.127 s per energy at W = 256 and 0.026 s at W = 128 (M5, one
       thread). The elimination is now the main cost there. BHZ leads keep the general
       algorithm.
+    - Benchmarks of 2026-10-12 on the idle Mac mini (`benchmarks/results/`), one thread, per
+      energy: caroli is 9–13× faster than Kwant on the square lattice (W up to 512), the long
+      strips and the four-terminal cross, 3–11× on BHZ (W up to 256) and 2–4× on graphene,
+      with 2–8× less memory; transmissions agree to 1e-10 (7e-8 at worst). On 14 threads the
+      eight energies of a problem take 5–6× less time than on one: the matrix units are shared
+      by each cluster of cores.
     - Leaves of 16 orbitals instead of 64: a dense leaf of L sites costs L³, so the leaves
       cost N L² in all and outweighed the top separators. Square lattice at W = 256: 0.106 s
       per energy (was 0.134 s).

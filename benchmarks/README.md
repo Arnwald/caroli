@@ -63,3 +63,9 @@ cargo build --release -p caroli-bench
 
 Results are appended to `results/<machine>.jsonl`, one JSON line per run. The report keeps
 the latest run of each case.
+
+## Latest results
+
+[results/report-2026-10-12-08246f7.md](results/report-2026-10-12-08246f7.md): caroli against
+Kwant on a Mac mini M4 Pro, one thread: 9–13× faster on square lattices, strips and the
+four-terminal cross, 3–11× on BHZ, 2–4× on graphene, with 2–8× less memory.
