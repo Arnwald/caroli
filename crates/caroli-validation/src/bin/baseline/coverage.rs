@@ -3,7 +3,8 @@
 //!
 //! A code file of the original tree (`~/Projects/electronic-transport`, excluding the
 //! `thesis-code` link and LAPACK95) is covered if its content (sha1) exists in
-//! reference/thesis, or if it is listed in EXCLUDED.tsv (per-run copy or off-topic).
+//! reference/thesis, if it is listed in EXCLUDED.tsv (per-run copy or off-topic), or if it is
+//! third-party code kept out of the repository for want of a license (THIRD_PARTY.tsv).
 
 use crate::compile::repo;
 use std::collections::{BTreeMap, BTreeSet};
@@ -14,9 +15,9 @@ const CODE_EXT: &[&str] = &[
     "job",
 ];
 /// Documentation files of reference/thesis itself.
-const OWN_FILES: &[&str] = &["README.md", "CLAUDE.md", "MANIFEST.tsv", "EXCLUDED.tsv"];
+const OWN_FILES: &[&str] = &["README.md", "CLAUDE.md", "MANIFEST.tsv", "EXCLUDED.tsv", "THIRD_PARTY.tsv"];
 
-fn sha1(path: &Path) -> String {
+pub(crate) fn sha1(path: &Path) -> String {
     sha1_smol::Sha1::from(std::fs::read(path).unwrap_or_default()).digest().to_string()
 }
 
@@ -90,9 +91,18 @@ pub fn run(orig: Option<&str>, manifest: bool) -> bool {
         .filter_map(|l| l.split('\t').next().map(str::to_owned))
         .collect();
 
+    let third_party: BTreeSet<String> = std::fs::read_to_string(here.join("THIRD_PARTY.tsv"))
+        .unwrap_or_default()
+        .lines()
+        .filter(|l| !l.starts_with('#'))
+        .filter_map(|l| l.split('\t').nth(1).map(str::to_owned))
+        .collect();
+
     let missing: Vec<&Vec<String>> = by_hash
         .iter()
-        .filter(|(h, paths)| !have.contains(h) && !paths.iter().any(|p| excluded.contains(p)))
+        .filter(|(h, paths)| {
+            !have.contains(h) && !third_party.contains(*h) && !paths.iter().any(|p| excluded.contains(p))
+        })
         .map(|(_, p)| p)
         .collect();
     println!(
@@ -100,7 +110,12 @@ pub fn run(orig: Option<&str>, manifest: bool) -> bool {
         by_hash.values().map(Vec::len).sum::<usize>(),
         by_hash.len()
     );
-    println!("reference/thesis: {} files; documented exclusions: {}", present.len(), excluded.len());
+    println!(
+        "reference/thesis: {} files; documented exclusions: {}; third-party contents kept out: {}",
+        present.len(),
+        excluded.len(),
+        third_party.len()
+    );
     println!("not covered   : {}", missing.len());
     for paths in &missing {
         let first = paths.iter().min().unwrap();

@@ -29,5 +29,7 @@ Read `README.md` for the scope.
 - Commit and push each validated step directly to `main`.
 - Magnetic exchange coupling: use **same-g** / **opposite-g** (g_E = ±g_H). The thesis
   "ferro"/"antiferro" labels stay only where they name original files or folders.
-- The repository is private until the toolbox is ready and the rights to the reference code are
-  settled. It includes code by collaborators: Laurent's contact modules and A. Verga's FFTW wrapper.
+- The repository is private until the toolbox is ready. Code by collaborators without a license
+  (Laurent's contact modules, A. Verga's FFTW wrapper and scripts) is kept out of it:
+  `reference/thesis/THIRD_PARTY.tsv` lists it, and the baseline build takes it from the original
+  tree. It is still in the git history, which must be cleaned before the repository goes public.

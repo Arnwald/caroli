@@ -327,17 +327,58 @@ fn build_order(files: &[PathBuf], info: &BTreeMap<PathBuf, SourceInfo>, roots: &
     order
 }
 
-/// Copies the Fortran sources of `src` into `dst`, applying the patches; returns those applied.
-fn patched_copy(src: &Path, dst: &Path) -> std::io::Result<Vec<String>> {
-    std::fs::create_dir_all(dst)?;
+/// The original thesis tree (`THESIS_ORIG`, by default `~/Projects/electronic-transport`).
+fn original_tree() -> PathBuf {
+    let raw = env_or("THESIS_ORIG", "~/Projects/electronic-transport");
+    match raw.strip_prefix("~/") {
+        Some(rest) => PathBuf::from(std::env::var("HOME").unwrap_or_default()).join(rest),
+        None => PathBuf::from(raw),
+    }
+}
+
+/// Third-party sources of `dir` (a directory of reference/thesis) that the repository leaves
+/// out for want of a license (`reference/thesis/THIRD_PARTY.tsv`), taken from the original tree
+/// and checked against their sha1.
+fn third_party_sources(dir: &str) -> Result<Vec<PathBuf>, String> {
+    let list = std::fs::read_to_string(repo().join("reference/thesis/THIRD_PARTY.tsv")).unwrap_or_default();
+    let mut out = Vec::new();
+    for line in list.lines().filter(|l| !l.starts_with('#')) {
+        let cols: Vec<&str> = line.split('\t').collect();
+        let Some(file) = cols.first().map(Path::new) else { continue };
+        let is_source = file.extension().is_some_and(|x| x == "f90" || x == "f");
+        if !is_source || file.parent() != Some(Path::new(dir)) || cols.len() < 3 {
+            continue;
+        }
+        // The first origin when the file was copied from several places.
+        let origin = original_tree().join(cols[2].split(" | ").next().unwrap_or_default());
+        if !origin.is_file() || crate::coverage::sha1(&origin) != cols[1] {
+            return Err(format!(
+                "{} is third-party code kept out of the repository: expected at {} (set THESIS_ORIG)",
+                file.display(),
+                origin.display()
+            ));
+        }
+        out.push(origin);
+    }
+    Ok(out)
+}
+
+/// Copies the Fortran sources of `src` (the directory `dir` of reference/thesis) into `dst`,
+/// with the third-party ones from the original tree, applying the patches; returns those
+/// applied.
+fn patched_copy(src: &Path, dir: &str, dst: &Path) -> Result<Vec<String>, String> {
+    let io = |e: std::io::Error| e.to_string();
+    std::fs::create_dir_all(dst).map_err(io)?;
     let mut applied = Vec::new();
-    let mut files: Vec<PathBuf> = std::fs::read_dir(src)?
+    let mut files: Vec<PathBuf> = std::fs::read_dir(src)
+        .map_err(io)?
         .filter_map(|e| Some(e.ok()?.path()))
         .filter(|p| p.extension().is_some_and(|x| x == "f90" || x == "f"))
         .collect();
-    files.sort();
+    files.extend(third_party_sources(dir)?);
+    files.sort_by_key(|f| f.file_name().map(|n| n.to_owned()));
     for f in files {
-        let mut text = String::from_utf8_lossy(&std::fs::read(&f)?).into_owned();
+        let mut text = String::from_utf8_lossy(&std::fs::read(&f).map_err(io)?).into_owned();
         for p in PATCHES {
             let re = Regex::new(p.pattern).expect("patch pattern");
             if re.is_match(&text) {
@@ -345,7 +386,7 @@ fn patched_copy(src: &Path, dst: &Path) -> std::io::Result<Vec<String>> {
                 applied.push(format!("{} ({})", p.name, f.file_name().unwrap().to_string_lossy()));
             }
         }
-        std::fs::write(dst.join(f.file_name().unwrap()), text)?;
+        std::fs::write(dst.join(f.file_name().unwrap()), text).map_err(io)?;
     }
     Ok(applied)
 }
@@ -380,7 +421,7 @@ fn program(id: &str, dir: &str, check: bool) -> bool {
     let (shims, lapack95) = (t.join("shims"), t.join("lapack95"));
     let src = t.join(format!("src{tag}")).join(id);
     let _ = std::fs::remove_dir_all(&src);
-    let patches = match patched_copy(&repo().join("reference/thesis").join(dir), &src) {
+    let patches = match patched_copy(&repo().join("reference/thesis").join(dir), dir, &src) {
         Ok(p) => p,
         Err(e) => {
             eprintln!("FAIL  {id}: {e}");
