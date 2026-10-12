@@ -19,7 +19,13 @@ use caroli_model::c64;
 pub mod metal;
 
 #[cfg(target_os = "macos")]
+mod metal_walk;
+
+#[cfg(target_os = "macos")]
 pub use metal::{MetalDevice, MetalOperator};
+
+#[cfg(target_os = "macos")]
+pub use metal_walk::{MAX_DEGREE, MetalWalk, WalkTables};
 
 #[cfg(feature = "cuda")]
 pub mod cuda;

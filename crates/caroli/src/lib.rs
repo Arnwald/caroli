@@ -24,6 +24,7 @@ pub use caroli_kpm as kpm;
 pub use caroli_lattice as lattice;
 pub use caroli_model as model;
 pub use caroli_torus as torus;
+pub use caroli_walk as walk;
 
 /// The types needed for most calculations.
 pub mod prelude {

@@ -13,6 +13,7 @@ cuda = ["dep:cudarc"]
 
 [dependencies]
 caroli-model.workspace = true
+rayon.workspace = true
 thiserror.workspace = true
 cudarc = { version = "0.19.10", optional = true, default-features = false, features = ["std", "driver", "nvrtc", "dynamic-loading", "cuda-version-from-build-system", "fallback-latest"] }
 

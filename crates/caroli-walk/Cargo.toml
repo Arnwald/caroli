@@ -1,0 +1,15 @@
+[package]
+name = "caroli-walk"
+description = "Discrete-time quantum walks for caroli: a walker on a graph coupled to spins on its edges, on the CPU and the GPU."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+caroli-model.workspace = true
+caroli-dense.workspace = true
+caroli-gpu.workspace = true
+faer.workspace = true
+rayon.workspace = true

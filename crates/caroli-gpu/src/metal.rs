@@ -1,4 +1,4 @@
-//! Metal backend (`chebyshev.metal`). The kernels are compiled from source when the device is
+//! Metal backend (`common.metal`, `chebyshev.metal`, `walk.metal`). The kernels are compiled from source when the device is
 //! opened, without fast math (the double-single arithmetic needs exact IEEE rounding). Buffers
 //! live in shared memory: on Apple Silicon the CPU reads the results without a copy.
 
@@ -16,17 +16,18 @@ use objc2_metal::{
 use std::ffi::c_void;
 use std::ptr::NonNull;
 
-const SOURCE: &str = include_str!("chebyshev.metal");
+const SOURCE: &str =
+    concat!(include_str!("common.metal"), include_str!("chebyshev.metal"), include_str!("walk.metal"));
 
 /// Threads per threadgroup (`GROUP` in the kernels).
-const GROUP: usize = 256;
+pub(crate) const GROUP: usize = 256;
 
 /// Dispatches encoded per command buffer.
 const BATCH: usize = 256;
 
-type Buffer = Retained<ProtocolObject<dyn MTLBuffer>>;
-type Pipeline = Retained<ProtocolObject<dyn MTLComputePipelineState>>;
-type Encoder = Retained<ProtocolObject<dyn MTLComputeCommandEncoder>>;
+pub(crate) type Buffer = Retained<ProtocolObject<dyn MTLBuffer>>;
+pub(crate) type Pipeline = Retained<ProtocolObject<dyn MTLComputePipelineState>>;
+pub(crate) type Encoder = Retained<ProtocolObject<dyn MTLComputeCommandEncoder>>;
 type Commands = Retained<ProtocolObject<dyn MTLCommandBuffer>>;
 
 /// `Params` of the kernels.
@@ -40,11 +41,13 @@ struct Params {
     slot: u32,
 }
 
-struct Kernels {
+pub(crate) struct Kernels {
     kpm_step: Pipeline,
     reduce_partials: Pipeline,
     propagate_step: Pipeline,
     propagate_init: Pipeline,
+    pub(crate) walk_coin: Pipeline,
+    pub(crate) walk_edge: Pipeline,
 }
 
 /// The GPU, its command queue and the compiled kernels.
@@ -55,12 +58,12 @@ pub struct MetalDevice {
     double_single: Kernels,
 }
 
-fn backend(context: &str, error: &objc2_foundation::NSError) -> GpuError {
+pub(crate) fn backend(context: &str, error: &objc2_foundation::NSError) -> GpuError {
     GpuError::Backend(format!("{context}: {}", error.localizedDescription()))
 }
 
 /// Floats per complex number.
-fn width(precision: Precision) -> usize {
+pub(crate) fn width(precision: Precision) -> usize {
     match precision {
         Precision::Single => 2,
         Precision::DoubleSingle => 4,
@@ -73,7 +76,7 @@ fn split(x: f64) -> [f32; 2] {
     [hi, (x - hi as f64) as f32]
 }
 
-fn encode(z: &[c64], precision: Precision) -> Vec<f32> {
+pub(crate) fn encode(z: &[c64], precision: Precision) -> Vec<f32> {
     match precision {
         Precision::Single => z.iter().flat_map(|v| [v.re as f32, v.im as f32]).collect(),
         Precision::DoubleSingle => z
@@ -86,7 +89,7 @@ fn encode(z: &[c64], precision: Precision) -> Vec<f32> {
     }
 }
 
-fn decode(data: &[f32], precision: Precision) -> Vec<c64> {
+pub(crate) fn decode(data: &[f32], precision: Precision) -> Vec<c64> {
     match precision {
         Precision::Single => data.chunks_exact(2).map(|v| c64::new(v[0] as f64, v[1] as f64)).collect(),
         Precision::DoubleSingle => data
@@ -96,11 +99,11 @@ fn decode(data: &[f32], precision: Precision) -> Vec<c64> {
     }
 }
 
-fn threadgroups(total: usize) -> MTLSize {
+pub(crate) fn threadgroups(total: usize) -> MTLSize {
     MTLSize { width: total.div_ceil(GROUP), height: 1, depth: 1 }
 }
 
-const GROUP_SIZE: MTLSize = MTLSize { width: GROUP, height: 1, depth: 1 };
+pub(crate) const GROUP_SIZE: MTLSize = MTLSize { width: GROUP, height: 1, depth: 1 };
 
 impl MetalDevice {
     /// The default GPU with the kernels compiled. Fails where there is no GPU (virtual
@@ -139,6 +142,8 @@ impl MetalDevice {
                 reduce_partials: pipeline(&format!("reduce_partials_{suffix}"))?,
                 propagate_step: pipeline(&format!("propagate_step_{suffix}"))?,
                 propagate_init: pipeline(&format!("propagate_init_{suffix}"))?,
+                walk_coin: pipeline(&format!("walk_coin_{suffix}"))?,
+                walk_edge: pipeline(&format!("walk_edge_{suffix}"))?,
             })
         };
         let (single, double_single) = (kernels("f32")?, kernels("df64")?);
@@ -151,14 +156,55 @@ impl MetalDevice {
         self.device.name().to_string()
     }
 
-    fn kernels(&self, precision: Precision) -> &Kernels {
+    /// Largest buffer the device can allocate, in bytes.
+    pub fn max_buffer_length(&self) -> usize {
+        self.device.maxBufferLength()
+    }
+
+    /// Runs `dispatches` encoded by `encode_one(encoder, index)`, `BATCH` per command buffer,
+    /// and waits for the last. The dispatches of an encoder run one after the other.
+    pub(crate) fn run(
+        &self,
+        context: &str,
+        dispatches: usize,
+        mut encode_one: impl FnMut(&Encoder, usize),
+    ) -> Result<(), GpuError> {
+        let mut submitted: Vec<Commands> = Vec::new();
+        let mut index = 0;
+        while index < dispatches {
+            let commands =
+                self.queue.commandBuffer().ok_or_else(|| GpuError::Backend("no command buffer".into()))?;
+            let encoder = commands
+                .computeCommandEncoder()
+                .ok_or_else(|| GpuError::Backend("no compute encoder".into()))?;
+            for i in index..(index + BATCH).min(dispatches) {
+                encode_one(&encoder, i);
+            }
+            encoder.endEncoding();
+            commands.commit();
+            index += BATCH;
+            submitted.push(commands);
+        }
+        // Command buffers of one queue complete in order: wait for the last, then check all.
+        if let Some(last) = submitted.last() {
+            last.waitUntilCompleted();
+        }
+        for commands in &submitted {
+            if let Some(error) = commands.error() {
+                return Err(backend(context, &error));
+            }
+        }
+        Ok(())
+    }
+
+    pub(crate) fn kernels(&self, precision: Precision) -> &Kernels {
         match precision {
             Precision::Single => &self.single,
             Precision::DoubleSingle => &self.double_single,
         }
     }
 
-    fn buffer_from<T: Copy>(&self, data: &[T]) -> Result<Buffer, GpuError> {
+    pub(crate) fn buffer_from<T: Copy>(&self, data: &[T]) -> Result<Buffer, GpuError> {
         let bytes = std::mem::size_of_val(data);
         if bytes == 0 {
             return self.buffer(4);
@@ -175,7 +221,7 @@ impl MetalDevice {
         .ok_or_else(|| GpuError::Backend(format!("allocating a {bytes}-byte buffer")))
     }
 
-    fn buffer(&self, bytes: usize) -> Result<Buffer, GpuError> {
+    pub(crate) fn buffer(&self, bytes: usize) -> Result<Buffer, GpuError> {
         self.device
             .newBufferWithLength_options(bytes.max(4), MTLResourceOptions::StorageModeShared)
             .ok_or_else(|| GpuError::Backend(format!("allocating a {bytes}-byte buffer")))
@@ -214,7 +260,7 @@ pub struct MetalOperator<'a> {
 ///
 /// The arguments must be those the kernel expects, and the buffers must outlive the command
 /// buffer.
-unsafe fn bind(encoder: &Encoder, buffers: &[&Buffer], bytes: &[(NonNull<c_void>, usize)]) {
+pub(crate) unsafe fn bind(encoder: &Encoder, buffers: &[&Buffer], bytes: &[(NonNull<c_void>, usize)]) {
     for (i, b) in buffers.iter().enumerate() {
         // SAFETY: per the caller.
         unsafe { encoder.setBuffer_offset_atIndex(Some(&***b), 0, i) };
@@ -225,7 +271,7 @@ unsafe fn bind(encoder: &Encoder, buffers: &[&Buffer], bytes: &[(NonNull<c_void>
     }
 }
 
-fn as_bytes<T>(value: &T) -> (NonNull<c_void>, usize) {
+pub(crate) fn as_bytes<T>(value: &T) -> (NonNull<c_void>, usize) {
     (NonNull::from(value).cast(), std::mem::size_of::<T>())
 }
 
@@ -234,38 +280,8 @@ impl MetalOperator<'_> {
         entries * width(self.precision) * std::mem::size_of::<f32>()
     }
 
-    /// Runs `dispatches` encoded by `encode_one(encoder, index)`, `BATCH` per command buffer,
-    /// and waits for the last.
-    fn run(&self, dispatches: usize, mut encode_one: impl FnMut(&Encoder, usize)) -> Result<(), GpuError> {
-        let mut submitted: Vec<Commands> = Vec::new();
-        let mut index = 0;
-        while index < dispatches {
-            let commands = self
-                .gpu
-                .queue
-                .commandBuffer()
-                .ok_or_else(|| GpuError::Backend("no command buffer".into()))?;
-            let encoder = commands
-                .computeCommandEncoder()
-                .ok_or_else(|| GpuError::Backend("no compute encoder".into()))?;
-            for i in index..(index + BATCH).min(dispatches) {
-                encode_one(&encoder, i);
-            }
-            encoder.endEncoding();
-            commands.commit();
-            index += BATCH;
-            submitted.push(commands);
-        }
-        // Command buffers of one queue complete in order: wait for the last, then check all.
-        if let Some(last) = submitted.last() {
-            last.waitUntilCompleted();
-        }
-        for commands in &submitted {
-            if let Some(error) = commands.error() {
-                return Err(backend("running the Chebyshev kernels", &error));
-            }
-        }
-        Ok(())
+    fn run(&self, dispatches: usize, encode_one: impl FnMut(&Encoder, usize)) -> Result<(), GpuError> {
+        self.gpu.run("running the Chebyshev kernels", dispatches, encode_one)
     }
 
     fn read(&self, buffer: &Buffer, entries: usize) -> Vec<c64> {

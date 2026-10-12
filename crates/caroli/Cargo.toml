@@ -22,6 +22,7 @@ caroli-kpm.workspace = true
 caroli-dynamics.workspace = true
 caroli-torus.workspace = true
 caroli-gpu.workspace = true
+caroli-walk.workspace = true
 
 [dev-dependencies]
 serde_json = "1"

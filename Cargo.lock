@@ -82,6 +82,7 @@ dependencies = [
  "caroli-lattice",
  "caroli-model",
  "caroli-torus",
+ "caroli-walk",
  "serde_json",
 ]
 
@@ -90,9 +91,11 @@ name = "caroli-bench"
 version = "0.1.0"
 dependencies = [
  "caroli-disorder",
+ "caroli-gpu",
  "caroli-green",
  "caroli-lattice",
  "caroli-model",
+ "caroli-walk",
  "rayon",
  "serde",
  "serde_json",
@@ -149,6 +152,7 @@ dependencies = [
  "objc2",
  "objc2-foundation",
  "objc2-metal",
+ "rayon",
  "thiserror 2.0.21",
 ]
 
@@ -228,6 +232,17 @@ dependencies = [
  "serde",
  "sha1_smol",
  "toml",
+]
+
+[[package]]
+name = "caroli-walk"
+version = "0.1.0"
+dependencies = [
+ "caroli-dense",
+ "caroli-gpu",
+ "caroli-model",
+ "faer",
+ "rayon",
 ]
 
 [[package]]
