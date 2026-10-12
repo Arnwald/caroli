@@ -28,7 +28,14 @@ use std::io::Write;
 const L: usize = 256;
 
 /// `(T↑, T↓)` at each energy for one configuration.
-fn transmissions(coupling: GFactors, conc: f64, w: usize, j: f64, config: i32, energies: &[f64]) -> Vec<[f64; 2]> {
+fn transmissions(
+    coupling: GFactors,
+    conc: f64,
+    w: usize,
+    j: f64,
+    config: i32,
+    energies: &[f64],
+) -> Vec<[f64; 2]> {
     let n_imp = (conc * (L * w) as f64) as usize;
     let imp = MagneticImpurities::generate(
         &mut Xoshiro256::gfortran(1000 + config),
@@ -39,7 +46,8 @@ fn transmissions(coupling: GFactors, conc: f64, w: usize, j: f64, config: i32, e
     let mut out = vec![[0.0; 2]; energies.len()];
     for s in 0..2 {
         let (device, clean) = bhz_spin_block(s, &imp, j, coupling);
-        let sys = TwoTerminal::from_model(&device, &clean, &Region::cuboid(clean.lattice(), [L + 2, w, 0]), 0);
+        let sys =
+            TwoTerminal::from_model(&device, &clean, &Region::cuboid(clean.lattice(), [L + 2, w, 0]), 0);
         for (o, &e) in out.iter_mut().zip(energies) {
             o[s] = sys.transmission(e).unwrap();
         }
@@ -59,7 +67,8 @@ fn check() {
     for coupling in [GFactors::Same, GFactors::Opposite] {
         let device = bhz(BhzParams::default()).with_onsite_term(imp.exchange(0.6, &bhz_spin(coupling)));
         let clean = bhz(BhzParams::default());
-        let full = TwoTerminal::from_model(&device, &clean, &Region::cuboid(clean.lattice(), [L + 2, w, 0]), 0);
+        let full =
+            TwoTerminal::from_model(&device, &clean, &Region::cuboid(clean.lattice(), [L + 2, w, 0]), 0);
         let blocks = full.blocks();
         assert_eq!(blocks.len(), 2);
         for e in [-0.1, 0.02, 0.15] {
@@ -67,7 +76,12 @@ fn check() {
                 let s = b[0] % 4 / 2;
                 let t4 = full.restricted(b).transmission(e).unwrap();
                 let (dev2, clean2) = bhz_spin_block(s, &imp, 0.6, coupling);
-                let sys2 = TwoTerminal::from_model(&dev2, &clean2, &Region::cuboid(clean2.lattice(), [L + 2, w, 0]), 0);
+                let sys2 = TwoTerminal::from_model(
+                    &dev2,
+                    &clean2,
+                    &Region::cuboid(clean2.lattice(), [L + 2, w, 0]),
+                    0,
+                );
                 let t2 = sys2.transmission(e).unwrap();
                 println!("{coupling:?}, E {e:+.2}, spin {s}: four-orbital {t4:.12}, two-orbital {t2:.12}");
                 assert!((t4 - t2).abs() < 1e-9);
@@ -82,7 +96,8 @@ fn main() {
         return check();
     }
     assert!(args.len() >= 5, "usage: born_wide_maps <F|AF> <W> <configs> <map|E_F> [J points]");
-    let (case, w, configs) = (args[1].as_str(), args[2].parse::<usize>().unwrap(), args[3].parse::<i32>().unwrap());
+    let (case, w, configs) =
+        (args[1].as_str(), args[2].parse::<usize>().unwrap(), args[3].parse::<i32>().unwrap());
     let (coupling, conc, jmax) = match case {
         "F" => (GFactors::Same, 0.2, 1.5),
         "AF" => (GFactors::Opposite, 0.4, 0.75),
@@ -111,5 +126,10 @@ fn main() {
             writeln!(f, "{j},{e},{c},{},{}", t[0], t[1]).unwrap();
         }
     }
-    println!("{} transmissions per spin in {:.1?}: {}", jobs.len() * energies.len(), t0.elapsed(), path.display());
+    println!(
+        "{} transmissions per spin in {:.1?}: {}",
+        jobs.len() * energies.len(),
+        t0.elapsed(),
+        path.display()
+    );
 }

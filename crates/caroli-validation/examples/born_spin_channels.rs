@@ -32,15 +32,36 @@ const SEEDS: [i32; 8] = [11, 23, 37, 41, 53, 67, 79, 97];
 /// (title, opposite-g, conc, width, points (J_I, E_F)).
 type Case = (&'static str, i32, f64, usize, &'static [(f64, f64)]);
 const CASES: [Case; 3] = [
-    ("'F' (same-g), n_I = 0.2, M_z = 1, W = 64", 0, 0.2, 64, &[(0.3, 0.0), (0.9, -0.1), (1.2, -0.05), (1.3, -0.12), (1.45, 0.0)]),
+    (
+        "'F' (same-g), n_I = 0.2, M_z = 1, W = 64",
+        0,
+        0.2,
+        64,
+        &[(0.3, 0.0), (0.9, -0.1), (1.2, -0.05), (1.3, -0.12), (1.45, 0.0)],
+    ),
     (
         "'AF' (opposite-g), n_I = 0.4, M_z = 1, W = 64",
         1,
         0.4,
         64,
-        &[(0.2, 0.02), (0.25, 0.02), (0.3, 0.02), (0.35, 0.02), (0.4, 0.02), (0.45, 0.02), (0.5, 0.02), (0.6, 0.05)],
+        &[
+            (0.2, 0.02),
+            (0.25, 0.02),
+            (0.3, 0.02),
+            (0.35, 0.02),
+            (0.4, 0.02),
+            (0.45, 0.02),
+            (0.5, 0.02),
+            (0.6, 0.05),
+        ],
     ),
-    ("'AF' (opposite-g), n_I = 0.4, M_z = 1, W = 128", 1, 0.4, 128, &[(0.25, 0.02), (0.3, 0.02), (0.35, 0.02), (0.4, 0.02)]),
+    (
+        "'AF' (opposite-g), n_I = 0.4, M_z = 1, W = 128",
+        1,
+        0.4,
+        128,
+        &[(0.25, 0.02), (0.3, 0.02), (0.35, 0.02), (0.4, 0.02)],
+    ),
 ];
 
 /// The Born program of the paper's panels (`born_lines`).
@@ -92,7 +113,8 @@ fn main() {
     for (title, anti, conc, ny, points) in CASES {
         let jobs: Vec<(f64, f64, i32)> =
             points.iter().flat_map(|&(j, e)| SEEDS.iter().map(move |&s| (j, e, s))).collect();
-        let t: Vec<[f64; 2]> = jobs.par_iter().map(|&(j, e, s)| spin_transmissions(anti, conc, ny, j, e, s)).collect();
+        let t: Vec<[f64; 2]> =
+            jobs.par_iter().map(|&(j, e, s)| spin_transmissions(anti, conc, ny, j, e, s)).collect();
         let born = scba(conc, anti);
         println!("\n{title}: exact T per spin, mean [min, max] over {} configurations", SEEDS.len());
         for (p, &(j, e)) in points.iter().enumerate() {

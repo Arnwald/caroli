@@ -69,9 +69,12 @@ fn scalar(x: f64, n: usize) -> CMat {
 /// The clean model of a problem (also the leads).
 fn clean_model(name: &str) -> Model {
     match name {
-        "square" => Model::new(Lattice::square(1.0, 1))
-            .hopping(0, 0, [1, 0, 0], scalar(-1.0, 1))
-            .hopping(0, 0, [0, 1, 0], scalar(-1.0, 1)),
+        "square" => Model::new(Lattice::square(1.0, 1)).hopping(0, 0, [1, 0, 0], scalar(-1.0, 1)).hopping(
+            0,
+            0,
+            [0, 1, 0],
+            scalar(-1.0, 1),
+        ),
         "bhz" => bhz(BhzParams::default()),
         _ => panic!("unknown model {name}"),
     }
@@ -93,7 +96,11 @@ fn disorder(p: &Problem, w: usize) -> Option<Vec<f64>> {
 }
 
 fn matrix_json(m: &CMat) -> Value {
-    json!((0..m.nrows()).map(|i| (0..m.ncols()).map(|j| [m[(i, j)].re, m[(i, j)].im]).collect::<Vec<_>>()).collect::<Vec<_>>())
+    json!(
+        (0..m.nrows())
+            .map(|i| (0..m.ncols()).map(|j| [m[(i, j)].re, m[(i, j)].im]).collect::<Vec<_>>())
+            .collect::<Vec<_>>()
+    )
 }
 
 /// Writes `problem.json` (model, energies) and the disorder files of every problem.
@@ -182,7 +189,11 @@ fn solve(name: &str, w: usize, solver: &str) {
 }
 
 fn shell(cmd: &str, args: &[&str]) -> String {
-    Command::new(cmd).args(args).output().map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string()).unwrap_or_default()
+    Command::new(cmd)
+        .args(args)
+        .output()
+        .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
+        .unwrap_or_default()
 }
 
 /// A GitHub runner job in progress (it would perturb the timings).
@@ -215,69 +226,90 @@ fn run(args: &[String]) {
                 continue;
             }
             for code in &codes {
-              for attempt in 0..3 {
-                // Wait for the GitHub runner to be idle (a CI job would perturb the timings).
-                let mut waited = false;
-                while runner_busy() {
-                    if !waited {
-                        eprintln!("waiting for the GitHub runner job to finish…");
-                        waited = true;
+                for attempt in 0..3 {
+                    // Wait for the GitHub runner to be idle (a CI job would perturb the timings).
+                    let mut waited = false;
+                    while runner_busy() {
+                        if !waited {
+                            eprintln!("waiting for the GitHub runner job to finish…");
+                            waited = true;
+                        }
+                        std::thread::sleep(std::time::Duration::from_secs(15));
                     }
-                    std::thread::sleep(std::time::Duration::from_secs(15));
+                    let busy_before = false;
+                    let mut cmd = Command::new("/usr/bin/time");
+                    cmd.arg("-l");
+                    match code.as_str() {
+                        "caroli" => cmd.arg(&exe).args(["solve", &p.name, &w.to_string(), "nd"]),
+                        "caroli-rgf" => cmd.arg(&exe).args(["solve", &p.name, &w.to_string(), "rgf"]),
+                        "kwant" => cmd.arg(&python).arg(&script).args([
+                            data_dir(&p).parent().unwrap().to_str().unwrap(),
+                            &p.name,
+                            &w.to_string(),
+                        ]),
+                        other => panic!("unknown code {other}"),
+                    };
+                    for var in [
+                        "OMP_NUM_THREADS",
+                        "OPENBLAS_NUM_THREADS",
+                        "MKL_NUM_THREADS",
+                        "VECLIB_MAXIMUM_THREADS",
+                    ] {
+                        cmd.env(var, "1");
+                    }
+                    cmd.env("RAYON_NUM_THREADS", &threads);
+                    let output = cmd.output().expect("runner");
+                    let stdout = String::from_utf8_lossy(&output.stdout);
+                    let stderr = String::from_utf8_lossy(&output.stderr);
+                    let Some(json_line) = stdout.lines().rev().find(|l| l.starts_with('{')) else {
+                        eprintln!("{code} {} W={w} failed:\n{stderr}", p.name);
+                        continue;
+                    };
+                    let mut v: Value = serde_json::from_str(json_line).expect("runner JSON");
+                    let rss = stderr
+                        .lines()
+                        .find(|l| l.contains("maximum resident set size"))
+                        .and_then(|l| l.split_whitespace().next())
+                        .and_then(|x| x.parse::<f64>().ok())
+                        .unwrap_or(f64::NAN);
+                    let busy = busy_before || runner_busy();
+                    if busy && attempt < 2 {
+                        eprintln!(
+                            "{code} {} W={w}: a runner job started during the run, measuring again",
+                            p.name
+                        );
+                        continue;
+                    }
+                    let obj = v.as_object_mut().unwrap();
+                    obj.insert("peak_rss_mb".into(), json!(rss / 1048576.0));
+                    obj.insert("runner_busy".into(), json!(busy));
+                    obj.insert("machine".into(), json!(machine));
+                    obj.insert("cpu".into(), json!(cpu));
+                    obj.insert("caroli_commit".into(), json!(commit));
+                    obj.insert(
+                        "unix_time".into(),
+                        json!(
+                            std::time::SystemTime::now()
+                                .duration_since(std::time::UNIX_EPOCH)
+                                .unwrap()
+                                .as_secs()
+                        ),
+                    );
+                    let line = serde_json::to_string(&v).unwrap();
+                    use std::io::Write;
+                    let mut f = std::fs::OpenOptions::new().create(true).append(true).open(&file).unwrap();
+                    writeln!(f, "{line}").unwrap();
+                    let times: Vec<f64> =
+                        v["times_s"].as_array().unwrap().iter().filter_map(|x| x.as_f64()).collect();
+                    println!(
+                        "{code:7} {:16} W={w:<5} build {:8.3} s, median per energy {:9.4} s, peak {:8.1} MB",
+                        p.name,
+                        v["build_s"].as_f64().unwrap_or(f64::NAN),
+                        median(&times),
+                        rss / 1048576.0
+                    );
+                    break;
                 }
-                let busy_before = false;
-                let mut cmd = Command::new("/usr/bin/time");
-                cmd.arg("-l");
-                match code.as_str() {
-                    "caroli" => cmd.arg(&exe).args(["solve", &p.name, &w.to_string(), "nd"]),
-                    "caroli-rgf" => cmd.arg(&exe).args(["solve", &p.name, &w.to_string(), "rgf"]),
-                    "kwant" => cmd.arg(&python).arg(&script).args([data_dir(&p).parent().unwrap().to_str().unwrap(), &p.name, &w.to_string()]),
-                    other => panic!("unknown code {other}"),
-                };
-                for var in ["OMP_NUM_THREADS", "OPENBLAS_NUM_THREADS", "MKL_NUM_THREADS", "VECLIB_MAXIMUM_THREADS"] {
-                    cmd.env(var, "1");
-                }
-                cmd.env("RAYON_NUM_THREADS", &threads);
-                let output = cmd.output().expect("runner");
-                let stdout = String::from_utf8_lossy(&output.stdout);
-                let stderr = String::from_utf8_lossy(&output.stderr);
-                let Some(json_line) = stdout.lines().rev().find(|l| l.starts_with('{')) else {
-                    eprintln!("{code} {} W={w} failed:\n{stderr}", p.name);
-                    continue;
-                };
-                let mut v: Value = serde_json::from_str(json_line).expect("runner JSON");
-                let rss = stderr
-                    .lines()
-                    .find(|l| l.contains("maximum resident set size"))
-                    .and_then(|l| l.split_whitespace().next())
-                    .and_then(|x| x.parse::<f64>().ok())
-                    .unwrap_or(f64::NAN);
-                let busy = busy_before || runner_busy();
-                if busy && attempt < 2 {
-                    eprintln!("{code} {} W={w}: a runner job started during the run, measuring again", p.name);
-                    continue;
-                }
-                let obj = v.as_object_mut().unwrap();
-                obj.insert("peak_rss_mb".into(), json!(rss / 1048576.0));
-                obj.insert("runner_busy".into(), json!(busy));
-                obj.insert("machine".into(), json!(machine));
-                obj.insert("cpu".into(), json!(cpu));
-                obj.insert("caroli_commit".into(), json!(commit));
-                obj.insert("unix_time".into(), json!(std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_secs()));
-                let line = serde_json::to_string(&v).unwrap();
-                use std::io::Write;
-                let mut f = std::fs::OpenOptions::new().create(true).append(true).open(&file).unwrap();
-                writeln!(f, "{line}").unwrap();
-                let times: Vec<f64> = v["times_s"].as_array().unwrap().iter().filter_map(|x| x.as_f64()).collect();
-                println!(
-                    "{code:7} {:16} W={w:<5} build {:8.3} s, median per energy {:9.4} s, peak {:8.1} MB",
-                    p.name,
-                    v["build_s"].as_f64().unwrap_or(f64::NAN),
-                    median(&times),
-                    rss / 1048576.0
-                );
-                break;
-              }
             }
         }
     }
@@ -293,9 +325,10 @@ fn median(v: &[f64]) -> f64 {
 /// Latest run of every (problem, width, code, threads) in a results file: agreement with
 /// caroli and timings.
 fn report(args: &[String]) {
-    let file = args.first().map(PathBuf::from).unwrap_or_else(|| {
-        bench_dir().join("results").join(format!("{}.jsonl", shell("hostname", &["-s"])))
-    });
+    let file = args
+        .first()
+        .map(PathBuf::from)
+        .unwrap_or_else(|| bench_dir().join("results").join(format!("{}.jsonl", shell("hostname", &["-s"]))));
     let text = std::fs::read_to_string(&file).expect("results file");
     let mut latest: BTreeMap<(String, u64, String, u64), Value> = BTreeMap::new();
     for line in text.lines().filter(|l| !l.trim().is_empty()) {
@@ -307,7 +340,11 @@ fn report(args: &[String]) {
             v["threads"].as_u64().unwrap_or(1),
         );
         // Runs before the nested-dissection solver were the recursive one.
-        let key = if key.2 == "caroli" && v["blocks"].is_u64() && v.get("solver").is_none() && v["caroli_commit"] == "1807a24" {
+        let key = if key.2 == "caroli"
+            && v["blocks"].is_u64()
+            && v.get("solver").is_none()
+            && v["caroli_commit"] == "1807a24"
+        {
             (key.0, key.1, "caroli-rgf".to_string(), key.3)
         } else {
             key
@@ -318,16 +355,19 @@ fn report(args: &[String]) {
     for ((p, w, code, _), v) in &latest {
         cases.entry((p.clone(), *w)).or_default().push((code.as_str(), v));
     }
-    println!("| problem | W | orbitals | code | threads | build (s) | per energy (s) | all energies (s) | peak (MB) | max |ΔT| vs caroli |");
+    println!(
+        "| problem | W | orbitals | code | threads | build (s) | per energy (s) | all energies (s) | peak (MB) | max |ΔT| vs caroli |"
+    );
     println!("|---|---|---|---|---|---|---|---|---|---|");
     for ((p, w), runs) in &cases {
-        let reference: Option<Vec<f64>> = runs
-            .iter()
-            .find(|(code, _)| *code == "caroli")
-            .map(|(_, v)| v["transmissions"].as_array().unwrap().iter().map(|x| x.as_f64().unwrap()).collect());
+        let reference: Option<Vec<f64>> = runs.iter().find(|(code, _)| *code == "caroli").map(|(_, v)| {
+            v["transmissions"].as_array().unwrap().iter().map(|x| x.as_f64().unwrap()).collect()
+        });
         for &(code, v) in runs {
-            let ts: Vec<f64> = v["transmissions"].as_array().unwrap().iter().map(|x| x.as_f64().unwrap()).collect();
-            let times: Vec<f64> = v["times_s"].as_array().unwrap().iter().map(|x| x.as_f64().unwrap()).collect();
+            let ts: Vec<f64> =
+                v["transmissions"].as_array().unwrap().iter().map(|x| x.as_f64().unwrap()).collect();
+            let times: Vec<f64> =
+                v["times_s"].as_array().unwrap().iter().map(|x| x.as_f64().unwrap()).collect();
             let diff = reference
                 .as_ref()
                 .map(|r| r.iter().zip(&ts).map(|(a, b)| (a - b).abs()).fold(0.0, f64::max))
@@ -355,7 +395,10 @@ fn profile(name: &str, w: usize) {
     let clean = clean_model(&p.model);
     let region = Region::cuboid(clean.lattice(), [l, w, 0]);
     let first = &region.slices(0)[0];
-    let lead = caroli_green::Lead { h00: clean.hamiltonian(first), h01: clean.coupling(first, &first.translated([1, 0, 0])) };
+    let lead = caroli_green::Lead {
+        h00: clean.hamiltonian(first),
+        h01: clean.coupling(first, &first.translated([1, 0, 0])),
+    };
     let e = p.energies[p.energies.len() / 2];
     let t = Instant::now();
     let _ = lead.modes(e).expect("modes");
@@ -364,7 +407,10 @@ fn profile(name: &str, w: usize) {
     let t = Instant::now();
     let _ = sys.transmission(e).expect("transmission");
     let total = t.elapsed().as_secs_f64();
-    println!("{name} W={w} E={e}: lead modes of the whole cell {modes:.3} s, nested transmission {total:.3} s ({} blocks)", sys.block_count());
+    println!(
+        "{name} W={w} E={e}: lead modes of the whole cell {modes:.3} s, nested transmission {total:.3} s ({} blocks)",
+        sys.block_count()
+    );
 }
 
 fn main() {
@@ -372,9 +418,13 @@ fn main() {
     match args.get(1).map(String::as_str) {
         Some("profile") => profile(&args[2], args[3].parse().expect("width")),
         Some("prepare") => prepare(),
-        Some("solve") => solve(&args[2], args[3].parse().expect("width"), args.get(4).map_or("nd", String::as_str)),
+        Some("solve") => {
+            solve(&args[2], args[3].parse().expect("width"), args.get(4).map_or("nd", String::as_str))
+        }
         Some("run") => run(&args[2..]),
         Some("report") => report(&args[2..]),
-        _ => eprintln!("usage: caroli-bench prepare | run [--code C] [--problem P] [--width W] [--threads N] | solve P W | report [FILE]"),
+        _ => eprintln!(
+            "usage: caroli-bench prepare | run [--code C] [--problem P] [--width W] [--threads N] | solve P W | report [FILE]"
+        ),
     }
 }

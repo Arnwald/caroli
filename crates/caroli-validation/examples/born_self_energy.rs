@@ -50,7 +50,13 @@ const SEEDS: [i32; 2] = [2015, 4031];
 type Case = (&'static str, i32, f64, f64, &'static [f64]);
 const CASES: [Case; 4] = [
     ("'F' (same-g), n_I = 0.2, M_z = 1", 0, 0.2, 0.0, &[0.0, 0.1, 0.2, 0.3, 0.4, 0.5, 0.6]),
-    ("'AF' (opposite-g), n_I = 0.4, M_z = 1", 1, 0.4, 0.02, &[0.0, 0.1, 0.2, 0.25, 0.3, 0.35, 0.4, 0.45, 0.5, 0.6]),
+    (
+        "'AF' (opposite-g), n_I = 0.4, M_z = 1",
+        1,
+        0.4,
+        0.02,
+        &[0.0, 0.1, 0.2, 0.25, 0.3, 0.35, 0.4, 0.45, 0.5, 0.6],
+    ),
     // Deep in the G = 1 plateau.
     ("'F' (same-g), n_I = 0.2, M_z = 1", 0, 0.2, -0.05, &[0.8, 1.0, 1.2, 1.5]),
     // Across the onset of the plateau, on the cut of `born_wide_maps`.
@@ -231,13 +237,15 @@ fn main() {
     use std::io::Write;
     let dir = caroli_validation::repo_root().join("target/born_lines");
     std::fs::create_dir_all(&dir).expect("output directory");
-    let mut exact_csv = std::fs::File::create(dir.join(format!("self_energy{tag}.csv"))).expect("self_energy csv");
+    let mut exact_csv =
+        std::fs::File::create(dir.join(format!("self_energy{tag}.csv"))).expect("self_energy csv");
     writeln!(exact_csv, "case,J_I,E_F,seed,M_up,mu_up,M_dn,mu_dn,gamma_up,gamma_dn").unwrap();
     for (&(c, j, s), r) in jobs.iter().zip(&results) {
         let e = CASES[c].3;
         writeln!(exact_csv, "{c},{j},{e},{s},{},{},{},{},{},{}", r[0], r[1], r[2], r[3], r[4], r[5]).unwrap();
     }
-    let mut born_csv = std::fs::File::create(dir.join(format!("born_masses{tag}.csv"))).expect("born_masses csv");
+    let mut born_csv =
+        std::fs::File::create(dir.join(format!("born_masses{tag}.csv"))).expect("born_masses csv");
     writeln!(born_csv, "case,J_I,E_F,version,M_up,mu_up,M_dn,mu_dn").unwrap();
     let (l, n) = (setup.l, setup.born_n);
     let disorder = if setup.gaussian { "Gaussian disorder" } else { "binary impurities" };
@@ -268,7 +276,9 @@ fn main() {
             }
         }
         println!("\n{title}, E_F = {e:+.3}");
-        println!("  J_I  | M̄↑ exact (samples)       published corrected | M̄↓ exact (samples)       published corrected | μ̄↑ exact  pub.    corr.   | Γ↑ exact Γ↓ exact");
+        println!(
+            "  J_I  | M̄↑ exact (samples)       published corrected | M̄↓ exact (samples)       published corrected | μ̄↑ exact  pub.    corr.   | Γ↑ exact Γ↓ exact"
+        );
         for &j in js {
             let runs: Vec<&[f64; 6]> = jobs
                 .iter()

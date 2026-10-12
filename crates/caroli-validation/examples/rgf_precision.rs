@@ -82,14 +82,18 @@ fn sweep64(sys: &TwoTerminal, e: f64, sl: &CMat, sr: &CMat, mode: Inverse) -> f6
                 let x = to32(a).partial_piv_lu().inverse();
                 let x64 = to64(&x);
                 let n = a.nrows();
-                let residual = CMat::from_fn(n, n, |i, j| if i == j { c64::new(1.0, 0.0) } else { c64::new(0.0, 0.0) }) - a * &x64;
+                let residual =
+                    CMat::from_fn(n, n, |i, j| if i == j { c64::new(1.0, 0.0) } else { c64::new(0.0, 0.0) })
+                        - a * &x64;
                 x64 + to64(&(&x * to32(&residual)))
             }
         }
     };
     let z = c64::new(e, 0.0);
     let n = sys.slices.len();
-    let resolvent = |h: &CMat| CMat::from_fn(h.nrows(), h.ncols(), |i, j| if i == j { z - h[(i, j)] } else { -h[(i, j)] });
+    let resolvent = |h: &CMat| {
+        CMat::from_fn(h.nrows(), h.ncols(), |i, j| if i == j { z - h[(i, j)] } else { -h[(i, j)] })
+    };
     let mut a = resolvent(&sys.slices[0]) - sl;
     if n == 1 {
         a -= sr;
@@ -131,7 +135,8 @@ fn transmission32(sys: &TwoTerminal, e: f64, sol: &EndToEnd) -> (f64, f64) {
     }
     let t = broadening32(&sl) * &g1n * broadening32(&sr) * g1n.adjoint();
     let single = (0..t.nrows()).map(|i| t[(i, i)].re as f64).sum();
-    let mixed = EndToEnd { sigma_l: sol.sigma_l.clone(), sigma_r: sol.sigma_r.clone(), g1n: to64(&g1n) }.transmission();
+    let mixed = EndToEnd { sigma_l: sol.sigma_l.clone(), sigma_r: sol.sigma_r.clone(), g1n: to64(&g1n) }
+        .transmission();
     (single, mixed)
 }
 
@@ -184,7 +189,8 @@ fn main() {
                 Moments::Cone { theta0: 0.0 },
             );
             let (device, clean) = bhz_spin_block(spin, &imp, j, coupling);
-            let sys = TwoTerminal::from_model(&device, &clean, &Region::cuboid(clean.lattice(), [L + 2, w, 0]), 0);
+            let sys =
+                TwoTerminal::from_model(&device, &clean, &Region::cuboid(clean.lattice(), [L + 2, w, 0]), 0);
             ENERGIES
                 .iter()
                 .map(|&e| {
@@ -193,7 +199,10 @@ fn main() {
                     let (sl, sr) = (to64(&to32(&sol.sigma_l)), to64(&to32(&sol.sigma_r)));
                     // The diagnostic variants only at the smallest width.
                     let (sigma32, inv32) = if w <= 64 {
-                        (sweep64(&sys, e, &sl, &sr, Inverse::Double), sweep64(&sys, e, &sol.sigma_l, &sol.sigma_r, Inverse::Single))
+                        (
+                            sweep64(&sys, e, &sl, &sr, Inverse::Double),
+                            sweep64(&sys, e, &sol.sigma_l, &sol.sigma_r, Inverse::Single),
+                        )
                     } else {
                         (f64::NAN, f64::NAN)
                     };
@@ -207,7 +216,21 @@ fn main() {
                     let _ = transmission32(&sys, e, &sol);
                     let t_single = clock.elapsed().as_secs_f64();
                     let times = [t_double, t_single, t_refined];
-                    Row { case, w, j, config, spin, e, t64: sol.transmission(), t32, mixed, sigma32, inv32, refined, times }
+                    Row {
+                        case,
+                        w,
+                        j,
+                        config,
+                        spin,
+                        e,
+                        t64: sol.transmission(),
+                        t32,
+                        mixed,
+                        sigma32,
+                        inv32,
+                        refined,
+                        times,
+                    }
                 })
                 .collect::<Vec<_>>()
         })
@@ -234,7 +257,13 @@ fn main() {
                 return "—".to_string();
             }
             let q = |p: f64| d[((d.len() - 1) as f64 * p).round() as usize];
-            format!("median {:.1e}, 99 % {:.1e}, max {:.1e} ({} points)", q(0.5), q(0.99), d[d.len() - 1], d.len())
+            format!(
+                "median {:.1e}, 99 % {:.1e}, max {:.1e} ({} points)",
+                q(0.5),
+                q(0.99),
+                d[d.len() - 1],
+                d.len()
+            )
         };
         let single = |r: &Row| (r.t32 - r.t64).abs();
         let mixed = |r: &Row| (r.mixed - r.t64).abs();
@@ -244,7 +273,10 @@ fn main() {
         println!("  all points, single trace: {}", stats(&single, &|_| true));
         println!("  all points, double trace: {}", stats(&mixed, &|_| true));
         if w <= 64 {
-            println!("  only Σ rounded:           {}", stats(&|r: &Row| (r.sigma32 - r.t64).abs(), &|_| true));
+            println!(
+                "  only Σ rounded:           {}",
+                stats(&|r: &Row| (r.sigma32 - r.t64).abs(), &|_| true)
+            );
             println!("  only inversions single:   {}", stats(&|r: &Row| (r.inv32 - r.t64).abs(), &|_| true));
         }
         println!("  single + 1 refinement:    {}", stats(&|r: &Row| (r.refined - r.t64).abs(), &|_| true));

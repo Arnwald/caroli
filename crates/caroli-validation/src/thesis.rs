@@ -37,10 +37,11 @@ pub fn bhz_spin_block(
     let full = bhz(BhzParams::default());
     let onsite = full.onsite_matrix(&Site { cell: [0, 0, 0], sub: 0 });
     let build = || {
-        full.hoppings().iter().fold(
-            Model::new(caroli_lattice::Lattice::square(1.0, 2)).onsite(0, block(&onsite, s)),
-            |m, h| m.hopping(h.from, h.to, h.offset, block(&h.matrix, s)),
-        )
+        full.hoppings()
+            .iter()
+            .fold(Model::new(caroli_lattice::Lattice::square(1.0, 2)).onsite(0, block(&onsite, s)), |m, h| {
+                m.hopping(h.from, h.to, h.offset, block(&h.matrix, s))
+            })
     };
     let exchange = imp.exchange(j, &bhz_spin(coupling));
     let device = build().with_onsite_term(move |site: &Site| exchange.matrix(site).map(|m| block(&m, s)));

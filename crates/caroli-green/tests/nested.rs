@@ -13,7 +13,12 @@ fn scalar(x: f64, n: usize) -> CMat {
 }
 
 fn square() -> Model {
-    Model::new(Lattice::square(1.0, 1)).hopping(0, 0, [1, 0, 0], scalar(-1.0, 1)).hopping(0, 0, [0, 1, 0], scalar(-1.0, 1))
+    Model::new(Lattice::square(1.0, 1)).hopping(0, 0, [1, 0, 0], scalar(-1.0, 1)).hopping(
+        0,
+        0,
+        [0, 1, 0],
+        scalar(-1.0, 1),
+    )
 }
 
 fn graphene() -> Model {
@@ -27,7 +32,9 @@ fn graphene() -> Model {
 fn disordered(model: Model, w: f64, n: usize) -> Model {
     model.with_onsite_term(move |s: &Site| {
         let k = (s.cell[0] * 7919 + s.cell[1] * 104_729 + s.sub as i64 * 31) as u64;
-        let u = ((k.wrapping_mul(6_364_136_223_846_793_005).wrapping_add(1_442_695_040_888_963_407) >> 11) as f64) / (1u64 << 53) as f64;
+        let u = ((k.wrapping_mul(6_364_136_223_846_793_005).wrapping_add(1_442_695_040_888_963_407) >> 11)
+            as f64)
+            / (1u64 << 53) as f64;
         Some(scalar(w * (u - 0.5), n))
     })
 }
