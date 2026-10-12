@@ -8,6 +8,7 @@ license.workspace = true
 repository.workspace = true
 
 [dependencies]
+thiserror.workspace = true
 caroli-lattice.workspace = true
 faer.workspace = true
 rayon.workspace = true

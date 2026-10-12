@@ -54,6 +54,11 @@ The dependencies only go downward: lattice ← model ← green ← caroli, and d
 - **Model** = on-site matrix per sublattice + hoppings `⟨(R, a)| H |(R + offset, b)⟩` (their
   conjugates are implied) + site-dependent terms (`OnSite` trait: disorder, potentials).
   The Bloch convention is `H(k) = Σ_n H_{0n} e^{i k·n}`.
+- **Continuum models** (`caroli_model::continuum`): `Continuum::parse` reads a k·p Hamiltonian
+  (numbers, parameters, `k_x k_y k_z`, Pauli matrices, `kron`, `+ − * / ^`) into a polynomial in
+  `k` with matrix coefficients; `discretize(a)` replaces `k → −i∂` by central differences on a
+  chain, square or cubic lattice, as Kwant's `continuum.discretize`. The continuum BHZ
+  Hamiltonian gives the thesis preset exactly. Coefficients are constant for now.
 - **Model inputs**: on-site and hopping terms take a `CMat` or, for one orbital, a number
   (`IntoMatrix`). `pauli::{s0, sx, sy, sz, kron}` and `combine(&[(c, &M), ...])` (real or complex
   coefficients) build spin and orbital matrices. `lead_voltages` solves the Landauer–Büttiker

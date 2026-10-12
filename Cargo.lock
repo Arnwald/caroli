@@ -195,6 +195,7 @@ dependencies = [
  "caroli-lattice",
  "faer",
  "rayon",
+ "thiserror 2.0.21",
 ]
 
 [[package]]

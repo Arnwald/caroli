@@ -35,6 +35,7 @@ pub mod prelude {
     };
     pub use caroli_keldysh::{Lesser, fermi};
     pub use caroli_lattice::{Lattice, Region, Site};
+    pub use caroli_model::continuum::Continuum;
     pub use caroli_model::pauli::{kron, s0, sx, sy, sz};
     pub use caroli_model::presets::{BhzParams, GFactors, bhz, bhz_exchange, bhz_spin};
     pub use caroli_model::{CMat, Model, SparseMatrix, c64, combine, gauge};

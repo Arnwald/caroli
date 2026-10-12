@@ -10,6 +10,7 @@ use caroli_lattice::{Cell, Lattice, Region, Site, Vec3};
 use faer::Mat;
 pub use faer::c64;
 
+pub mod continuum;
 pub mod gamma;
 pub mod presets;
 pub mod sparse;

@@ -1,7 +1,7 @@
 //! The classic transport tutorials (those of Kwant's documentation), written with caroli, with
 //! the physics they show checked: conductance steps of a quantum wire, a Rashba wire in a
 //! Zeeman field, the Aharonov–Bohm effect in a ring, the edge channel of a zigzag graphene
-//! ribbon, and the quantum Hall effect in a Hall bar.
+//! ribbon, the quantum Hall effect in a Hall bar, and a k·p model discretised on a lattice.
 
 use caroli::prelude::*;
 
@@ -156,5 +156,24 @@ fn hall_bar() {
         assert!((hall.abs() - 1.0 / nu).abs() < 1e-6, "E = {e}: R_xy = {hall}, expected ±{}", 1.0 / nu);
         // Two-terminal resistance h/(ν e²) between source and drain: R_xx is zero.
         assert!((v0 - 1.0 / nu).abs() < 1e-6, "E = {e}: R_2t = {v0}");
+    }
+}
+
+/// A continuum (k·p) model discretised on a lattice, as Kwant's `continuum.discretize`: the BHZ
+/// Hamiltonian of a HgTe quantum well in its inverted regime gives a quantum spin Hall ribbon,
+/// two helical edge channels in the gap.
+#[test]
+fn continuum_bhz_ribbon() {
+    let params = [("A", 1.0), ("B", -0.376406), ("C", 0.0), ("D", -0.280933), ("M", -0.137)];
+    let model = Continuum::parse(
+        "C - D*(k_x^2 + k_y^2) + (M - B*(k_x^2 + k_y^2))*kron(s0, sz) + A*(k_x*kron(sz, sx) - k_y*kron(s0, sy))",
+        &params,
+    )
+    .unwrap()
+    .discretize(1.0);
+    let region = Region::cuboid(model.lattice(), [20, 30, 0]);
+    let sys = NestedTwoTerminal::from_model(&model, &model, &region, 0);
+    for e in [-0.02, 0.0, 0.03] {
+        assert!((sys.transmission(e).unwrap() - 2.0).abs() < 1e-6, "E = {e}");
     }
 }

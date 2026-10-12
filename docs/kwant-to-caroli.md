@@ -20,6 +20,7 @@ use caroli::prelude::*;
 | `syst[kwant.builder.HoppingKind(δ, a, b)] = t` | `.hopping(a, b, -δ, t)` |
 | value functions of the site | `.with_onsite_term(\|site\| Some(matrix))` |
 | Peierls phases, `kwant.physics.magnetic_gauge` | `.with_peierls(φ)`, or `.with_field(b)` for a uniform field |
+| `kwant.continuum.discretize("k_x**2 + ...")` | `Continuum::parse("k_x^2 + ...", &params)?.discretize(a)` |
 
 The model holds what Kwant's builder holds, and the region holds the sites. A hopping
 `⟨(R, from)| H |(R + offset, to)⟩ = t` is Kwant's `HoppingKind(−offset, from, to)`; its
@@ -113,4 +114,5 @@ let hall = v[3] - v[2]; // ±h/(ν e²) on the plateaus
 
 ## Not yet in caroli
 
-Discretisation of continuum (k·p) models, symmetry analysis (qsymm) and plotting.
+Symmetry analysis (qsymm), position-dependent coefficients in continuum models (only
+constant ones for now; add potentials with `with_onsite_term`), and plotting.
