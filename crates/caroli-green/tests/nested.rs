@@ -127,3 +127,29 @@ fn self_energies_of_other_leads() {
     let other = NestedTwoTerminal::from_model(&shifted, &shifted, &region, 0);
     let _ = other.transmission_with(&sys.self_energies(0.4).unwrap());
 }
+
+/// Transmission eigenvalues add up to the transmission and lie in [0, 1]; a clean ribbon has
+/// perfect channels (Fano factor 0), a high barrier only small ones (Fano factor near 1).
+#[test]
+fn transmission_eigenvalues_and_shot_noise() {
+    let region = Region::cuboid(square().lattice(), [12, 7, 0]);
+    let dirty = NestedTwoTerminal::from_model(&disordered(square(), 2.0, 1), &square(), &region, 0);
+    let clean = NestedTwoTerminal::from_model(&square(), &square(), &region, 0);
+    let barrier = square().with_onsite_term(|s: &Site| (s.cell[0] == 6).then(|| scalar(40.0, 1)));
+    let tunnel = NestedTwoTerminal::from_model(&barrier, &square(), &region, 0);
+    for e in [-2.3, -0.7, 0.9] {
+        let taus = dirty.transmission_eigenvalues(e).unwrap();
+        let t = dirty.transmission(e).unwrap();
+        assert!(
+            (taus.iter().sum::<f64>() - t).abs() < 1e-10,
+            "E = {e}: Σ τ = {} vs T = {t}",
+            taus.iter().sum::<f64>()
+        );
+        assert!(taus.iter().all(|&x| (-1e-10..=1.0 + 1e-10).contains(&x)), "E = {e}: {taus:?}");
+        let perfect = clean.transmission_eigenvalues(e).unwrap();
+        assert!(
+            perfect.iter().all(|&x| (x - 1.0).abs() < 1e-9) && clean.fano_factor(e).unwrap().abs() < 1e-8
+        );
+        assert!(tunnel.fano_factor(e).unwrap() > 0.99, "E = {e}: tunnel barrier");
+    }
+}

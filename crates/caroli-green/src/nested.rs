@@ -25,7 +25,7 @@
 use crate::gauge::Gauge;
 use crate::modes::{sigma_left, sigma_right};
 use crate::{GreenError, Lead, broadening, trace};
-use caroli_dense::{Accum, Lu, Op, matmul};
+use caroli_dense::{Accum, Lu, Op, matmul, product};
 use caroli_lattice::{Region, Site};
 use caroli_model::{CMat, Model, SparseMatrix, c64};
 
@@ -571,6 +571,34 @@ impl NestedTwoTerminal {
             })
             .collect();
         parts.into_iter().sum()
+    }
+
+    /// Transmission eigenvalues `τ_n` at `energy`, in decreasing order: the squared singular
+    /// values of `t = W_L† G_LR W_R` (`W_p W_p† = Γ_p`), the same as those of the transmission
+    /// block of the scattering matrix. Their sum is the transmission.
+    pub fn transmission_eigenvalues(&self, energy: f64) -> Result<Vec<f64>, GreenError> {
+        let sigma = self.self_energies(energy)?;
+        let z = c64::new(energy, 0.0);
+        let mut taus = Vec::new();
+        for (block, s) in self.blocks.iter().zip(&sigma.blocks) {
+            let g_lr = self.lead_green(block, z, &s.sigma_l, &s.sigma_r)?;
+            let (wl, wr) = (gamma_root(&s.sigma_l)?, gamma_root(&s.sigma_r)?);
+            let gw = product(g_lr.as_ref(), Op::Plain, wr.as_ref(), Op::Plain);
+            let t = product(wl.as_ref(), Op::Adjoint, gw.as_ref(), Op::Plain);
+            let svd = caroli_dense::svd(t.as_ref()).map_err(|_| GreenError::Eigen)?;
+            taus.extend(svd.s.iter().map(|x| x * x));
+        }
+        taus.sort_by(|a, b| b.total_cmp(a));
+        Ok(taus)
+    }
+
+    /// Fano factor `F = Σ τ (1 − τ) / Σ τ` at `energy`: the shot noise over the Poisson value, at
+    /// zero temperature and small bias (0 for perfect channels, 1 for a tunnel barrier, 1/3 for
+    /// a diffusive wire).
+    pub fn fano_factor(&self, energy: f64) -> Result<f64, GreenError> {
+        let taus = self.transmission_eigenvalues(energy)?;
+        let total: f64 = taus.iter().sum();
+        Ok(taus.iter().map(|t| t * (1.0 - t)).sum::<f64>() / total)
     }
 
     /// `G_LR`, the block of `(z − H − Σ)⁻¹` between the first and last slices.

@@ -24,6 +24,20 @@ impl Lead {
     pub fn modes_at(&self, z: c64) -> Result<LeadModes, GreenError> {
         LeadModes::at(&self.h00, &self.h01, z)
     }
+
+    /// Bands of the lead at the Bloch phase `k` (radians per cell), in increasing order: the
+    /// eigenvalues of `H(k) = h00 + h01 e^{ik} + h01† e^{−ik}`.
+    pub fn bands(&self, k: f64) -> Vec<f64> {
+        let n = self.h00.nrows();
+        let phase = c64::from_polar(1.0, k);
+        let h = CMat::from_fn(n, n, |i, j| {
+            self.h00[(i, j)] + self.h01[(i, j)] * phase + self.h01[(j, i)].conj() * phase.conj()
+        });
+        let h = CMat::from_fn(n, n, |i, j| (h[(i, j)] + h[(j, i)].conj()) * 0.5);
+        let mut e: Vec<f64> = h.self_adjoint_eigenvalues(faer::Side::Lower).expect("Hermitian eigenvalues");
+        e.sort_by(f64::total_cmp);
+        e
+    }
 }
 
 /// How lead self-energies are computed.

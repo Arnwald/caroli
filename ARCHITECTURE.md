@@ -138,6 +138,8 @@ The dependencies only go downward: lattice ← model ← green ← caroli, and d
     `Lesser` to 1e-10 (square, BHZ, graphene, field). `NestedMultiTerminal::scattering_states`
     does the same for any number of leads: in a cross, the current out of each arm is `T_pq`
     and Kirchhoff's law holds at every inner site, with or without a field.
+  - `NestedTwoTerminal::transmission_eigenvalues` (squared singular values of
+    `W_L† G_LR W_R`) and `fano_factor` (shot noise); `Lead::bands` for lead band structures.
   - Both solvers split independent blocks of orbitals, such as the spin blocks of BHZ.
   - `NestedTwoTerminal::self_energies` and `transmission_with` reuse the lead self-energies of
     one energy for every disorder configuration with the same leads. For BHZ at W = 128 the

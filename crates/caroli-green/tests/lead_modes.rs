@@ -6,7 +6,6 @@
 use caroli_green::{Lead, SelfEnergyMethod, TwoTerminal};
 use caroli_lattice::{Lattice, Region};
 use caroli_model::{CMat, Model, c64};
-use faer::Side;
 
 fn one(x: f64) -> CMat {
     CMat::from_fn(1, 1, |_, _| c64::new(x, 0.0))
@@ -15,17 +14,9 @@ fn one(x: f64) -> CMat {
 /// Right-moving channels of a lead at `e`: upward crossings of `e` by the sorted bands of
 /// `H(k) = h00 + h01 e^{ik} + h01† e^{−ik}`.
 fn band_count(lead: &Lead, e: f64, nk: usize) -> usize {
-    let n = lead.h00.nrows();
-    let bands = |k: f64| -> Vec<f64> {
-        let ph = c64::from_polar(1.0, k);
-        let h = CMat::from_fn(n, n, |i, j| {
-            lead.h00[(i, j)] + lead.h01[(i, j)] * ph + lead.h01[(j, i)].conj() * ph.conj()
-        });
-        h.self_adjoint_eigenvalues(Side::Lower).unwrap()
-    };
     let ks: Vec<f64> =
         (0..=nk).map(|j| -std::f64::consts::PI + 2.0 * std::f64::consts::PI * j as f64 / nk as f64).collect();
-    let all: Vec<Vec<f64>> = ks.iter().map(|&k| bands(k)).collect();
+    let all: Vec<Vec<f64>> = ks.iter().map(|&k| lead.bands(k)).collect();
     all.windows(2).map(|w| w[0].iter().zip(&w[1]).filter(|(a, b)| **a < e && **b > e).count()).sum()
 }
 
