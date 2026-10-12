@@ -136,7 +136,9 @@ fn nearly_degenerate_channels() {
             })
         };
         let h00 = diag(0.0, eps2);
-        let h01 = diag(-1.0, -1.3);
+        // A uniform phase on the coupling keeps the transmission and the near degeneracy, and
+        // makes the coupling non-Hermitian: the general algorithm and its grouping are tested.
+        let h01 = diag(-1.0, -1.3) * faer::Scale(c64::from_polar(1.0, 0.4));
         let mut slices = vec![h00.clone(); 5];
         slices[2] = diag(0.9, eps2 - 1.1);
         let sys = TwoTerminal {
@@ -149,5 +151,79 @@ fn nearly_degenerate_channels() {
         let t = sys.transmission(e).unwrap();
         let split = sys.transmission_by_blocks(e, SelfEnergyMethod::Modes).unwrap();
         assert!((t - split).abs() < 1e-11, "Δk = {dk}: {t} vs {split}");
+    }
+}
+
+/// Leads with a Hermitian definite coupling take the fast path: its self-energies, channels and
+/// velocities agree with the general algorithm on a square strip (also on a subband edge), with
+/// degenerate (spinful) channels, and on random Hermitian cells with couplings of either sign.
+#[test]
+fn definite_couplings_fast_path() {
+    use caroli_green::modes::{LeadModes, sigma_left, sigma_right};
+    let zero = c64::new(0.0, 0.0);
+    let n = 7;
+    let strip = CMat::from_fn(n, n, |i, j| if i.abs_diff(j) == 1 { c64::new(-1.0, 0.0) } else { zero });
+    let minus_one = CMat::from_fn(n, n, |i, j| if i == j { c64::new(-1.0, 0.0) } else { zero });
+    let spinful = |m: &CMat| {
+        CMat::from_fn(
+            2 * m.nrows(),
+            2 * m.ncols(),
+            |i, j| if i % 2 == j % 2 { m[(i / 2, j / 2)] } else { zero },
+        )
+    };
+    // Bottom of the second subband of the strip: ε_2 − 2, ε_q = −2 cos(qπ/(n + 1)).
+    let edge = -2.0 * (2.0 * std::f64::consts::PI / (n + 1) as f64).cos() - 2.0;
+    let entry = |seed: usize, i: usize, j: usize| {
+        c64::new(
+            ((i * 7 + j * 13 + seed) % 17) as f64 / 17.0 - 0.5,
+            ((i * 3 + j * 5 + 2 * seed) % 11) as f64 / 11.0 - 0.5,
+        )
+    };
+    let m = 6;
+    let a = CMat::from_fn(m, m, |i, j| entry(1, i, j));
+    let cell = CMat::from_fn(m, m, |i, j| a[(i, j)] + a[(j, i)].conj());
+    let b = CMat::from_fn(m, m, |i, j| entry(2, i, j));
+    let bb = &b * b.adjoint();
+    let p = CMat::from_fn(m, m, |i, j| bb[(i, j)] + if i == j { c64::new(0.5, 0.0) } else { zero });
+    let minus_p = CMat::from_fn(m, m, |i, j| -p[(i, j)]);
+    let random = vec![-2.0, -0.7, 0.0, 0.4, 1.3, 2.5];
+    let cases = [
+        (
+            "strip",
+            strip.clone(),
+            minus_one.clone(),
+            vec![-4.5, -3.9, -2.5, -1.0, 0.0, 0.3, 1.7, 3.2, 4.5, edge],
+        ),
+        ("spinful strip", spinful(&strip), spinful(&minus_one), vec![-2.5, 0.3, 1.7]),
+        ("random, H1 = -P", cell.clone(), minus_p, random.clone()),
+        ("random, H1 = +P", cell, p, random),
+    ];
+    let sorted = |v: &[f64]| {
+        let mut v = v.to_vec();
+        v.sort_by(f64::total_cmp);
+        v
+    };
+    for (name, h0, h1, energies) in cases {
+        for e in energies {
+            let fast = LeadModes::new(&h0, &h1, e).unwrap();
+            let general = LeadModes::at_general(&h0, &h1, fast.energy).unwrap();
+            let k = h0.nrows();
+            // The fast path factors the coupling by Cholesky: u is lower triangular.
+            assert!((0..k).all(|i| (i + 1..k).all(|j| fast.u[(i, j)] == zero)), "{name}: general path taken");
+            assert_eq!(fast.energy, general.energy, "{name}, E = {e}");
+            let dr = (sigma_right(&h1, &fast) - sigma_right(&h1, &general)).norm_max();
+            let dl = (sigma_left(&h1, &fast) - sigma_left(&h1, &general)).norm_max();
+            assert!(dr < 1e-10 && dl < 1e-10, "{name}, E = {e}: ΔΣ_R = {dr:e}, ΔΣ_L = {dl:e}");
+            assert_eq!(fast.channels(), general.channels(), "{name}, E = {e}");
+            for (x, y) in [
+                (&fast.right_velocities, &general.right_velocities),
+                (&fast.left_velocities, &general.left_velocities),
+            ] {
+                assert!(
+                    sorted(x).iter().zip(sorted(y)).all(|(a, b)| (a - b).abs() < 1e-9),
+                    "{name}, E = {e}: velocities"
+                );
+            }
+        }
     }
 }

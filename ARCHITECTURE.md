@@ -79,6 +79,17 @@ The dependencies only go downward: lattice ← model ← green ← caroli, and d
     blocks, zero velocity) and bound states of the lead surface (singular `X_α`, as for graphene
     at E = 0): the modes are then computed at `E + δ`, with δ from 1e-9 to 1e-6 of the
     bandwidth, which gives the limit from above.
+  - **Fast path for Hermitian definite couplings**, `H1 = ±P` with `P > 0`: square lattices,
+    and multi-orbital leads without spin-orbit coupling or magnetic field along the axis. At a
+    real energy, `μ = λ + 1/λ` turns the Bloch equation into the Hermitian problem
+    `(H0 − E) ψ = ∓μ P ψ`, of size n instead of a 2n Schur decomposition.
+    - Each transverse mode gives two roots of `λ² − μλ + 1 = 0`, and the factors `u = ±L`,
+      `v = L` of `P = L L†` make the mode bases orthonormal as they stand.
+    - Subband edges are detected as in the general algorithm: a real `|λ|` within 1e-6 of 1, or
+      two roots closer than 1e-7 (a Jordan block).
+    - At W = 256 the lead modes take 16 ms instead of 0.47 s.
+    - `LeadModes::at_general` keeps the general algorithm for cross-checks, and a test compares
+      the two on strips (also on subband edges), degenerate channels and random leads.
   - Identical leads share one set of modes. Independent blocks (spin-conserving disorder) are
     solved separately (`TwoTerminal::blocks`).
   - Decimation (Lopez Sancho – Rubio) is kept as a cross-check only. It loses all accuracy when
@@ -221,3 +232,7 @@ Golden cases with disorder use the same impurity configurations as the thesis.
         from 228 ms to 19 ms with batched products.
       - What remains: the Schur decomposition (0.35 s), the orthonormal bases with their
         condition checks (47 ms), and the elimination (0.11 s).
+    - The Hermitian fast path removes the Schur decomposition for square-lattice leads:
+      `NestedTwoTerminal` takes 0.127 s per energy at W = 256 and 0.026 s at W = 128 (M5, one
+      thread). The elimination is now the main cost there. BHZ leads keep the general
+      algorithm.

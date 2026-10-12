@@ -101,11 +101,34 @@ impl LeadModes {
     }
 
     /// Modes at a complex energy `z`. With `Im z > 0` no mode propagates (`|λ| ≠ 1`).
+    ///
+    /// At a real energy, a Hermitian definite coupling takes the fast path of
+    /// [`DefiniteCoupling`]; everything else takes the general algorithm.
     pub fn at(h0: &CMat, h1: &CMat, z: c64) -> Result<Self, GreenError> {
+        let definite = if z.im == 0.0 { DefiniteCoupling::new(h0, h1) } else { None };
+        Self::shifted(h0, h1, z, |e, scale| match &definite {
+            Some(d) => d.modes(h0, e.re, scale),
+            None => Self::solve(h0, h1, e, scale),
+        })
+    }
+
+    /// Modes at `z` by the general algorithm (the `2r` Schur decomposition), whatever the
+    /// coupling: a cross-check of the fast path.
+    pub fn at_general(h0: &CMat, h1: &CMat, z: c64) -> Result<Self, GreenError> {
+        Self::shifted(h0, h1, z, |e, scale| Self::solve(h0, h1, e, scale))
+    }
+
+    /// `solve` at `z`, then at `z + δ` for the shifts δ of [`SHIFTS`] until it succeeds.
+    fn shifted(
+        h0: &CMat,
+        h1: &CMat,
+        z: c64,
+        solve: impl Fn(c64, f64) -> Result<Self, GreenError>,
+    ) -> Result<Self, GreenError> {
         let scale = (row_norm(h0) + 2.0 * row_norm(h1)).max(f64::MIN_POSITIVE);
         let mut last = GreenError::Eigen;
         for shift in SHIFTS {
-            match Self::solve(h0, h1, z + shift * scale, scale) {
+            match solve(z + shift * scale, scale) {
                 Ok(m) => return Ok(m),
                 Err(e) => last = e,
             }
@@ -413,6 +436,129 @@ impl LeadModes {
         }
         let t = solve_right(&rows(&self.left, 0..r), &rows(&self.left, r..2 * r));
         &self.v * t * self.v.adjoint()
+    }
+}
+
+/// A Hermitian definite coupling `H1 = s P` (`s = ±1`, `P = L L† > 0`) with a Hermitian cell
+/// `H0`: square lattices, and multi-orbital leads without spin-orbit coupling or magnetic field
+/// along the axis.
+///
+/// At a real energy `E`, with `μ = λ + 1/λ`, the Bloch equation `H1† λ⁻¹ + H0 − E + H1 λ`
+/// becomes the Hermitian problem `(H0 − E) ψ = −s μ P ψ`. With `ψ = L⁻† y` it reads
+/// `L⁻¹ (H0 − E) L⁻† y = ν y`, `μ = −s ν`: one Hermitian eigenproblem of size n instead of a
+/// Schur decomposition of size 2n.
+/// - Each transverse mode `y` gives the two roots of `λ² − μλ + 1 = 0`. If `|μ| < 2` they are
+///   on the unit circle, and the current `J = −2 s Im λ ψ†Pψ` sorts them. Otherwise they are
+///   real, `|λ| < 1` going right.
+/// - With the factors `u = s L`, `v = L` of the coupling, a mode is `(α, γ) ∝ (s y, λ y)`, so
+///   the bases of right- and left-going modes are orthonormal as they stand, and `X_α`, `Y_γ`
+///   are never singular.
+#[derive(Clone, Debug)]
+struct DefiniteCoupling {
+    s: f64,
+    l: CMat,
+}
+
+impl DefiniteCoupling {
+    /// Largest `‖m − m†‖ / ‖m‖` for a Hermitian matrix.
+    const HERMITIAN_TOL: f64 = 1e-14;
+    /// Smallest ratio of the diagonal entries of `L` (a condition number of `P` below ~1e8).
+    const DEFINITE_TOL: f64 = 1e-4;
+
+    fn new(h0: &CMat, h1: &CMat) -> Option<Self> {
+        let n = h0.nrows();
+        let hermitian = |m: &CMat| {
+            let asym = (0..n)
+                .flat_map(|i| (0..n).map(move |j| (i, j)))
+                .map(|(i, j)| (m[(i, j)] - m[(j, i)].conj()).norm())
+                .fold(0.0, f64::max);
+            asym <= Self::HERMITIAN_TOL * m.norm_max()
+        };
+        if n == 0 || h1.norm_max() == 0.0 || !hermitian(h0) || !hermitian(h1) {
+            return None;
+        }
+        [-1.0, 1.0].into_iter().find_map(|s| {
+            let p = CMat::from_fn(n, n, |i, j| (h1[(i, j)] + h1[(j, i)].conj()) * (0.5 * s));
+            let l = p.llt(Side::Lower).ok()?.L().to_owned();
+            let (lo, hi) = (0..n).fold((f64::INFINITY, 0.0f64), |(lo, hi), i| {
+                (lo.min(l[(i, i)].norm()), hi.max(l[(i, i)].norm()))
+            });
+            (lo > Self::DEFINITE_TOL * hi).then_some(Self { s, l })
+        })
+    }
+
+    /// Modes at the real energy `e`.
+    fn modes(&self, h0: &CMat, e: f64, scale: f64) -> Result<LeadModes, GreenError> {
+        use faer::linalg::triangular_solve::{
+            solve_lower_triangular_in_place, solve_upper_triangular_in_place,
+        };
+        let (n, s, l) = (h0.nrows(), self.s, &self.l);
+        let par = faer::get_global_parallelism();
+        // M = L⁻¹ (H0 − E) L⁻†.
+        let mut b = CMat::from_fn(n, n, |i, j| {
+            (h0[(i, j)] + h0[(j, i)].conj()) * 0.5
+                - if i == j { c64::new(e, 0.0) } else { c64::new(0.0, 0.0) }
+        });
+        solve_lower_triangular_in_place(l.as_ref(), b.as_mut(), par);
+        let mut m = b.adjoint().to_owned();
+        solve_lower_triangular_in_place(l.as_ref(), m.as_mut(), par);
+        let m = CMat::from_fn(n, n, |i, j| (m[(i, j)] + m[(j, i)].conj()) * 0.5);
+        let evd = m.self_adjoint_eigen(Side::Lower).map_err(|_| GreenError::Eigen)?;
+        let (nu, y) = (evd.S(), evd.U());
+
+        // The right- and left-going root of each transverse mode.
+        let (mut right, mut left, mut propagating) =
+            (Vec::with_capacity(n), Vec::with_capacity(n), Vec::new());
+        for k in 0..n {
+            let mu = -s * nu[k].re;
+            if mu.abs() < 2.0 {
+                // J ∝ −s Im λ: the root with s Im λ < 0 goes right. Roots closer than the
+                // degeneracy tolerance form a Jordan block, as in the general algorithm.
+                let root = c64::new(mu / 2.0, (4.0 - mu * mu).sqrt() / 2.0);
+                if 2.0 * root.im < DEGENERATE_TOL {
+                    return Err(GreenError::Singular(e)); // subband edge
+                }
+                let (r, lft) = if s < 0.0 { (root, root.conj()) } else { (root.conj(), root) };
+                right.push(r);
+                left.push(lft);
+                propagating.push(k);
+            } else {
+                let big = (mu + mu.signum() * (mu * mu - 4.0).sqrt()) / 2.0;
+                if big.abs() <= 1.0 + UNIT_TOL {
+                    return Err(GreenError::Singular(e)); // subband edge (λ = ±1)
+                }
+                right.push(c64::new(1.0 / big, 0.0));
+                left.push(c64::new(big, 0.0));
+            }
+        }
+        // Velocities J / ψ†ψ of the propagating modes, ψ = L⁻† y (P-normalised).
+        let mut psi = CMat::from_fn(n, propagating.len(), |i, c| y[(i, propagating[c])]);
+        solve_upper_triangular_in_place(l.adjoint(), psi.as_mut(), par);
+        let (mut rv, mut lv) = (Vec::with_capacity(propagating.len()), Vec::with_capacity(propagating.len()));
+        for (c, &k) in propagating.iter().enumerate() {
+            let v = -2.0 * s * right[k].im / psi.col_as_slice(c).iter().map(|z| z.norm_sqr()).sum::<f64>();
+            let fast = v.abs() >= VELOCITY_TOL * scale; // false for NaN
+            if !fast {
+                return Err(GreenError::Singular(e)); // subband edge
+            }
+            rv.push(v);
+            lv.push(-v);
+        }
+        let basis = |lams: &[c64]| {
+            CMat::from_fn(2 * n, n, |p, k| {
+                let c = 1.0 / (1.0 + lams[k].norm_sqr()).sqrt();
+                if p < n { y[(p, k)] * (s * c) } else { y[(p - n, k)] * lams[k] * c }
+            })
+        };
+        Ok(LeadModes {
+            u: CMat::from_fn(n, n, |i, j| l[(i, j)] * s),
+            v: l.clone(),
+            right: basis(&right),
+            left: basis(&left),
+            right_velocities: rv,
+            left_velocities: lv,
+            energy: c64::new(e, 0.0),
+        })
     }
 }
 
