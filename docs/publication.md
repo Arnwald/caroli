@@ -36,7 +36,7 @@ From the [submission guide](https://joss.readthedocs.io/en/latest/submitting.htm
 | documentation, automated tests | API docs, tutorials, `cargo test --workspace` |
 | packaging per the language's standards | crates.io release to prepare |
 | CONTRIBUTING file, support and governance | `CONTRIBUTING.md`; `CITATION.cff` |
-| evidence of research use | the two thesis studies, rebuilt as examples |
+| evidence of research use | the two thesis studies, rebuilt as examples (`ti_magnetic`; `graphene_field` to match the paper's figures) |
 | a short `paper.md`: summary, statement of need, references, AI disclosure | to write |
 
 ## Benchmarks are not the paper

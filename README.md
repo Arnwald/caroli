@@ -59,11 +59,19 @@ assert!((device.transmission(0.0)? - 2.0).abs() < 1e-8);
 
 ## Examples (from the thesis)
 
-1. **2D topological insulator** — BHZ model of HgTe quantum wells with magnetic impurities:
-   two- and four-terminal conductance, local currents, Born phase diagrams (anomalous quantum Hall
-   effect induced by disorder).
-2. **Graphene with magnetic impurities** — non-linear transport and pair creation under a strong
-   electric field, wave-packet spreading, KPM density of states.
+Self-contained programs in `crates/caroli/examples`, with the scripts that plot their figures:
+
+1. **2D topological insulator** (`ti_magnetic`) — BHZ model of HgTe quantum wells with magnetic
+   impurities: spin-resolved conductance maps, local currents and densities of states, Born
+   phase diagrams (anomalous quantum Hall effect induced by disorder).
+2. **Graphene with magnetic impurities** (`graphene_field`) — non-linear transport and pair
+   creation under a strong electric field, wave-packet spreading, densities of states and
+   conductivity.
+
+```bash
+cargo run --release -p caroli --example ti_magnetic -- all out/ti
+python3 crates/caroli/examples/plot_ti_magnetic.py out/ti
+```
 
 ## Conventions
 

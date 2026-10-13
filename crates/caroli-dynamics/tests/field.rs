@@ -129,3 +129,21 @@ fn fermi_sea() {
     assert!(a.excited.windows(2).all(|w| w[1] > w[0]), "{:?}", a.excited);
     assert!(a.current.iter().skip(1).all(|j| j[1] > 0.0 && j[0].abs() < 1e-12), "{:?}", a.current);
 }
+
+/// With disorder, the Fermi sea of the whole Hamiltonian is stationary without field: its
+/// carriers above the Fermi energy of the clean bands stay put. The clean Fermi sea is not a
+/// stationary state of the disordered Hamiltonian: the disorder excites it at once.
+#[test]
+fn disordered_fermi_sea_is_stationary() {
+    let n = 12;
+    let torus = Torus::new(&graphene(n, 2), n);
+    let ev = Evolution { dt: 0.05, steps: 200, every: 50, fermi: 0.0, densities: false };
+    let ground = torus.evolve(&torus.fermi_sea(0.0, 4, 3, 1024), &ev);
+    let quench = torus.evolve(&torus.filled(0.0, 4, 3), &ev);
+    let drift =
+        |r: &caroli_dynamics::Record| r.excited.iter().map(|x| (x - r.excited[0]).abs()).fold(0.0, f64::max);
+    assert!(drift(&ground) < 0.1 * drift(&quench), "{} vs {}", drift(&ground), drift(&quench));
+    // Half filling: half of the 4 n² orbitals are occupied (up to the stochastic error).
+    let occupied = ground.norm[0] / (4 * n * n) as f64;
+    assert!((occupied - 0.5).abs() < 0.02, "{occupied}");
+}

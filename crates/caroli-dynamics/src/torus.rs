@@ -358,6 +358,77 @@ impl Torus {
             .collect()
     }
 
+    /// The Fermi sea below `fermi` of the whole Hamiltonian at `t = 0`, site-dependent terms
+    /// included: `vectors` random-phase vectors (in real space) projected by a Chebyshev
+    /// expansion of `θ(fermi − H)` with `moments` terms and the Jackson kernel (k space, as
+    /// [`Self::filled`]). The step is smeared over about `π·ΔE/moments`, `ΔE` the half-width of
+    /// the spectrum. Without disorder it is [`Self::filled`] up to that smearing; with disorder it
+    /// is the ground state, where [`Self::filled`] is the clean one, which the disorder sets in
+    /// motion.
+    pub fn fermi_sea(&self, fermi: f64, vectors: usize, seed: u64, moments: usize) -> Vec<Vec<c64>> {
+        let (nn, a0) = (self.n * self.n, (self.potential)(0.0));
+        let kinetic: Vec<CMat> = (0..nn).into_par_iter().map(|k| self.kinetic(k, a0)).collect();
+        // Spectral bounds: the bands, widened by the largest local term (row sums).
+        let (mut lo, mut hi) = kinetic
+            .par_iter()
+            .map(|m| {
+                let e = m.self_adjoint_eigenvalues(Side::Lower).expect("eigenvalues");
+                (e[0], e[e.len() - 1])
+            })
+            .reduce(|| (f64::INFINITY, f64::NEG_INFINITY), |a, b| (a.0.min(b.0), a.1.max(b.1)));
+        let local_norm = self
+            .local
+            .iter()
+            .map(|(_, v)| {
+                (0..v.nrows())
+                    .map(|i| (0..v.ncols()).map(|j| v[(i, j)].norm()).sum::<f64>())
+                    .fold(0.0, f64::max)
+            })
+            .fold(0.0, f64::max);
+        lo -= local_norm;
+        hi += local_norm;
+        let (centre, half) = (0.5 * (lo + hi), 0.5 * (hi - lo) * 1.01 + 1e-12);
+        let op = caroli_torus::TorusOperator::new(self.n, self.comps, kinetic, self.local.clone());
+        let apply = |x: &[c64], y: &mut [c64]| {
+            op.apply(x, y);
+            y.iter_mut().zip(x).for_each(|(y, x)| *y = (*y - centre * x) / half);
+        };
+        // θ(μ − x) = Σ c_n T_n(x): c_0 = 1 − φ/π, c_n = −2 sin(nφ)/(nπ), φ = arccos μ̃.
+        let phi = ((fermi - centre) / half).clamp(-1.0, 1.0).acos();
+        let kernel = caroli_kpm::jackson(moments);
+        let coefficient = |n: usize| {
+            let c = if n == 0 {
+                1.0 - phi / std::f64::consts::PI
+            } else {
+                -2.0 * (n as f64 * phi).sin() / (n as f64 * std::f64::consts::PI)
+            };
+            c * kernel[n]
+        };
+        let mut rng = Xoshiro256::seed_from_u64(seed);
+        let len = nn * self.comps;
+        (0..vectors)
+            .map(|_| {
+                let r: Vec<c64> = (0..len)
+                    .map(|_| c64::from_polar(1.0, 2.0 * std::f64::consts::PI * rng.uniform()))
+                    .collect();
+                let mut out: Vec<c64> = r.iter().map(|x| x * coefficient(0)).collect();
+                let (mut prev, mut cur) = (r.clone(), vec![c64::new(0.0, 0.0); len]);
+                apply(&prev, &mut cur);
+                out.iter_mut().zip(&cur).for_each(|(o, c)| *o += c * coefficient(1));
+                let mut next = vec![c64::new(0.0, 0.0); len];
+                for n in 2..moments {
+                    apply(&cur, &mut next);
+                    next.iter_mut().zip(&prev).for_each(|(x, p)| *x = 2.0 * *x - p);
+                    out.iter_mut().zip(&next).for_each(|(o, c)| *o += c * coefficient(n));
+                    std::mem::swap(&mut prev, &mut cur);
+                    std::mem::swap(&mut cur, &mut next);
+                }
+                self.to_k(&mut out);
+                out
+            })
+            .collect()
+    }
+
     /// The orbital `orbital` of cell `cell` (k space, unit norm), projected on the clean band
     /// states at `t = 0` whose energy lies in `window` if one is given.
     pub fn localized(&self, cell: [usize; 2], orbital: usize, window: Option<(f64, f64)>) -> Vec<c64> {

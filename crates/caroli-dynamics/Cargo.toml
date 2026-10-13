@@ -10,6 +10,7 @@ repository.workspace = true
 [dependencies]
 caroli-disorder.workspace = true
 caroli-gpu.workspace = true
+caroli-kpm.workspace = true
 caroli-lattice.workspace = true
 caroli-model.workspace = true
 caroli-torus.workspace = true

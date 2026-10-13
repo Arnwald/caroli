@@ -32,7 +32,7 @@ crates/
                       report shared by the runs checked against the CPU
   caroli-walk         discrete-time quantum walks: a walker on a graph coupled to spins on its
                       edges (Sellapillay & Verga), on the CPU (f64, f32) and the GPU
-  caroli              facade: re-exports and prelude
+  caroli              facade: re-exports and prelude; the examples of the two thesis studies
   caroli-validation   (not published) comparisons with the thesis golden outputs
   caroli-bench        (not published) benchmarks against other codes (`benchmarks/`)
 ```
@@ -222,6 +222,13 @@ The dependencies only go downward: lattice ← model ← green ← caroli, and d
     impurities (densities and currents); the Stark breathing of a wave packet,
     `⟨x²⟩ = (8J²/F²) sin²(Ft/2)` along the force and `2J²t²` across, to 1e-6; a single random
     vector gives the exact Fermi-sea trace when each k has one occupied band.
+  - `Torus::fermi_sea`: with disorder, the Fermi sea of the whole Hamiltonian, random-phase
+    vectors projected by a Chebyshev expansion of `θ(μ − H)` (Jackson kernel). The clean Fermi
+    sea is not a stationary state of the disordered Hamiltonian: the disorder excites it at once
+    (in the graphene study of the thesis, a jump of the pair count at `t = 0`). Test: without
+    field the disordered Fermi sea keeps its excited carriers, to a tenth of the jump of the
+    clean one.
+- **Dev builds** optimise dependencies
 - **Dev builds** optimise dependencies (`[profile.dev.package."*"] opt-level = 3`); faer is
   unusable unoptimised.
 
@@ -314,8 +321,19 @@ Golden cases with disorder use the same impurity configurations as the thesis.
         samples are that large: about 2× on those in f32, with the transport errors measured in
         item 12. Not implemented; a CUDA card with fast f64 is the better target for transport.
     - Not on the GPU: dense transport solves, and FFT-based torus operators.
-11. Examples: the two thesis studies (TI with magnetic impurities: G maps, local currents, Born
-    phase diagram; graphene under a field: current, pair creation, DOS).
+11. Examples: the two thesis studies, self-contained (`crates/caroli/examples`), with their plot
+    scripts.
+    - ✅ `ti_magnetic`: the 2D topological insulator with magnetic impurities (Raymond, Verga and
+      Demion): spin-resolved conductance maps ⟨G⟩(J_I, E_F), local currents, spin densities and
+      LDOS in six regimes (G = 2, 1, 0), and the Born phase diagram from the general SCBA, whose
+      lines are drawn over the maps. The Born points reproduce the corrected values of the Born
+      addendum (opposite-g, J_I = 0.35, E_F = 0.02: M̄↑ = −0.0165; same-g, J_I = 1.3,
+      E_F = −0.12: M̄↓ = −0.314). Default grids in minutes, `--paper` for the published ones.
+    - 🧪 `graphene_field`: graphene with magnetic impurities under a field (Demion and Verga,
+      PRB 90, 085412 (2014)): current and pair creation, wave-packet spreading, densities of
+      states, Kubo conductivity, with the parameters of the thesis runs (V_imp = 0.5, 10 % of
+      each sublattice, fields up to 0.02). Sizes, times and the figures are still to match those
+      of the paper.
 12. 🧪 Transport precision, chosen by the user (`caroli_green::{Precision, PrecisionOptions,
     checked}`): single precision for the nested-dissection solvers, kept as an experimental
     option for previews.

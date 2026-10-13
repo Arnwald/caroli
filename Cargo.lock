@@ -83,6 +83,7 @@ dependencies = [
  "caroli-model",
  "caroli-torus",
  "caroli-walk",
+ "rayon",
  "serde_json",
 ]
 
@@ -135,6 +136,7 @@ version = "0.1.0"
 dependencies = [
  "caroli-disorder",
  "caroli-gpu",
+ "caroli-kpm",
  "caroli-lattice",
  "caroli-model",
  "caroli-torus",
