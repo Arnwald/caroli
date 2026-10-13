@@ -33,6 +33,7 @@ crates/
   caroli-walk         discrete-time quantum walks: a walker on a graph coupled to spins on its
                       edges (Sellapillay & Verga), on the CPU (f64, f32) and the GPU
   caroli              facade: re-exports and prelude; the examples of the two thesis studies
+  caroli-cli          the `caroli` command: a system and its calculations in a TOML file
   caroli-validation   (not published) comparisons with the thesis golden outputs
   caroli-bench        (not published) benchmarks against other codes (`benchmarks/`)
 ```
@@ -228,6 +229,25 @@ The dependencies only go downward: lattice ← model ← green ← caroli, and d
     (in the graphene study of the thesis, a jump of the pair count at `t = 0`). Test: without
     field the disordered Fermi sea keeps its excited carriers, to a tenth of the jump of the
     clean one.
+- **Interface: the `caroli` command** (`caroli-cli`, input reference in its README). A TOML file
+  holds `[parameters]` (named numbers or expressions of each other), `[model]` (a preset, a
+  continuum k·p Hamiltonian or a lattice of one's own with on-site and hopping matrices as
+  expressions of the Pauli matrices), `[[disorder]]` (Anderson, magnetic impurities), `[system]`
+  (size, periodic, leads on faces) and `[[run]]` tables: `transmission` (two-terminal, or any
+  faces, or between sectors), `local` (currents, densities, LDOS, operator densities and
+  currents), `bands` (ribbon, or bulk along a path), `spectrum`, `dos`, `conductivity`, `scba`,
+  `evolution`.
+  - Expressions go through the continuum parser (`continuum::evaluate`, `continuum::number`),
+    extended with `pi` and the functions of one real number.
+  - `scan` (every combination of parameters, the dependent parameters following) and
+    `configurations` (seed + c) run in parallel; one CSV table per run, a row per scan point,
+    configuration and value. Unknown keys are errors.
+  - Lead self-energies are computed once per energy and scan point and reused for every
+    disorder configuration (the leads are the clean model).
+  - Tests (`crates/caroli-cli/tests/cli.rs`): each run type against the library call or the
+    physics (transmissions and sectors, scans with dependent parameters, ribbon and bulk bands,
+    the dense spectrum, DOS sum rule and spin projections, SCBA, Stark breathing, the helical
+    spin currents), the example inputs build, and the errors name the faulty key or name.
 - **Dev builds** optimise dependencies
 - **Dev builds** optimise dependencies (`[profile.dev.package."*"] opt-level = 3`); faer is
   unusable unoptimised.
@@ -289,7 +309,8 @@ Golden cases with disorder use the same impurity configurations as the thesis.
 8. ✅ Time evolution: split-operator on tori (`caroli-dynamics`); graphene current, pair
    creation, wave-packet width and density validated (exact). Any model under a uniform field:
    `Torus` (k space) and `Driven` (real space, any geometry).
-9. Interface: declarative system and simulation files with a CLI; Python bindings to consider.
+9. ✅ Interface: the `caroli` command (`caroli-cli`), a system and its calculations in a TOML file
+   (see Design choices; examples in `crates/caroli-cli/inputs`). Python bindings to consider.
 10. ✅ Acceleration:
     - CPU: rayon over energies (`TwoTerminal::transmissions`), k sums, random vectors, FFT rows,
       sparse products; transport split into independent blocks (`TwoTerminal::blocks`).

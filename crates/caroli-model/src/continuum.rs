@@ -9,8 +9,9 @@
 //!
 //! Syntax: numbers, the named parameters, `k_x k_y k_z` (or `kx ky kz`), the Pauli matrices
 //! `s0 sx sy sz` (or `sigma_0`...), the imaginary unit `i`, `kron(a, b)` (index of `b` fastest),
-//! `+ − * /` (division by numbers), integer powers `^` or `**`, parentheses. A number stands for
-//! that multiple of the identity.
+//! `+ − * /` (division by numbers), integer powers `^` or `**`, parentheses, `pi` and the
+//! functions of a real number `sqrt exp ln sin cos tan abs`. A number stands for that multiple of
+//! the identity. [`evaluate`] and [`number`] give the value of an expression without `k`.
 
 use crate::pauli::{s0, sx, sy, sz};
 use crate::{CMat, Model, c64};
@@ -292,6 +293,21 @@ impl Parser<'_> {
                     self.expect(')')?;
                     return kron(&a, &b);
                 }
+                if let Some(f) = function(&name) {
+                    self.expect('(')?;
+                    let x = self.expr()?;
+                    self.expect(')')?;
+                    return match (x.len(), x.get(&[0, 0, 0])) {
+                        (1, Some(Value::Number(v))) if v.im == 0.0 => {
+                            Ok(constant(Value::Number(c64::new(f(v.re), 0.0))))
+                        }
+                        (0, _) => Ok(constant(Value::Number(c64::new(f(0.0), 0.0)))),
+                        _ => Err(ContinuumError::Invalid(format!("{name} takes a real number"))),
+                    };
+                }
+                if name == "pi" && !self.params.iter().any(|(p, _)| *p == "pi") {
+                    return Ok(constant(Value::Number(c64::new(std::f64::consts::PI, 0.0))));
+                }
                 let k = |d: usize| {
                     let mut p = [0u32; 3];
                     p[d] = 1;
@@ -315,6 +331,39 @@ impl Parser<'_> {
             _ => Err(self.unexpected()),
         }
     }
+}
+
+/// The functions of one real number: `sqrt`, `exp`, `ln`, `sin`, `cos`, `tan`, `abs`.
+fn function(name: &str) -> Option<fn(f64) -> f64> {
+    Some(match name {
+        "sqrt" => f64::sqrt,
+        "exp" => f64::exp,
+        "ln" => f64::ln,
+        "sin" => f64::sin,
+        "cos" => f64::cos,
+        "tan" => f64::tan,
+        "abs" => f64::abs,
+        _ => return None,
+    })
+}
+
+/// Value of an expression without `k` (the syntax of [`Continuum::parse`]): a matrix, or a number
+/// (a 1 × 1 matrix) when no Pauli matrix appears.
+pub fn evaluate(expression: &str, params: &[(&str, f64)]) -> Result<CMat, ContinuumError> {
+    let c = Continuum::parse(expression, params)?;
+    if c.terms.keys().any(|p| p != &[0, 0, 0]) {
+        return Err(ContinuumError::Invalid(format!("`{expression}` depends on k")));
+    }
+    Ok(c.terms.get(&[0, 0, 0]).cloned().unwrap_or_else(|| CMat::zeros(c.orbitals, c.orbitals)))
+}
+
+/// Value of a real number expression (parameters, `pi`, the functions of [`evaluate`]'s syntax).
+pub fn number(expression: &str, params: &[(&str, f64)]) -> Result<f64, ContinuumError> {
+    let m = evaluate(expression, params)?;
+    if m.nrows() != 1 || m[(0, 0)].im != 0.0 {
+        return Err(ContinuumError::Invalid(format!("`{expression}` is not a real number")));
+    }
+    Ok(m[(0, 0)].re)
 }
 
 /// `kron(a, b)` of two constant matrix expressions.
@@ -507,6 +556,24 @@ mod tests {
         assert!(matches!(Continuum::parse("k_x + q", &[]), Err(ContinuumError::Unknown(_))));
         assert!(matches!(Continuum::parse("sx + kron(sx, sz)", &[]), Err(ContinuumError::Size(2, 4))));
         assert!(Continuum::parse("(k_x", &[]).is_err());
+    }
+
+    /// Constant expressions: numbers with functions and `pi`, matrices with parameters.
+    #[test]
+    fn constant_expressions() {
+        let x = number("2*sqrt(3)*cos(pi/3) + abs(-t)", &[("t", 0.5)]).unwrap();
+        assert!((x - (3f64.sqrt() + 0.5)).abs() < 1e-15);
+        let m = evaluate("J*kron(sz, s0) + i*sx/2", &[("J", 0.7)]);
+        assert!(m.is_err(), "sizes 4 and 2");
+        let m = evaluate("J*kron(sz, s0) + i*kron(s0, sx)/2", &[("J", 0.7)]).unwrap();
+        assert_eq!(m.nrows(), 4);
+        assert!(
+            (m[(0, 0)] - c64::new(0.7, 0.0)).norm() < 1e-15
+                && (m[(0, 1)] - c64::new(0.0, 0.5)).norm() < 1e-15
+        );
+        assert!(number("sx", &[]).is_err() && number("i", &[]).is_err() && evaluate("k_x*sz", &[]).is_err());
+        // A parameter named pi wins over the constant.
+        assert_eq!(number("pi", &[("pi", 3.0)]).unwrap(), 3.0);
     }
 
     #[test]

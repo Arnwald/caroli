@@ -1,0 +1,27 @@
+# A k·p Hamiltonian discretised on a square lattice: the continuum BHZ model, whose bands match
+# the BHZ preset.
+#   caroli run crates/caroli-cli/inputs/continuum-bhz.toml
+title = "Continuum BHZ model"
+
+[parameters]
+A = 1.0
+B = -0.376406
+D = -0.280933
+M = -0.137
+
+[model]
+continuum = "-D*(k_x^2 + k_y^2) + (M - B*(k_x^2 + k_y^2))*kron(s0, sz) + A*(k_x*kron(sz, sx) - k_y*kron(s0, sy))"
+
+[system]
+size = [1, 30]
+leads = ["-x", "+x"]
+
+# Bulk bands along Γ → X → M → Γ (Bloch phases).
+[[run]]
+type = "bands"
+path = [[0, 0], ["pi", 0], ["pi", "pi"], [0, 0]]
+points = 60
+
+# Bands of a ribbon 30 sites wide.
+[[run]]
+type = "bands"

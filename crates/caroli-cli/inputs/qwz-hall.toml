@@ -1,0 +1,30 @@
+# The Qi–Wu–Zhang Chern insulator: quantised Hall conductivity σ_xy = ±e²/h in the gap (Kubo–Bastin
+# on a torus), and its chiral edge channels between the four faces of a square.
+#   caroli run crates/caroli-cli/inputs/qwz-hall.toml
+title = "Qi–Wu–Zhang Chern insulator"
+
+[parameters]
+m = 1.0
+
+[model]
+preset = "qwz"
+m = "m"
+
+[system]
+size = [32, 32]
+periodic = true
+leads = ["-x", "-y", "+x", "+y"]
+
+[[run]]
+type = "conductivity"
+energies = { from = -0.5, to = 0.5, count = 11 }
+components = ["xx", "xy"]
+moments = 256
+vectors = 8
+bounds = [-3.0, 3.0]
+
+# Transmissions between the faces (the open square, not the torus): T = 1 into the next lead
+# along the chiral edge, 0 elsewhere.
+[[run]]
+type = "transmission"
+energies = 0.2

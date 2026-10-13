@@ -1,0 +1,30 @@
+# A clean BHZ ribbon (HgTe quantum well): two helical edge channels in the bulk gap.
+#   caroli run crates/caroli-cli/inputs/bhz-ribbon.toml
+title = "Clean BHZ ribbon"
+
+[parameters]
+M = -0.137            # mass (inverted regime: M/B > 0)
+
+[model]
+preset = "bhz"
+mass = "M"
+
+[system]
+size = [60, 40]       # cells along x (between the leads) and y
+leads = ["-x", "+x"]
+
+# Conductance against the Fermi energy: 2 e²/h in the gap.
+[[run]]
+type = "transmission"
+energies = { from = -0.3, to = 0.3, count = 121 }
+
+# Bands of the ribbon: the edge states cross the gap.
+[[run]]
+type = "bands"
+k = { from = -0.5, to = 0.5, count = 201 }
+
+# Current injected by the left lead at E = 0.02 and its spin current: each edge carries one spin.
+[[run]]
+type = "local"
+energies = 0.02
+operators = { sz = "kron(sz, s0)" }

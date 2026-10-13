@@ -1,0 +1,31 @@
+# Magnetic impurities in a BHZ ribbon, moments along z (the thesis' anomalous quantum Hall maps,
+# a coarse grid): spin-resolved conductance against the exchange J and the Fermi energy.
+#   caroli run crates/caroli-cli/inputs/ti-magnetic.toml
+title = "BHZ ribbon with magnetic impurities (opposite-g)"
+
+[parameters]
+J = 0.4
+
+[model]
+preset = "bhz"
+
+[[disorder]]
+type = "magnetic"
+concentration = 0.4
+exchange = "J"
+moments = "polarized"
+mz = 1.0
+spin = "opposite-g"
+cells = { x = [72, 328] }   # the central 256 columns of the 400 × 64 ribbon
+seed = 1000
+
+[system]
+size = [400, 64]
+
+# T between the spin sectors of the leads (spin is conserved: T_1.0_0.0 = T↑, T_1.1_0.1 = T↓).
+[[run]]
+type = "transmission"
+energies = { from = -0.16, to = 0.16, count = 9 }
+scan = { J = { from = 0.0, to = 0.75, count = 6 } }
+configurations = 2
+sectors = [0, 0, 1, 1]

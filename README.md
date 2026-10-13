@@ -55,7 +55,46 @@ assert!((device.transmission(0.0)? - 2.0).abs() < 1e-8);
   checks a sample of the work and takes over when the error would exceed the tolerance. The
   transport solvers can run in single precision too, as an experimental preview mode (1.1–1.9×
   faster, with errors up to 10⁻² and more in wide samples).
-- **Delivery**: a workspace of reusable crates plus a user-facing interface.
+- **Delivery**: a workspace of reusable crates plus a user-facing interface, the `caroli`
+  command.
+
+## The `caroli` command
+
+A system and its calculations in a TOML file, one CSV table per calculation:
+
+```toml
+[parameters]
+J = 0.4
+
+[model]
+preset = "bhz"
+
+[[disorder]]
+type = "magnetic"
+concentration = 0.2
+exchange = "J"
+moments = "polarized"
+spin = "opposite-g"
+
+[system]
+size = [200, 64]
+
+[[run]]
+type = "transmission"
+energies = { from = -0.16, to = 0.16, count = 33 }
+scan = { J = { from = 0.0, to = 0.75, count = 16 } }
+configurations = 8
+sectors = [0, 0, 1, 1]     # spin-resolved
+```
+
+```bash
+cargo run --release -p caroli-cli -- run input.toml
+```
+
+Transmissions, local currents and densities, bands, spectra, densities of states,
+conductivities, the Born approximation and time evolution: see
+[crates/caroli-cli/README.md](crates/caroli-cli/README.md) and the examples in
+[crates/caroli-cli/inputs](crates/caroli-cli/inputs).
 
 ## Examples (from the thesis)
 

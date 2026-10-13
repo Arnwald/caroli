@@ -32,7 +32,7 @@ From the [submission guide](https://joss.readthedocs.io/en/latest/submitting.htm
 | public repository, browsable, with an open issue tracker | public since October 2026 |
 | at least six months of public history before submission | from October 2026: April 2027 at the earliest |
 | no code without the right to publish it | the thesis codes and the code of collaborators are out of the tree and the history; only the thesis outputs stay, as regression data |
-| feature-complete ("no half-baked solutions") | transport done; KPM, Born and time evolution have high-level APIs from a model; the interface (CLI) to finish |
+| feature-complete ("no half-baked solutions") | transport, KPM, Born and time evolution from a model; the `caroli` command (TOML inputs); Python bindings to consider |
 | documentation, automated tests | API docs, tutorials, `cargo test --workspace` |
 | packaging per the language's standards | crates.io release to prepare |
 | CONTRIBUTING file, support and governance | `CONTRIBUTING.md`; `CITATION.cff` |
