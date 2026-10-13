@@ -104,7 +104,8 @@ Kwant, TBtrans and Quantica.jl on a Mac mini M4 Pro.
 The first campaign, against Kwant only: [results/report-2026-10-12-08246f7.md](results/report-2026-10-12-08246f7.md).
 
 Quantum walk: [results/walk-report-2026-10-12-c660c96.md](results/walk-report-2026-10-12-c660c96.md),
-Mac mini M4 Pro, against the paper's method in Python (the authors' code is not public).
+Mac mini M4 Pro. caroli against the two Python versions of the same walk written for this
+benchmark; the authors' code is not part of the comparison.
 
 - n = 19 (2·10⁷ amplitudes, the paper's largest): 51 ms per step for U as a SciPy sparse
   matrix, 5.3 ms for caroli in f64 on 14 threads (10×), 2.5 ms in f32 on the CPU or the GPU
@@ -117,9 +118,9 @@ Mac mini M4 Pro, against the paper's method in Python (the authors' code is not 
 
 The model of K. Sellapillay and A. D. Verga (Phys. Rev. E 103, 032123 (2021)): a walker on a
 ring of n nodes with one spin per edge, coin angle θ, coupling J; the dimension is
-n · 2^(n+1), 2·10⁷ at n = 19, their largest system. Their code is not public: the competitor is
-the method their paper describes, written in Python by `walk/reference.py`, the way a Python
-code would:
+n · 2^(n+1), 2·10⁷ at n = 19, their largest system. The benchmark compares implementations
+written for it only, not the authors' code: caroli and two Python versions of the same step in
+`walk/reference.py`.
 
 - `sparse`: the one-step operator U built as a SciPy sparse matrix, then `psi = U @ psi` at
   every step;
@@ -132,7 +133,7 @@ double-single, raw or checked against the CPU (`caroli_walk::evolve`).
 - **Same results first.** Every method's position distribution p(x) after the same steps is
   compared with caroli's in f64: 10⁻¹⁵ for the f64 methods, 10⁻⁷ for f32.
 - **Python on one thread** (one process, BLAS threads at 1); caroli on all the cores and on one.
-- **Steps**: about a second of the SciPy reference per size, after a warm-up.
+- **Steps**: about a second of the SciPy version per size, after a warm-up.
 - **Two workloads.** The time per step on rings of 13 to 25 nodes (`walk run`), and the scan of
   the (θ, J) plane of the paper's Fig. 21 (`walk phase`): for each point and for the initial
   spins along z and along x, 2000 steps from the middle node, the time-averaged p(x) and its

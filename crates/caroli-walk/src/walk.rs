@@ -138,6 +138,10 @@ fn edge_blocks<T: Real, const B: usize, const ACC: bool>(
 }
 
 /// Coin `R(θ) = [[cos θ, −sin θ], [sin θ, cos θ]]` on the two colors of a node.
+///
+/// The motion leaves the walker on the edge it came along, so on a ring the coin angle `θ` sets
+/// what it does next: it turns back with amplitude `cos θ` and goes on with amplitude `sin θ`.
+/// At `θ = 0` the walker bounces on one edge forever, at `θ = π/2` it runs around the ring.
 pub fn rotation(theta: f64) -> CMat {
     let (s, c) = theta.sin_cos();
     CMat::from_fn(2, 2, |i, j| c64::new([[c, -s], [s, c]][i][j], 0.0))

@@ -1,9 +1,9 @@
-"""Python references for the quantum walk on a graph of spins (K. Sellapillay and A. D. Verga,
-Phys. Rev. E 103, 032123 (2021)), on the ring of n nodes. The authors' code is not public; this
-script implements the method their paper describes in the two ways a Python code would:
+"""Python versions of the quantum walk on a graph of spins (K. Sellapillay and A. D. Verga,
+Phys. Rev. E 103, 032123 (2021)), on the ring of n nodes, written for the benchmark of
+caroli-walk (they are not the authors' code):
 
 - sparse: the one-step operator U = V(J) M R(theta) built as a scipy.sparse CSR matrix, then
-  psi <- U psi at every step ("numerically computed iteratively multiplying by U");
+  psi <- U psi at every step;
 - numpy:  the same step as vectorised NumPy operations on psi[h, s], without a matrix.
 
 The state is psi[h * 2^n + s] as in caroli-walk: half-edge h = 2x + c (color 0 points to x + 1,

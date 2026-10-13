@@ -1,8 +1,8 @@
 //! Benchmark of the quantum walk on a graph of spins (Sellapillay & Verga, Phys. Rev. E 103,
 //! 032123): the ring of `n` nodes, `θ = π/8`, `J = 0.2`, walker on color 0 of node 0, spins along
-//! +x. The authors' code is not public: the competitors are the method their paper describes
-//! written in Python (`benchmarks/walk/reference.py`: the one-step operator as a SciPy sparse
-//! matrix, and the same step in vectorised NumPy).
+//! +x. Every implementation compared was written for this benchmark, none is the authors' code:
+//! caroli's, and two Python versions (`benchmarks/walk/reference.py`: the one-step operator as a
+//! SciPy sparse matrix, and the same step in vectorised NumPy).
 //!
 //! ```text
 //! walk run [--sizes 13,15,17,19] [--steps 10] [--python PATH] [--python-max-n 19]
@@ -159,7 +159,7 @@ fn run(args: &[String]) {
         }
         #[cfg(target_os = "macos")]
         gpu_runs(&w, steps, &p_ref, &mut record);
-        // Python references.
+        // The Python versions.
         if n <= python_max {
             for method in ["sparse", "numpy"] {
                 if method == "sparse" && n > 19 {
@@ -276,7 +276,7 @@ fn ks_of(sums: &[Vec<f64>]) -> Vec<f64> {
 /// `grid × grid` mesh of (θ ∈ (0, π/2), J ∈ (0, π)) for the initial spins 'x' and 'z', the walker
 /// starting on color 0 of the middle node. caroli runs the walks side by side
 /// (`caroli_walk::scan`): in f64, in f32, and in f32 with the GPU joining the CPU threads, the
-/// reduced-precision walks checked against f64. Then the Python reference on a sample of the
+/// reduced-precision walks checked against f64. Then the SciPy version on a sample of the
 /// runs, extrapolated to the whole scan.
 fn phase(args: &[String]) {
     let opt = |flag: &str| args.iter().position(|a| a == flag).and_then(|i| args.get(i + 1)).cloned();
@@ -321,7 +321,7 @@ fn phase(args: &[String]) {
         runs.len(),
         report_hybrid.gpu_walks
     );
-    // The Python reference on evenly spaced runs of the scan.
+    // The SciPy version on evenly spaced runs of the scan.
     let picked: Vec<usize> =
         (0..sample).map(|q| q * runs.len() / sample + runs.len() / (2 * sample)).collect();
     let mut seconds = Vec::new();

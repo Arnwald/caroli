@@ -392,12 +392,12 @@ Golden cases with disorder use the same impurity configurations as the thesis.
     - Kernels generic over f64 and f32; `step_serial` runs one walk per thread for scans of
       parameters, `step_serial_accumulate` adds the half-edge probabilities without another
       sweep; Metal kernels in f32 and double-single, run through `walk::evolve`.
-    - Benchmark (`benchmarks/walk`, Mac mini M4 Pro), against the method of the paper written
-      in Python (their code is not public): at n = 19 (dimension 2·10⁷, their largest),
+    - Benchmark (`benchmarks/walk`, Mac mini M4 Pro), against two Python versions of the walk
+      written for it, not the authors' code: at n = 19 (dimension 2·10⁷, their largest),
       51 ms per step with U as a SciPy sparse matrix, 5.3 ms for caroli in f64 on 14 threads
       (10×), 2.5 ms in f32 on the CPU or the GPU (20×); caroli runs n = 25 (1.7·10⁹
       amplitudes), 0.22 s per step on the GPU in f32. The scan of the (θ, J) plane of their
-      Fig. 21 (8192 walks of 2000 steps at n = 13): 4.4 h for the Python reference on one
+      Fig. 21 (8192 walks of 2000 steps at n = 13): 4.4 h for the SciPy version on one
       process, 6.7 min for caroli in f64 on 14 threads (39×), 3.7 min in f32 with the GPU
       taking half the walks (70×, `walk::scan`); the distances agree to 4e-16 in f64, 2e-5 in
       f32 (`benchmarks/results/walk-report-2026-10-12-c660c96.md`).
