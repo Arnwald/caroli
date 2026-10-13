@@ -1,7 +1,7 @@
 //! Apple Accelerate: LAPACK 3.9+ (the `$NEWLAPACK` symbols, 32-bit integers) and BLAS.
 
 use crate::{DenseError, Op, Svd};
-use faer::{Accum, Mat, MatMut, MatRef, c64};
+use faer::{Accum, Mat, MatMut, MatRef, c32, c64};
 
 type Int = i32;
 
@@ -174,6 +174,36 @@ unsafe extern "C" {
         lwork: *const Int,
         iwork: *mut Int,
         info: *mut Int,
+    );
+    #[link_name = "cgetrf$NEWLAPACK"]
+    fn cgetrf(m: *const Int, n: *const Int, a: *mut c32, lda: *const Int, ipiv: *mut Int, info: *mut Int);
+    #[link_name = "cgetrs$NEWLAPACK"]
+    fn cgetrs(
+        trans: *const u8,
+        n: *const Int,
+        nrhs: *const Int,
+        a: *const c32,
+        lda: *const Int,
+        ipiv: *const Int,
+        b: *mut c32,
+        ldb: *const Int,
+        info: *mut Int,
+    );
+    #[link_name = "cgemm$NEWLAPACK"]
+    fn cgemm(
+        transa: *const u8,
+        transb: *const u8,
+        m: *const Int,
+        n: *const Int,
+        k: *const Int,
+        alpha: *const c32,
+        a: *const c32,
+        lda: *const Int,
+        b: *const c32,
+        ldb: *const Int,
+        beta: *const c32,
+        c: *mut c32,
+        ldc: *const Int,
     );
     #[link_name = "zgemm$NEWLAPACK"]
     fn zgemm(
@@ -426,6 +456,77 @@ impl Lu {
         };
         Ok(())
     }
+}
+
+/// [`crate::Field::schur`] in complex f32 (cgetrf, cgetrs, cgemm), with the pivot test at
+/// `tol`; `None` when a size or a stride does not fit LAPACK.
+#[allow(clippy::type_complexity)]
+pub(crate) fn schur_c32(f: MatRef<'_, c32>, ne: usize, tol: f64) -> Option<Option<(Mat<c32>, Mat<c32>)>> {
+    let nb = f.nrows() - ne;
+    if ne == 0 {
+        return Some(Some((f.submatrix(0, 0, nb, nb).to_owned(), Mat::zeros(0, nb))));
+    }
+    let modulus = |z: c32| (z.re as f64).hypot(z.im as f64);
+    let mut lu = f.submatrix(0, 0, ne, ne).to_owned();
+    let mut scale = 0.0f64;
+    for j in 0..ne {
+        for i in 0..ne {
+            scale = scale.max(modulus(lu[(i, j)]));
+        }
+    }
+    let (ne_i, nb_i) = (Int::try_from(ne).ok()?, Int::try_from(nb).ok()?);
+    let ld = leading_dimension(ne, ne, lu.row_stride(), lu.col_stride())?;
+    let mut pivots: Vec<Int> = vec![0; ne];
+    let mut info: Int = 0;
+    // SAFETY: a square column-major matrix and ne pivots; an exactly zero pivot (info > 0) is
+    // caught by the test below.
+    unsafe { cgetrf(&ne_i, &ne_i, lu.as_ptr_mut(), &ld, pivots.as_mut_ptr(), &mut info) };
+    let small = (0..ne).map(|i| modulus(lu[(i, i)])).fold(f64::INFINITY, f64::min);
+    let stable = small > tol * scale; // false for NaN
+    if !stable {
+        return Some(None);
+    }
+    if nb == 0 {
+        return Some(Some((Mat::zeros(0, 0), Mat::zeros(ne, 0))));
+    }
+    let mut x = f.submatrix(0, ne, ne, nb).to_owned();
+    let ldx = leading_dimension(ne, nb, x.row_stride(), x.col_stride())?;
+    let mut s = f.submatrix(ne, ne, nb, nb).to_owned();
+    let lds = leading_dimension(nb, nb, s.row_stride(), s.col_stride())?;
+    let f21 = f.submatrix(ne, 0, nb, ne);
+    let ld21 = leading_dimension(nb, ne, f21.row_stride(), f21.col_stride())?;
+    let (one, minus_one) = (c32::new(1.0, 0.0), c32::new(-1.0, 0.0));
+    // SAFETY: column-major views with checked leading dimensions: X = f11⁻¹ f12, then
+    // S = f22 − f21 X.
+    unsafe {
+        cgetrs(
+            b"N".as_ptr(),
+            &ne_i,
+            &nb_i,
+            lu.as_ptr(),
+            &ld,
+            pivots.as_ptr(),
+            x.as_ptr_mut(),
+            &ldx,
+            &mut info,
+        );
+        cgemm(
+            b"N".as_ptr(),
+            b"N".as_ptr(),
+            &nb_i,
+            &nb_i,
+            &ne_i,
+            &minus_one,
+            f21.as_ptr(),
+            &ld21,
+            x.as_ptr(),
+            &ldx,
+            &one,
+            s.as_ptr_mut(),
+            &lds,
+        );
+    }
+    Some(Some((s, x)))
 }
 
 /// Thin `Q` of the QR factorisation of an `m × n` matrix, `m ≥ n` (zgeqrf, zungqr).

@@ -52,7 +52,9 @@ assert!((device.transmission(0.0)? - 2.0).abs() < 1e-8);
     (Sellapillay & Verga, `caroli-walk`).
 - **Acceleration**: all the cores, and the GPU for the Chebyshev kernels (Metal, and CUDA in
   f64) and the quantum walks (Metal), in reduced precision if the user chooses it: the CPU
-  checks a sample of the work and takes over when the error would exceed the tolerance.
+  checks a sample of the work and takes over when the error would exceed the tolerance. The
+  transport solvers can run in single precision too, as an experimental preview mode (1.1–1.9×
+  faster, with errors up to 10⁻² and more in wide samples).
 - **Delivery**: a workspace of reusable crates plus a user-facing interface.
 
 ## Examples (from the thesis)

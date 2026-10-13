@@ -11,9 +11,10 @@
 //!   `competitors` (TBtrans and Quantica.jl).
 //!   - With `--count N`: throughput instead of latency. N energies (the problem's, shifted by
 //!     1e-3 per round) on all the threads: caroli's rayon pool, or a pool of Kwant processes.
-//! - `caroli-bench solve PROBLEM WIDTH [nd|rgf] [COUNT]`: the caroli runner for one case (one
-//!   JSON line), by nested dissection (`caroli`, default) or recursive Green's function
-//!   (`caroli-rgf`); with `COUNT`, the throughput run.
+//! - `caroli-bench solve PROBLEM WIDTH [nd|nd32|rgf] [COUNT]`: the caroli runner for one case (one
+//!   JSON line), by nested dissection (`caroli`, default), nested dissection with the fronts in
+//!   single precision (`caroli-f32`) or recursive Green's function (`caroli-rgf`); with `COUNT`,
+//!   the throughput run.
 //! - `caroli-bench report [FILE]`: agreement between the codes, and timing tables.
 //!
 //! Times are wall-clock seconds. `times_s` holds one entry per energy, computed one after the
@@ -21,7 +22,7 @@
 //! at once on the threads given.
 
 use caroli_disorder::rng::Xoshiro256;
-use caroli_green::{Interface, NestedMultiTerminal, NestedTwoTerminal, TwoTerminal};
+use caroli_green::{Interface, NestedMultiTerminal, NestedTwoTerminal, Precision, TwoTerminal};
 use caroli_lattice::{Lattice, Region, Site};
 use caroli_model::presets::{BhzParams, bhz};
 use caroli_model::{CMat, Model, c64};
@@ -225,12 +226,14 @@ fn solve(name: &str, w: usize, solver: &str, count: Option<usize>) {
     // Each energy gives the transmission, or for a cross the T_pq (p ≠ q, p-major).
     // Independent blocks (e.g. the spin blocks of BHZ) are solved on their own by every solver.
     type Solver = Box<dyn Fn(f64) -> Vec<f64> + Sync>;
+    // `nd32`: nested dissection with the fronts in single precision.
+    let precision = if solver == "nd32" { Precision::Single } else { Precision::Double };
     let (transmission, block_count): (Solver, usize) = if is_cross(&p) {
         let (region, interfaces) = cross(clean.lattice(), w);
         let sys = NestedMultiTerminal::from_model(&device, &clean, &region, &interfaces);
         let count = sys.block_count();
         let off_diagonal = move |e: f64| -> Vec<f64> {
-            let t = sys.transmissions(e).expect("transmissions");
+            let t = sys.transmissions_with_precision(e, precision).expect("transmissions");
             let n = t.len();
             (0..n)
                 .flat_map(|p| (0..n).filter(move |&q| q != p).map(move |q| (p, q)))
@@ -260,7 +263,11 @@ fn solve(name: &str, w: usize, solver: &str, count: Option<usize>) {
             _ => {
                 let sys = NestedTwoTerminal::from_model(&device, &clean, &region, 0);
                 let count = sys.block_count();
-                (Box::new(move |e| vec![sys.transmission(e).expect("transmission")]), count)
+                let t = move |e: f64| {
+                    let sigma = sys.self_energies(e).expect("self-energies");
+                    vec![sys.transmission_with_precision(&sigma, precision).expect("transmission")]
+                };
+                (Box::new(t), count)
             }
         }
     };
@@ -294,7 +301,7 @@ fn solve(name: &str, w: usize, solver: &str, count: Option<usize>) {
         times.iter().sum()
     };
     let line = json!({
-        "code": if solver == "rgf" { "caroli-rgf" } else { "caroli" }, "version": env!("CARGO_PKG_VERSION"),
+        "code": match solver { "rgf" => "caroli-rgf", "nd32" => "caroli-f32", _ => "caroli" }, "version": env!("CARGO_PKG_VERSION"),
         "problem": p.name, "width": w, "length": l, "orbitals": n, "threads": rayon::current_num_threads(),
         "blocks": block_count,
         "build_s": build, "times_s": times, "parallel_s": parallel, "energies": p.energies,
@@ -777,7 +784,7 @@ fn main() {
         Some("run") => run(&args[2..]),
         Some("report") => report(&args[2..]),
         _ => eprintln!(
-            "usage: caroli-bench prepare | run [--code C] [--problem P] [--width W] [--threads N] [--count N] | solve P W [nd|rgf] [COUNT] | report [FILE] | scaling P W N T..."
+            "usage: caroli-bench prepare | run [--code C] [--problem P] [--width W] [--threads N] [--count N] | solve P W [nd|nd32|rgf] [COUNT] | report [FILE] | scaling P W N T..."
         ),
     }
 }

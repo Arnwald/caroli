@@ -274,46 +274,53 @@ Golden cases with disorder use the same impurity configurations as the thesis.
         samples are that large: about 2× on those in f32, with the transport errors measured in
         item 12. Not implemented; a CUDA card with fast f64 is the better target for transport.
     - Not on the GPU: dense transport solves, and FFT-based torus operators.
-12. Transport precision, chosen by the user (planned). The RGF sweep would take a `Precision`:
-    - `Double`: the default, on the CPU.
-    - `Single`: GPU in f32, for previews.
-    - `Mixed`: each slice inversion in f32, refined once (`X ← X + X(1 − A X)`) with the
-      residual in double-single.
+12. 🧪 Transport precision, chosen by the user (`caroli_green::{Precision, PrecisionOptions,
+    checked}`): single precision for the nested-dissection solvers, kept as an experimental
+    option for previews.
+    - **What runs in f32.** The fronts below the root, through Accelerate (`cgetrf`, `cgetrs`,
+      `cgemm`; faer elsewhere), with `caroli_dense::Field` for `c64` and `c32`. The root (lead
+      self-energies, delayed variables, final solve) and the trace stay in f64.
+    - **Checked runs.** `NestedTwoTerminal::transmissions_checked` and `caroli_green::checked`
+      recompute one point in fifty in f64, report the median and largest difference, and redo
+      the whole batch in f64 above the tolerance (10⁻² for `PrecisionOptions::single`).
+    - **Speed.** A front's Schur step is 2.7–3.7× faster in f32 (fronts of 128 to 2048
+      variables, M5). The whole solve gains less: small fronts, assembly, the root and the
+      leads do not speed up. On the benchmark problems, one thread, M5:
 
-    The loss was measured with `crates/caroli-validation/examples/rgf_precision.rs`:
-    - systems: the spin blocks of the g2g1 maps (disordered length 256), at 6 energies per
-      disorder strength;
-    - quantity: |ΔT| per block against `Double`;
-    - samples: 2 configurations at W = 64, 1 at W ≥ 128.
+      | problem | f64 | f32 | gain | largest \|ΔT\| |
+      |---|---|---|---|---|
+      | square, disorder, W = 256 | 67.7 ms | 45.2 ms | 1.50× | 4.9e-3 |
+      | square, disorder, W = 512 | 373 ms | 241 ms | 1.55× | 0.13 |
+      | long strip, W = 128 | 178 ms | 113 ms | 1.57× | 3.6e-2 |
+      | four-terminal cross, W = 256 | 216 ms | 150 ms | 1.44× | 0.46 |
+      | BHZ, W = 256 | 2.91 s | 2.69 s | 1.08× | 2.2e-2 |
+      | graphene, W = 256 | 303 ms | 259 ms | 1.17× | 1.4e-2 |
 
-    | W | `Single`: median / 99 % / max | `Single` on plateaus, max | `Mixed`: median / 99 % / max |
-    |---|---|---|---|
-    | 64 | 5.6e-6 / 1.6e-3 / 1.0e-2 | 2.4e-4 | 7.5e-12 / 4.0e-7 / 8.7e-7 |
-    | 128 | 1.3e-5 / 5.2e-3 / 2.5e-2 | 1.3e-3 | 1.9e-11 / 8.9e-7 / 8.5e-5 |
-    | 256 (*) | 1.7e-5 / 2.0e-2 / 2.0e-2 | 3.2e-3 | 2.8e-10 / 2.4e-5 / 1.0e-4 |
+      BHZ and graphene spend most of their time on the lead modes, always in f64.
+    - **Accuracy** on the spin blocks of the g2g1 maps (`examples/nd_precision.rs`: disordered
+      length 256, 6 energies per disorder strength), |T_single − T_double| per block, and the
+      gain on all threads:
 
-    (*) Three disorder strengths per case, near the transitions.
+      | W | median | 99 % | max | max on the plateaus | gain |
+      |---|---|---|---|---|---|
+      | 64 | 1.4e-5 | 9.0e-3 | 3.2e-2 | 3.7e-3 | 1.7–1.8× |
+      | 128 | 1.8e-5 | 2.7e-2 | 6.2e-2 | 8.2e-3 | 1.9× |
+      | 256 | 3.5e-5 | 3.2e-1 | 3.7e-1 | 7.2e-3 | 1.4–1.8× |
 
-    - **Where the loss comes from.** The single-precision inversions. Rounding the lead
-      self-energies costs less than 1e-7, and a double-precision final trace does not help.
-    - **How it grows.** On the plateaus, about ×2.5–5 per doubling of W: at W ≥ 128, `Single`
-      exceeds the 1e-3 used to call a point quantized. It is largest in diffusive regions.
-      Transmissions below 1e-38 underflow to zero, so localisation lengths need `Double` or
-      `Mixed`.
-    - **`Mixed` also grows with W**, up to 1e-4 at W ≥ 128. A second refinement step, or
-      refining until the residual falls below a threshold, should bring it back near double
-      precision.
-    - **Reporting the loss.** Every reduced-precision run should report its own error:
-      - the residual norms ‖1 − A X‖ of the inversions, which `Mixed` computes anyway;
-      - a random fraction of the points (say 2 %) recomputed in `Double`, with the median and
-        maximum |ΔT| returned with the results.
-    - **CPU timing.** On the M5 CPU, the f32 sweep takes half the time of the f64 one (4.4 s
-      against 8.7 s at W = 128, 25.7 s against 48.9 s at W = 256).
-    - **Faster double path, to do first.** Two changes:
-      - the coupling between slices is diagonal site by site, so two of the three products per
-        slice become O(n²);
-      - dense algebra through Accelerate (AMX). Done for the inversions (`caroli-dense`): the
-        square lattice at W = 256 went from 4.9 s to 3.5 s per energy on the M5.
+    - **Why the tails.** Nested dissection eliminates closed subdomains at a real energy. Close
+      to one of their eigenvalues a separator block is ill-conditioned, and f32 keeps too few
+      digits. A stricter pivot test delays such blocks to larger fronts and restores much of the
+      accuracy (largest |ΔT| 8.5e-3 at W = 64 with a threshold of 1e-3), but the delayed
+      variables pile up towards the root. The same-g ribbon then runs slower than in f64: 1.4×
+      at W = 128 with a threshold of 1e-3, 3× at W = 256 with 3e-4. The `c32` threshold stays
+      at 1e-5, where f32 is never slower.
+    - **Not done: `Mixed`**, f32 inversions refined with an f64 residual, designed for a GPU
+      without f64. On a CPU the dominant products of the Schur updates would have to stay in
+      f64 for the refinement to help, which leaves almost no gain.
+    - **The recursive Green's function in f32** (`examples/rgf_precision.rs`) is more accurate:
+      largest |ΔT| 1.0e-2 at W = 64 and 2.5e-2 at W = 128, 2.4e-4 on the plateaus at W = 64, and
+      1e-4 with one refinement step. But the sweep costs O(L W³), against O(L W²) for nested
+      dissection, so it is not offered.
 11. Examples: the two thesis studies (TI with magnetic impurities: G maps, local currents, Born
     phase diagram; graphene under a field: current, pair creation, DOS).
 13. Speed: the fastest code of its kind, measured against the reference codes: Kwant, TBtrans and

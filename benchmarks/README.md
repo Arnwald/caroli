@@ -83,6 +83,10 @@ cargo build --release -p caroli-bench
 ./target/release/caroli-bench report > results/report.md
 ```
 
+`caroli-bench solve PROBLEM WIDTH nd32` runs one case with the nested-dissection fronts in
+single precision (`caroli-f32`, experimental): 1.1–1.6× faster on one thread, with errors up to
+0.46 on these problems (`ARCHITECTURE.md`, item 12). It is not part of the campaigns.
+
 Results are appended to `results/<machine>.jsonl`, one JSON line per run. The report keeps
 the latest run of each case.
 

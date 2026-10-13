@@ -25,14 +25,14 @@
 use crate::gauge::Gauge;
 use crate::modes::{ModeSolver, sigma_left, sigma_right};
 use crate::{GreenError, Lead, broadening, caroli_trace};
-use caroli_dense::{Accum, Lu, Op, matmul, product};
+use crate::{Precision, PrecisionOptions, PrecisionReport};
+use caroli_dense::{Accum, Field, Lu, Mat, Op, c32, matmul, product};
 use caroli_lattice::{Region, Site};
 use caroli_model::{CMat, Model, SparseMatrix, c64};
 
 /// Domains with at most this many orbitals are not split further.
 const LEAF_ORBITALS: usize = 16;
-/// A pivot below this fraction of the largest entry of a separator block delays the block.
-const PIVOT_TOL: f64 = 1e-11;
+// A pivot below `Field::PIVOT_TOL` times the largest entry of a separator block delays the block.
 /// Fronts with fewer variables than this are eliminated by [`small_schur`].
 const SMALL_FRONT: usize = 64;
 
@@ -178,11 +178,12 @@ fn separator_entries(h: &SparseMatrix, node: &Node, pos: &Positions, mut add: im
     }
 }
 
-/// What a front passes to its parent: its remaining variables and their Schur complement, and,
-/// when the factors are kept, what the back-substitution needs.
-struct Front {
+/// What a front passes to its parent: its remaining variables and their Schur complement (in the
+/// precision of the elimination), and, when the factors are kept, what the back-substitution
+/// needs.
+struct Front<T> {
     vars: Vec<usize>,
-    s: CMat,
+    s: Mat<T>,
     factor: Option<Factor>,
 }
 
@@ -239,14 +240,25 @@ impl Tree {
     /// variables delayed up to the root, then `kept` in order. The entries of `z − H` between
     /// kept orbitals are included; the caller adds the leads. With `keep`, the fronts also keep
     /// their back-substitution data.
+    ///
+    /// The fronts below the root run in `precision`; the root itself is assembled in complex f64,
+    /// so the leads, the delayed variables and the final solve stay in double precision.
     pub(crate) fn root(
         &self,
         h: &SparseMatrix,
         z: c64,
         kept: &[usize],
         keep: bool,
+        precision: Precision,
     ) -> Result<Root, GreenError> {
-        let kids = self.fronts(h, &self.top, z, keep)?;
+        let kids = match precision {
+            Precision::Double => self.fronts::<c64>(h, &self.top, z, keep)?,
+            Precision::Single => self
+                .fronts::<c32>(h, &self.top, z, keep)?
+                .into_iter()
+                .map(|kid| Front { vars: kid.vars, s: c32::into_c64(kid.s), factor: kid.factor })
+                .collect(),
+        };
         let in_kept = Positions::new(kept);
         let mut delayed: Vec<usize> =
             kids.iter().flat_map(|k| k.vars.iter().copied()).filter(|&o| in_kept.get(o).is_none()).collect();
@@ -269,13 +281,13 @@ impl Tree {
     }
 
     /// Fronts of the given nodes, in parallel.
-    fn fronts(
+    fn fronts<T: Field>(
         &self,
         h: &SparseMatrix,
         nodes: &[usize],
         z: c64,
         keep: bool,
-    ) -> Result<Vec<Front>, GreenError> {
+    ) -> Result<Vec<Front<T>>, GreenError> {
         match nodes {
             [] => Ok(Vec::new()),
             [a] => Ok(vec![self.front(h, *a, z, keep)?]),
@@ -289,19 +301,26 @@ impl Tree {
 
     /// Eliminates node `k` (after its children) and returns the variables left in its front and
     /// their Schur complement.
-    fn front(&self, h: &SparseMatrix, k: usize, z: c64, keep: bool) -> Result<Front, GreenError> {
+    fn front<T: Field>(
+        &self,
+        h: &SparseMatrix,
+        k: usize,
+        z: c64,
+        keep: bool,
+    ) -> Result<Front<T>, GreenError> {
         let node = &self.nodes[k];
-        let kids = self.fronts(h, &node.children, z, keep)?;
+        let kids = self.fronts::<T>(h, &node.children, z, keep)?;
         let plan = &self.plans[k];
         let planned = kids.iter().zip(&node.children).all(|(kid, &c)| kid.vars == self.nodes[c].boundary);
+        let zt = T::from_c64(z);
         let (vars, ne, f, children) = if planned {
             let n = plan.vars.len();
-            let mut f = CMat::zeros(n, n);
+            let mut f = Mat::<T>::zeros(n, n);
             for &(a, b, v) in &plan.entries {
-                f[(a, b)] -= v;
+                f[(a, b)] -= T::from_c64(v);
             }
             for &a in &plan.diagonal {
-                f[(a, a)] += z;
+                f[(a, a)] += zt;
             }
             let mut factors = Vec::new();
             for (kid, runs) in kids.into_iter().zip(&plan.children) {
@@ -314,17 +333,17 @@ impl Tree {
             let handed: Vec<&[usize]> = kids.iter().map(|kid| kid.vars.as_slice()).collect();
             let (vars, ne) = front_vars(node, &handed);
             let pos = Positions::new(&vars);
-            let mut f = CMat::zeros(vars.len(), vars.len());
-            separator_entries(h, node, &pos, |a, b, v| f[(a, b)] -= v);
+            let mut f = Mat::<T>::zeros(vars.len(), vars.len());
+            separator_entries(h, node, &pos, |a, b, v| f[(a, b)] -= T::from_c64(v));
             for &i in &node.eliminate {
                 let pi = pos.get(i).unwrap();
-                f[(pi, pi)] += z;
+                f[(pi, pi)] += zt;
             }
             let children = extend_add(&mut f, &pos, kids);
             (Some(vars), ne, f, children)
         };
         let vars = || vars.clone().unwrap_or_else(|| plan.vars.clone());
-        let delayed = |vars: Vec<usize>, f: CMat, children: Vec<Factor>| Front {
+        let delayed = |vars: Vec<usize>, f: Mat<T>, children: Vec<Factor>| Front {
             factor: keep.then(|| Factor {
                 elim: Vec::new(),
                 boundary: Vec::new(),
@@ -345,7 +364,7 @@ impl Tree {
                 factor: keep.then(|| Factor {
                     elim: vars()[..ne].to_vec(),
                     boundary: node.boundary.clone(),
-                    x,
+                    x: T::into_c64(x),
                     children,
                 }),
             }),
@@ -606,6 +625,21 @@ impl NestedTwoTerminal {
         energies.par_iter().map(|&e| self.transmission(e)).collect()
     }
 
+    /// Transmissions at many energies in the precision of `options`, checked against double
+    /// precision on a sample of the energies (see [`crate::checked`]).
+    pub fn transmissions_checked(
+        &self,
+        energies: &[f64],
+        options: &PrecisionOptions,
+    ) -> (Vec<Result<f64, GreenError>>, PrecisionReport) {
+        crate::checked(
+            energies,
+            options,
+            |&e, p| self.transmission_with_precision(&self.self_energies(e)?, p),
+            |a, b| (a - b).abs(),
+        )
+    }
+
     /// Lead self-energies at `energy`, for each independent block. They serve every system with
     /// the same leads and blocks: in a disorder average, the leads are solved once per energy
     /// instead of once per configuration.
@@ -646,6 +680,16 @@ impl NestedTwoTerminal {
     ///
     /// Panics if the leads or the blocks differ.
     pub fn transmission_with(&self, sigma: &LeadSelfEnergies) -> Result<f64, GreenError> {
+        self.transmission_with_precision(sigma, Precision::Double)
+    }
+
+    /// [`Self::transmission_with`] with the fronts in `precision` (see [`Precision`]), unchecked:
+    /// [`Self::transmissions_checked`] or [`crate::checked`] measure the error.
+    pub fn transmission_with_precision(
+        &self,
+        sigma: &LeadSelfEnergies,
+        precision: Precision,
+    ) -> Result<f64, GreenError> {
         use rayon::prelude::*;
         assert_eq!(sigma.blocks.len(), self.blocks.len(), "self-energies of a system with other blocks");
         let z = c64::new(sigma.energy, 0.0);
@@ -661,7 +705,7 @@ impl NestedTwoTerminal {
                         && block.right_orbitals == s.right_orbitals,
                     "self-energies of a system with other leads"
                 );
-                let g_lr = self.lead_green(block, z, &s.sigma_l, &s.sigma_r)?;
+                let g_lr = self.lead_green(block, z, &s.sigma_l, &s.sigma_r, precision)?;
                 Ok(caroli_trace(&broadening(&s.sigma_l), &g_lr, &broadening(&s.sigma_r)))
             })
             .collect();
@@ -681,7 +725,7 @@ impl NestedTwoTerminal {
             let left = Rc::new(LeadSolution::new(&block.left.h00, &left_out, z)?);
             let right = Rc::new(LeadSolution::new(&block.right.h00, &block.right.h01, z)?);
             let (sigma_l, sigma_r) = (left.self_energy(&left_out), right.self_energy(&block.right.h01));
-            let root = self.root_with_leads(block, z, &sigma_l, &sigma_r, false)?;
+            let root = self.root_with_leads(block, z, &sigma_l, &sigma_r, false, Precision::Double)?;
             let k = root.s.nrows();
             let green = Lu::new(root.s.as_ref()).solve(CMat::identity(k, k).as_ref());
             if !green.norm_max().is_finite() {
@@ -715,7 +759,7 @@ impl NestedTwoTerminal {
         let z = c64::new(energy, 0.0);
         let mut taus = Vec::new();
         for (block, s) in self.blocks.iter().zip(&sigma.blocks) {
-            let g_lr = self.lead_green(block, z, &s.sigma_l, &s.sigma_r)?;
+            let g_lr = self.lead_green(block, z, &s.sigma_l, &s.sigma_r, Precision::Double)?;
             let (wl, wr) = (gamma_root(&s.sigma_l)?, gamma_root(&s.sigma_r)?);
             let gw = product(g_lr.as_ref(), Op::Plain, wr.as_ref(), Op::Plain);
             let t = product(wl.as_ref(), Op::Adjoint, gw.as_ref(), Op::Plain);
@@ -736,8 +780,15 @@ impl NestedTwoTerminal {
     }
 
     /// `G_LR`, the block of `(z − H − Σ)⁻¹` between the first and last slices.
-    fn lead_green(&self, block: &Block, z: c64, sigma_l: &CMat, sigma_r: &CMat) -> Result<CMat, GreenError> {
-        let root = self.root_with_leads(block, z, sigma_l, sigma_r, false)?;
+    fn lead_green(
+        &self,
+        block: &Block,
+        z: c64,
+        sigma_l: &CMat,
+        sigma_r: &CMat,
+        precision: Precision,
+    ) -> Result<CMat, GreenError> {
+        let root = self.root_with_leads(block, z, sigma_l, sigma_r, false, precision)?;
         let (nl, nr) = (block.left_orbitals.len(), block.right_orbitals.len());
         // Columns of the right slice of S⁻¹, rows of the left slice.
         let rhs = CMat::from_fn(root.s.nrows(), nr, |i, j| {
@@ -759,13 +810,14 @@ impl NestedTwoTerminal {
         sigma_l: &CMat,
         sigma_r: &CMat,
         keep: bool,
+        precision: Precision,
     ) -> Result<LeadRoot, GreenError> {
         let same = block.left_orbitals == block.right_orbitals;
         let mut kept: Vec<usize> = block.left_orbitals.clone();
         if !same {
             kept.extend_from_slice(&block.right_orbitals);
         }
-        let Root { delayed, mut f, factors } = block.tree.root(&self.h, z, &kept, keep)?;
+        let Root { delayed, mut f, factors } = block.tree.root(&self.h, z, &kept, keep, precision)?;
         let nd = delayed.len();
         let (nl, nr) = (block.left_orbitals.len(), block.right_orbitals.len());
         let right = if same { 0 } else { nl };
@@ -804,7 +856,7 @@ impl NestedTwoTerminal {
         for (block, s) in self.blocks.iter().zip(&sigma.blocks) {
             let (wl, wr) = (gamma_root(&s.sigma_l)?, gamma_root(&s.sigma_r)?);
             let (cl, cr) = (wl.ncols(), wr.ncols());
-            let root = self.root_with_leads(block, z, &s.sigma_l, &s.sigma_r, true)?;
+            let root = self.root_with_leads(block, z, &s.sigma_l, &s.sigma_r, true, Precision::Double)?;
             // Sources on the lead slices: W_L on the left slice, W_R on the right one.
             let mut rhs = CMat::zeros(root.kept.len(), cl + cr);
             for a in 0..wl.nrows() {
@@ -1071,7 +1123,7 @@ fn symbolic(h: &SparseMatrix, nodes: &mut [Node]) {
 
 /// Adds the children's Schur complements into the front `f` (variables at `pos`), and returns
 /// their back-substitution data (when kept).
-fn extend_add(f: &mut CMat, pos: &Positions, kids: Vec<Front>) -> Vec<Factor> {
+fn extend_add<T: Field>(f: &mut Mat<T>, pos: &Positions, kids: Vec<Front<T>>) -> Vec<Factor> {
     let mut factors = Vec::new();
     for kid in kids {
         add_runs(f, &runs(&kid.vars, pos), &kid.s);
@@ -1096,13 +1148,13 @@ fn runs(vars: &[usize], pos: &Positions) -> Vec<(usize, usize, usize)> {
 }
 
 /// `f[p, q] += s[a, b]` for the positions `p`, `q` of `a`, `b` given by `runs`.
-fn add_runs(f: &mut CMat, runs: &[(usize, usize, usize)], s: &CMat) {
+fn add_runs<T: Field>(f: &mut Mat<T>, runs: &[(usize, usize, usize)], s: &Mat<T>) {
     for &(b0, q0, width) in runs {
         for b in 0..width {
             let (src, dst) = (s.col_as_slice(b0 + b), f.col_as_slice_mut(q0 + b));
             for &(a0, p0, len) in runs {
                 for (d, x) in dst[p0..p0 + len].iter_mut().zip(&src[a0..a0 + len]) {
-                    *d += x;
+                    *d += *x;
                 }
             }
         }
@@ -1112,18 +1164,18 @@ fn add_runs(f: &mut CMat, runs: &[(usize, usize, usize)], s: &CMat) {
 /// [`schur`] for a small front: Gaussian elimination in a copy of `f`, without calls to the
 /// dense library or other allocations; `X` only when `want_x`. Partial pivoting within the
 /// separator rows, with the same stability test.
-pub(crate) fn small_schur(f: &CMat, ne: usize, want_x: bool) -> Option<(CMat, CMat)> {
+pub(crate) fn small_schur<T: Field>(f: &Mat<T>, ne: usize, want_x: bool) -> Option<(Mat<T>, Mat<T>)> {
     let n = f.nrows();
     let nb = n - ne;
     let scale = (0..ne)
-        .map(|j| f.col_as_slice(j)[..ne].iter().map(|x| x.norm()).fold(0.0, f64::max))
+        .map(|j| f.col_as_slice(j)[..ne].iter().map(|x| x.modulus()).fold(0.0, f64::max))
         .fold(0.0, f64::max);
     let mut w = f.clone();
-    let mut lk: Vec<c64> = Vec::with_capacity(n);
+    let mut lk: Vec<T> = Vec::with_capacity(n);
     for k in 0..ne {
         let (p, big) =
-            (k..ne).map(|i| (i, w[(i, k)].norm())).fold((k, -1.0), |a, b| if b.1 > a.1 { b } else { a });
-        let stable = big > PIVOT_TOL * scale; // false for NaN
+            (k..ne).map(|i| (i, w[(i, k)].modulus())).fold((k, -1.0), |a, b| if b.1 > a.1 { b } else { a });
+        let stable = big > T::PIVOT_TOL * scale; // false for NaN
         if !stable {
             return None;
         }
@@ -1132,7 +1184,7 @@ pub(crate) fn small_schur(f: &CMat, ne: usize, want_x: bool) -> Option<(CMat, CM
                 w.col_as_slice_mut(j).swap(p, k);
             }
         }
-        let inv = c64::new(1.0, 0.0) / w[(k, k)];
+        let inv = T::ONE / w[(k, k)];
         for v in &mut w.col_as_slice_mut(k)[k + 1..] {
             *v *= inv;
         }
@@ -1142,17 +1194,17 @@ pub(crate) fn small_schur(f: &CMat, ne: usize, want_x: bool) -> Option<(CMat, CM
         for j in k + 1..n {
             let col = w.col_as_slice_mut(j);
             let ukj = col[k];
-            if ukj != c64::new(0.0, 0.0) {
-                for (c, l) in col[k + 1..].iter_mut().zip(&lk) {
+            if ukj != T::ZERO {
+                for (c, &l) in col[k + 1..].iter_mut().zip(&lk) {
                     *c -= l * ukj;
                 }
             }
         }
     }
-    let s = CMat::from_fn(nb, nb, |i, j| w[(ne + i, ne + j)]);
+    let s = Mat::<T>::from_fn(nb, nb, |i, j| w[(ne + i, ne + j)]);
     let x = if want_x {
         // X = U⁻¹ U12, with U12 = L⁻¹ P f12 in the top right block.
-        let mut x = CMat::from_fn(ne, nb, |i, j| w[(i, ne + j)]);
+        let mut x = Mat::<T>::from_fn(ne, nb, |i, j| w[(i, ne + j)]);
         for j in 0..nb {
             let col = x.col_as_slice_mut(j);
             for i in (0..ne).rev() {
@@ -1165,38 +1217,13 @@ pub(crate) fn small_schur(f: &CMat, ne: usize, want_x: bool) -> Option<(CMat, CM
         }
         x
     } else {
-        CMat::zeros(ne, 0)
+        Mat::<T>::zeros(ne, 0)
     };
     Some((s, x))
 }
 
 /// Schur complement `S = f22 − f21 X` of the leading `ne × ne` block of `f`, with
-/// `X = f11⁻¹ f12`; `None` if that block is numerically singular.
-pub(crate) fn schur(f: &CMat, ne: usize) -> Option<(CMat, CMat)> {
-    let n = f.nrows();
-    let f11 = f.as_ref().submatrix(0, 0, ne, ne);
-    let scale = f11.norm_max();
-    let lu = Lu::new(f11);
-    let (small, _) = lu.pivot_range();
-    let stable = small > PIVOT_TOL * scale; // false for NaN
-    if !stable {
-        return None;
-    }
-    let nb = n - ne;
-    if nb == 0 {
-        return Some((CMat::zeros(0, 0), CMat::zeros(ne, 0)));
-    }
-    let x = lu.solve(f.as_ref().submatrix(0, ne, ne, nb));
-    let mut s = f.as_ref().submatrix(ne, ne, nb, nb).to_owned();
-    let minus_one = c64::new(-1.0, 0.0);
-    matmul(
-        s.as_mut(),
-        Accum::Add,
-        f.as_ref().submatrix(ne, 0, nb, ne),
-        Op::Plain,
-        x.as_ref(),
-        Op::Plain,
-        minus_one,
-    );
-    Some((s, x))
+/// `X = f11⁻¹ f12`; `None` if that block is numerically singular (see [`Field::schur`]).
+pub(crate) fn schur<T: Field>(f: &Mat<T>, ne: usize) -> Option<(Mat<T>, Mat<T>)> {
+    T::schur(f.as_ref(), ne)
 }

@@ -12,9 +12,11 @@
 
 #[cfg(all(target_os = "macos", feature = "accelerate"))]
 mod accelerate;
+mod field;
 mod schur;
 
-pub use faer::{Accum, Mat, MatMut, MatRef, c64};
+pub use faer::{Accum, Mat, MatMut, MatRef, c32, c64};
+pub use field::Field;
 pub use schur::{partition, reorder};
 use std::sync::atomic::{AtomicUsize, Ordering};
 

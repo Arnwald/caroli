@@ -8,6 +8,8 @@
 //! - [`NestedTwoTerminal`]: the same two-terminal problem by geometric nested dissection,
 //!   O(n³) for an n × n sample instead of O(n⁴).
 //! - [`NestedMultiTerminal`]: any number of leads attached anywhere, by nested dissection.
+//! - [`precision`]: the nested-dissection fronts in single precision (experimental), checked
+//!   against double precision.
 
 pub mod decimation;
 mod gauge;
@@ -15,12 +17,14 @@ pub mod modes;
 pub mod multi;
 pub mod nested;
 pub mod nested_multi;
+pub mod precision;
 mod smatrix;
 mod two_terminal;
 
 pub use multi::{AttachedLead, Interface, MultiSolution, MultiTerminal, lead_voltages};
 pub use nested::{BondCurrent, LeadSelfEnergies, NestedTwoTerminal, ScatteringStates};
 pub use nested_multi::{NestedMultiTerminal, SectorTransmissions};
+pub use precision::{Precision, PrecisionOptions, PrecisionReport, checked};
 pub use smatrix::SMatrix;
 pub use two_terminal::{EndToEnd, Lead, SelfEnergyMethod, Sweeps, TwoTerminal};
 

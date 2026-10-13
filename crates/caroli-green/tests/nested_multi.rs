@@ -472,3 +472,24 @@ fn spin_currents() {
         }
     }
 }
+
+/// The fronts in single precision follow double precision on a four-terminal cross.
+#[test]
+fn single_precision_cross() {
+    use caroli_green::Precision;
+    let (region, interfaces) = cross(square().lattice(), 36, 30, 6);
+    let nested =
+        NestedMultiTerminal::from_model(&disordered(square(), 1.5, 1), &square(), &region, &interfaces);
+    for e in [-2.7, 0.0, 1.3] {
+        let double = nested.transmissions(e).unwrap();
+        let single = nested.transmissions_with_precision(e, Precision::Single).unwrap();
+        for (p, (rd, rs)) in double.iter().zip(&single).enumerate() {
+            for (q, (d, s)) in rd.iter().zip(rs).enumerate() {
+                assert!(
+                    (d - s).abs() < 1e-4 * (1.0 + d.abs()),
+                    "E = {e}, T[{p}][{q}]: double {d}, single {s}"
+                );
+            }
+        }
+    }
+}

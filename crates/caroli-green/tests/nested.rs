@@ -227,3 +227,47 @@ fn bond_disorder() {
         assert!((t - t2).abs() < 1e-10, "E = {e}: {t} vs {t2}");
     }
 }
+
+/// The fronts in single precision follow double precision, and a checked batch measures the
+/// difference and falls back to double precision when it is too large.
+#[test]
+fn single_precision() {
+    use caroli_green::{Precision, PrecisionOptions};
+    // Large enough for fronts above the small-front threshold (the dense library's kernels).
+    let lead = square();
+    let region = Region::cuboid(lead.lattice(), [48, 40, 0]);
+    let nd = NestedTwoTerminal::from_model(&disordered(square(), 2.0, 1), &lead, &region, 0);
+    let energies = [-2.7, -1.1, 0.0, 0.6, 1.9];
+    for &e in &energies {
+        let sigma = nd.self_energies(e).unwrap();
+        let double = nd.transmission_with(&sigma).unwrap();
+        let single = nd.transmission_with_precision(&sigma, Precision::Single).unwrap();
+        assert!((single - double).abs() < 1e-4, "square, E {e}: double {double}, single {single}");
+    }
+    let bhz_lead = bhz(BhzParams::default());
+    let bhz_region = Region::cuboid(bhz_lead.lattice(), [24, 20, 0]);
+    let bhz_nd = NestedTwoTerminal::from_model(
+        &disordered(bhz(BhzParams::default()), 0.6, 4),
+        &bhz_lead,
+        &bhz_region,
+        0,
+    );
+    for e in [-0.3, 0.02, 0.4] {
+        let sigma = bhz_nd.self_energies(e).unwrap();
+        let double = bhz_nd.transmission_with(&sigma).unwrap();
+        let single = bhz_nd.transmission_with_precision(&sigma, Precision::Single).unwrap();
+        assert!((single - double).abs() < 1e-4, "BHZ, E {e}: double {double}, single {single}");
+    }
+    // Checked: every other energy recomputed in double precision.
+    let exact: Vec<f64> = nd.transmissions(&energies).into_iter().map(|t| t.unwrap()).collect();
+    let options = PrecisionOptions { every: 2, ..PrecisionOptions::single() };
+    let (t, report) = nd.transmissions_checked(&energies, &options);
+    assert!(report.fallback.is_none() && report.checked == 3 && report.max < 1e-4, "{report:?}");
+    assert_eq!(report.precision, Precision::Single);
+    assert_eq!(t[0].as_ref().unwrap(), &exact[0], "checked points return their double-precision value");
+    // A tolerance no single-precision run meets: the batch is recomputed in double precision.
+    let strict = PrecisionOptions { tolerance: 0.0, ..options };
+    let (t, report) = nd.transmissions_checked(&energies, &strict);
+    assert!(report.fallback.is_some() && report.precision == Precision::Double, "{report:?}");
+    assert!(t.iter().zip(&exact).all(|(a, b)| a.as_ref().unwrap() == b));
+}

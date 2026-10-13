@@ -16,7 +16,7 @@ use crate::nested::{
     BondCurrent, Components, Factor, Root, ScatteringStates, SiteTree, Tree, gamma_root, schur,
 };
 use crate::smatrix::{LeadSolution, SMatrix, ScatteringLead, scattering_blocks};
-use crate::{GreenError, broadening, caroli_trace, sandwich};
+use crate::{GreenError, Precision, broadening, caroli_trace, sandwich};
 use caroli_dense::Lu;
 use caroli_lattice::Region;
 use caroli_model::{CMat, Model, SparseMatrix, c64};
@@ -166,9 +166,19 @@ impl NestedMultiTerminal {
     /// Transmissions `T[p][q] = Tr[Γ_p G_pq Γ_q G_pq†]` from lead `q` into lead `p` at `energy`,
     /// with mode-matching self-energies, as [`crate::MultiSolution::transmission`].
     pub fn transmissions(&self, energy: f64) -> Result<Vec<Vec<f64>>, GreenError> {
+        self.transmissions_with_precision(energy, Precision::Double)
+    }
+
+    /// [`Self::transmissions`] with the fronts in `precision` (see [`Precision`]), unchecked:
+    /// [`crate::checked`] measures the error on a batch of points.
+    pub fn transmissions_with_precision(
+        &self,
+        energy: f64,
+        precision: Precision,
+    ) -> Result<Vec<Vec<f64>>, GreenError> {
         use rayon::prelude::*;
         let parts: Vec<Result<Vec<Vec<f64>>, GreenError>> =
-            self.blocks.par_iter().map(|b| self.block_transmissions(b, energy)).collect();
+            self.blocks.par_iter().map(|b| self.block_transmissions(b, energy, precision)).collect();
         let n = self.lead_count;
         let mut t = vec![vec![0.0; n]; n];
         for part in parts {
@@ -278,7 +288,7 @@ impl NestedMultiTerminal {
                 .zip(&surfaces)
                 .map(|(l, g)| l.as_ref().zip(g.as_ref()).map(|(l, g)| sandwich(&l.coupling, g)))
                 .collect();
-            let (kept, s, _) = self.root(block, energy, &sigmas, false)?;
+            let (kept, s, _) = self.root(block, energy, &sigmas, false, Precision::Double)?;
             let k = kept.len();
             let green = Lu::new(s.as_ref()).solve(CMat::identity(k, k).as_ref());
             if !green.norm_max().is_finite() {
@@ -308,13 +318,14 @@ impl NestedMultiTerminal {
         energy: f64,
         sigmas: &[Option<CMat>],
         keep: bool,
+        precision: Precision,
     ) -> Result<(Vec<usize>, CMat, Factor), GreenError> {
         let mut kept: Vec<usize> =
             block.leads.iter().flatten().flat_map(|l| l.orbitals.iter().copied()).collect();
         kept.sort_unstable();
         kept.dedup();
         let Root { delayed, mut f, factors } =
-            block.tree.root(&self.h, c64::new(energy, 0.0), &kept, keep)?;
+            block.tree.root(&self.h, c64::new(energy, 0.0), &kept, keep, precision)?;
         let nd = delayed.len();
         for (l, s) in block.leads.iter().zip(sigmas) {
             if let (Some(l), Some(s)) = (l, s) {
@@ -334,9 +345,14 @@ impl NestedMultiTerminal {
         Ok((kept.clone(), s, Factor { elim: delayed, boundary: kept, x, children: factors }))
     }
 
-    fn block_transmissions(&self, block: &MultiBlock, energy: f64) -> Result<Vec<Vec<f64>>, GreenError> {
+    fn block_transmissions(
+        &self,
+        block: &MultiBlock,
+        energy: f64,
+        precision: Precision,
+    ) -> Result<Vec<Vec<f64>>, GreenError> {
         let sigmas = Self::self_energies(block, energy)?;
-        let (kept, s, _) = self.root(block, energy, &sigmas, false)?;
+        let (kept, s, _) = self.root(block, energy, &sigmas, false, precision)?;
         let k = kept.len();
         let g = Lu::new(s.as_ref()).solve(CMat::identity(k, k).as_ref());
         if !g.norm_max().is_finite() {
@@ -370,7 +386,7 @@ impl NestedMultiTerminal {
             let sigmas = Self::self_energies(block, energy)?;
             let roots: Vec<Option<CMat>> =
                 sigmas.iter().map(|s| s.as_ref().map(gamma_root).transpose()).collect::<Result<_, _>>()?;
-            let (kept, s, delayed) = self.root(block, energy, &sigmas, true)?;
+            let (kept, s, delayed) = self.root(block, energy, &sigmas, true, Precision::Double)?;
             // Sources: W_p on the orbitals of lead p, one block of columns per lead.
             let widths: Vec<usize> = roots.iter().map(|w| w.as_ref().map_or(0, |w| w.ncols())).collect();
             let total: usize = widths.iter().sum();
@@ -452,7 +468,7 @@ impl NestedMultiTerminal {
                 .zip(&solutions)
                 .map(|(l, s)| l.as_ref().zip(s.as_ref()).map(|(l, s)| s.self_energy(&l.coupling)))
                 .collect();
-            let (kept, s, _) = self.root(block, energy, &sigmas, false)?;
+            let (kept, s, _) = self.root(block, energy, &sigmas, false, Precision::Double)?;
             let k = kept.len();
             let green = Lu::new(s.as_ref()).solve(CMat::identity(k, k).as_ref());
             if !green.norm_max().is_finite() {
