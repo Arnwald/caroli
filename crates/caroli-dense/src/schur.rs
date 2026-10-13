@@ -17,11 +17,22 @@ const ONE: c64 = c64::new(1.0, 0.0);
 const WINDOW: usize = 64;
 const BATCH: usize = 32;
 
-/// Givens rotation `(c, s)` with `[c s; −s̄ c] [f; g] = [r; 0]` (LAPACK zlartg).
+/// Givens rotation `(c, s)` with `[c s; −s̄ c] [f; g] = [r; 0]` (LAPACK zlartg). `f` and `g` are
+/// first scaled by a power of two (exactly): a subnormal norm would carry too few digits, and the
+/// rotation would not be unitary.
 fn givens(f: c64, g: c64) -> (f64, c64) {
     if g == ZERO {
         return (1.0, ZERO);
     }
+    let m = f.re.abs().max(f.im.abs()).max(g.re.abs()).max(g.im.abs());
+    let scale = if m < 2f64.powi(-500) {
+        2f64.powi(600)
+    } else if m > 2f64.powi(500) {
+        2f64.powi(-600)
+    } else {
+        1.0
+    };
+    let (f, g) = (f * scale, g * scale);
     if f == ZERO {
         return (0.0, g.conj() / g.norm());
     }

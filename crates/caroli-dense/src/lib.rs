@@ -465,9 +465,14 @@ mod tests {
         })
     }
 
+    /// Held by the tests that depend on the backend: [`backends_agree`] changes it for the whole
+    /// process while the other tests run.
+    static BACKEND: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
     /// Every backend gives the same results.
     #[test]
     fn backends_agree() {
+        let _lock = BACKEND.lock().unwrap_or_else(|e| e.into_inner());
         let a = test_matrix(60, 60, 3) + Mat::<c64>::identity(60, 60) * faer::Scale(c64::new(1.5, 0.2));
         let b = test_matrix(60, 4, 4);
         let run =
@@ -503,6 +508,7 @@ mod tests {
     /// The Schur form of a real matrix through its real Schur form, against the complex one.
     #[test]
     fn schur_of_real_matrices() {
+        let _lock = BACKEND.lock().unwrap_or_else(|e| e.into_inner());
         for n in [1usize, 2, 7, 60, 257] {
             let a = Mat::<c64>::from_fn(n, n, |i, j| c64::new(test_matrix(n, n, 5)[(i, j)].re, 0.0));
             let (q, t) = schur_of_real(a.as_ref()).unwrap_or_else(|e| panic!("n {n}: {e:?}"));
