@@ -18,8 +18,9 @@
 //!   samples and several fields; the pairs created by the field are its growth. The Fermi sea at
 //!   half filling is a stochastic trace: random-phase superpositions of the occupied states
 //!   (clean bands; with impurities, the ground state of the disordered Hamiltonian, by a
-//!   Chebyshev projection). The same vectors evolved without field give the noise of the trace,
-//!   which the plot subtracts.
+//!   Chebyshev projection). The plot subtracts the current of the same vectors evolved without
+//!   field: it removes the noise of the trace at early times, before the two evolutions
+//!   decorrelate; later, only more vectors or a larger torus reduce it.
 //! - `spreading`: width of a wave packet, the B orbital of one site projected on the valence
 //!   band, without field: ballistic in clean graphene, slower with impurities.
 //! - `dos`: densities of states (kernel polynomial method, per unit cell).
@@ -80,8 +81,8 @@ struct Options {
 }
 
 fn current(dir: &str, opt: &Options) {
-    // F = 0 evolves the same random vectors in the same disorder: its current is the noise of the
-    // stochastic trace, which the plot subtracts from the others (a control variate).
+    // F = 0 evolves the same random vectors in the same disorder: the plot subtracts its current
+    // (a control variate for the noise of the stochastic trace, effective at early times).
     let fields = [0.0, 0.005, 0.01, 0.02];
     let (dt, steps, every) = (0.1, 2000, 10);
     let jobs: Vec<(Phase, &str, f64)> =

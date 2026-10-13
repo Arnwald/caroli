@@ -50,8 +50,9 @@ def current(directory):
     rows = read(directory, "current.csv")
     if rows is None:
         return
-    # F = 0: the same random vectors without field, whose current (the noise of the stochastic
-    # trace) is subtracted from the others.
+    # F = 0: the same random vectors without field, whose current is subtracted from the others
+    # (it removes the noise of the stochastic trace at early times, before the evolutions
+    # decorrelate).
     fields = sorted({float(r["field"]) for r in rows} - {0.0})
     fig, axes = plt.subplots(2, len(fields), figsize=(4.5 * len(fields), 7), sharex=True, layout="constrained")
     axes = np.array(axes).reshape(2, len(fields))
