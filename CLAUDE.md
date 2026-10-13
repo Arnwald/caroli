@@ -8,8 +8,8 @@ Read `README.md` for the scope.
 
 - Early development: `crates/` holds the library crates (lattice, model, dense kernels, Green's
   functions, disorder, Keldysh, Born, torus, KPM, dynamics, GPU, quantum walks), the `caroli`
-  facade, caroli-validation (tests against the thesis golden outputs) and caroli-bench (the
-  benchmarks); the table of `ARCHITECTURE.md` lists them. `ARCHITECTURE.md` has the design
+  facade, the `caroli` command (caroli-cli), caroli-validation (tests against the thesis golden
+  outputs) and caroli-bench (the benchmarks); the table of `ARCHITECTURE.md` lists them. `ARCHITECTURE.md` has the design
   choices and the roadmap; keep it up to date. `cargo test --workspace` must stay green (on Linux,
   `cargo test --workspace --profile ci`: the dense kernels need optimised code without
   Accelerate), and so must `cargo clippy`. CI runs the tests with `--profile ci` on Linux and

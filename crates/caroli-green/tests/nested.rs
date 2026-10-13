@@ -256,7 +256,9 @@ fn single_precision() {
         let sigma = bhz_nd.self_energies(e).unwrap();
         let double = bhz_nd.transmission_with(&sigma).unwrap();
         let single = bhz_nd.transmission_with_precision(&sigma, Precision::Single).unwrap();
-        assert!((single - double).abs() < 1e-4, "BHZ, E {e}: double {double}, single {single}");
+        // The f32 kernels differ from one machine to the next (Accelerate's on the M1 of the CI
+        // runners give 1.1e-4 at E = −0.3, T = 3.87: a relative 3e-5).
+        assert!((single - double).abs() < 5e-4, "BHZ, E {e}: double {double}, single {single}");
     }
     // Checked: every other energy recomputed in double precision.
     let exact: Vec<f64> = nd.transmissions(&energies).into_iter().map(|t| t.unwrap()).collect();
