@@ -8,6 +8,9 @@
 
 pub mod accelerated;
 pub mod kubo;
+pub mod spectrum;
+
+pub use spectrum::Spectrum;
 
 use caroli_disorder::rng::Xoshiro256;
 use caroli_model::c64;

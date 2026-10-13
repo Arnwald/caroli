@@ -106,6 +106,7 @@ dependencies = [
 name = "caroli-born"
 version = "0.1.0"
 dependencies = [
+ "caroli-disorder",
  "caroli-lattice",
  "caroli-model",
  "faer",
@@ -132,6 +133,7 @@ dependencies = [
 name = "caroli-dynamics"
 version = "0.1.0"
 dependencies = [
+ "caroli-disorder",
  "caroli-gpu",
  "caroli-lattice",
  "caroli-model",
@@ -188,6 +190,7 @@ dependencies = [
  "caroli-lattice",
  "caroli-model",
  "caroli-torus",
+ "faer",
  "rayon",
 ]
 

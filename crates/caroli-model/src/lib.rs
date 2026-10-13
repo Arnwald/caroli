@@ -95,6 +95,18 @@ pub struct Hopping {
     pub matrix: CMat,
 }
 
+/// A hopping block `⟨from| H |to'⟩` of a region repeated periodically ([`Model::bonds`]):
+/// `to'` is the image of site `to` of the region that lies `images` periods away (one count per
+/// period), at `displacement = r_to' − r_from`. Hopping terms and Peierls phases are included.
+#[derive(Clone, Debug)]
+pub struct Bond {
+    pub from: usize,
+    pub to: usize,
+    pub images: Vec<i64>,
+    pub displacement: Vec3,
+    pub matrix: CMat,
+}
+
 /// Site-dependent on-site term, added to the sublattice on-site matrix.
 pub trait OnSite: Send + Sync {
     /// Extra on-site matrix of `site`, or `None` for no contribution.
@@ -279,6 +291,79 @@ impl Model {
     /// The uniform field set by [`Self::with_field`], if any.
     pub fn field(&self) -> Option<f64> {
         self.field
+    }
+
+    /// The on-site matrix of a sublattice, without the site-dependent terms.
+    pub fn sublattice_onsite(&self, sub: usize) -> &CMat {
+        &self.onsite[sub]
+    }
+
+    /// The sum of the site-dependent on-site terms of a site (disorder, potentials), or `None`
+    /// if none applies.
+    pub fn onsite_terms(&self, site: &Site) -> Option<CMat> {
+        let mut sum: Option<CMat> = None;
+        for term in &self.extra {
+            if let Some(v) = term.matrix(site) {
+                match &mut sum {
+                    Some(s) => *s += v,
+                    None => sum = Some(v),
+                }
+            }
+        }
+        sum
+    }
+
+    /// Whether every hopping is the same in every cell: no site-dependent hopping term and no
+    /// Peierls phase. The on-site terms may still depend on the site.
+    pub fn has_uniform_hoppings(&self) -> bool {
+        self.hopping_terms.is_empty() && self.peierls.is_none()
+    }
+
+    /// Every hopping block of a region, repeated along `periods` (open if empty), with the
+    /// displacement of its bond: the blocks of [`Self::bloch_hamiltonian`] other than the on-site
+    /// ones, before the Bloch phases. Each bond appears in both directions. With them, a uniform
+    /// vector potential `A` enters as the Peierls factor `exp(−i A·d)` of each block.
+    pub fn bonds(&self, region: &Region, periods: &[Cell]) -> Vec<Bond> {
+        let images = (!periods.is_empty()).then(|| Images::new(region, periods));
+        let mut out = Vec::new();
+        for (i, site) in region.sites().iter().enumerate() {
+            let ri = self.lattice.position(*site);
+            for hop in &self.hoppings {
+                let ends =
+                    [(hop.from == site.sub, 1, hop.to, false), (hop.to == site.sub, -1, hop.from, true)];
+                for (applies, sign, sub, adjoint) in ends {
+                    if !applies {
+                        continue;
+                    }
+                    let partner = shifted(site, hop.offset, sign, sub);
+                    let (j, n) = match &images {
+                        None => match region.index_of(&partner) {
+                            Some(j) => (j, Vec::new()),
+                            None => continue,
+                        },
+                        Some(images) => match images.locate(&partner) {
+                            Some(found) => found,
+                            None => continue,
+                        },
+                    };
+                    let rj = self.lattice.position(partner);
+                    let m = if adjoint {
+                        self.hopping_matrix(hop, &partner, site).adjoint().to_owned()
+                    } else {
+                        self.hopping_matrix(hop, site, &partner).into_owned()
+                    };
+                    let factor = self.phased(c64::new(1.0, 0.0), site, &partner);
+                    out.push(Bond {
+                        from: i,
+                        to: j,
+                        images: n,
+                        displacement: [rj[0] - ri[0], rj[1] - ri[1], rj[2] - ri[2]],
+                        matrix: CMat::from_fn(m.nrows(), m.ncols(), |a, b| factor * m[(a, b)]),
+                    });
+                }
+            }
+        }
+        out
     }
 
     /// `factor · exp(i φ(r_i, r_j))` for the block `⟨i| H |j⟩`.

@@ -17,13 +17,16 @@ crates/
   caroli-keldysh      non-equilibrium steady state: lesser Green's function by lead injection,
                       bond currents, interface currents, occupations
   caroli-born         disorder-averaged Green's functions: self-consistent Born approximation
-                      (mean field + cumulant vertices; Anderson and magnetic impurities)
+                      (mean field + cumulant vertices; Anderson and magnetic impurities), from a
+                      model (`Scba::from_model`, `Disorder`)
   caroli-torus        Hamiltonians on periodic 2D supercells: k-space part through FFTs (rustfft),
                       local terms in real space
   caroli-kpm          kernel polynomial method: Chebyshev moments, Jackson kernel, densities,
-                      Kubo–Bastin conductivities
+                      Kubo–Bastin conductivities; `Spectrum`: DOS, projected and local DOS and
+                      conductivities of a model on a region
   caroli-dynamics     time evolution: split-operator on tori, Chebyshev propagation, fourth-order
-                      commutator-free Magnus integrator
+                      commutator-free Magnus integrator; a model under a uniform field on a torus
+                      (`Torus`, k space) or on any region (`Driven`, real space)
   caroli-gpu          Chebyshev kernels (KPM, propagation) on Metal (f32, double-single) and
                       CUDA (f64), the sweeps of caroli-walk on Metal; the device, options and
                       report shared by the runs checked against the CPU
@@ -187,6 +190,38 @@ The dependencies only go downward: lattice ← model ← green ← caroli, and d
   - `NestedTwoTerminal::self_energies` and `transmission_with` reuse the lead self-energies of
     one energy for every disorder configuration with the same leads. For BHZ at W = 128 the
     leads take 85 % of the time per energy, so a disorder average gets about 6× faster.
+- **High-level APIs from a [`Model`]** for the spectral, Born and dynamical methods (the
+  low-level kernels stay public):
+  - `caroli_kpm::Spectrum`: the sparse Hamiltonian of a region, open or periodic, rescaled by its
+    Gershgorin bounds (or given ones); density of states `Tr δ(E − H)`, its projection on an
+    on-site operator (spin, orbital), local densities of states, and the Kubo–Bastin
+    conductivity of a periodic sample (area from the periods). Random-phase traces, or exact ones
+    for small systems. Tests: the exact trace gives the moments of the eigenvalues, projections
+    and local densities add up to the total, `σ_xy = ±1` for the Qi–Wu–Zhang model.
+  - `caroli_born::Scba::from_model` samples `H(k)` on a uniform grid; `Disorder` gives the mean
+    field and cumulant vertices of Anderson disorder and of magnetic impurities for any
+    distribution of `Moments` (`⟨n_z⟩`, `⟨n_z²⟩` of the draws), and sums independent disorders.
+    `self_energy`, `sweep` (each energy from the previous solution) and the averaged density of
+    states. Tests: the Born limit `Σ = (W²/12) G₀` of weak disorder, the moments of the
+    distributions, the sum rule of the density of states.
+  - `Model::bonds`: every hopping block of a region with the displacement of its bond, so that a
+    uniform vector potential enters as `exp(−i A·d)`. A constant force `F` (an electric field,
+    the charge absorbed) is `A(t) = −F t`: the crystal momentum moves as `k + F t`.
+  - `caroli_dynamics::Torus`: a 2D model with uniform hoppings on an `n × n` torus, any number of
+    sublattices and orbitals. `M(k, A)` is exponentiated per k, group by group of coupled
+    orbitals (two-orbital groups in closed form), the site-dependent on-site terms of the model
+    act in real space (split operator, second order). Observables: current density, carriers
+    excited above the Fermi energy of the instantaneous clean bands (pair creation), the width
+    of a wave packet, densities. A Fermi sea is a stochastic trace: random-phase superpositions
+    of the occupied band states (the thesis used one superposition with fixed phases, whose
+    result depends on the gauge of the band states once disorder mixes the k points).
+  - `caroli_dynamics::Driven`: any region, open or periodic, with any term of the model (field,
+    hopping terms), under a uniform `A(t)`: fourth-order Magnus steps with Chebyshev
+    exponentials on the sparse `H(t)`, whose entries carry the displacement class of their bond.
+  - Tests: the two integrators agree on a disordered spinful graphene torus with magnetic
+    impurities (densities and currents); the Stark breathing of a wave packet,
+    `⟨x²⟩ = (8J²/F²) sin²(Ft/2)` along the force and `2J²t²` across, to 1e-6; a single random
+    vector gives the exact Fermi-sea trace when each k has one occupied band.
 - **Dev builds** optimise dependencies (`[profile.dev.package."*"] opt-level = 3`); faer is
   unusable unoptimised.
 
@@ -237,14 +272,16 @@ Golden cases with disorder use the same impurity configurations as the thesis.
    windows. Validated on `ti-lcur-*` (exact).
 6. ✅ Self-consistent Born approximation (`caroli-born`), validated on `ti-scba-*` (exact).
    The reduced (analytic) thesis SCBA differs from the general one by the sign of the mass
-   self-energy (recorded in the thesis reference).
+   self-energy (recorded in the thesis reference). From any model: `Scba::from_model`.
 7. ✅ Spectral tools: KPM (Chebyshev moments, Jackson kernel, stochastic trace) on tori
    (`caroli-torus`); validated on the TI and graphene KPM codes (exact). Kubo–Bastin
    conductivities (`caroli_kpm::kubo`, García, Covaci and Rappoport 2015, as Kwant's
    `kpm.conductivity` and KITE) with `Model::sparse_velocity`: the Qi–Wu–Zhang Chern insulator
-   gives `σ_xy = ∓1.004 e²/h` and `σ_xx ≈ 1e-6` in its gap (32 × 32 torus, 256 moments).
+   gives `σ_xy = ∓1.004 e²/h` and `σ_xx ≈ 1e-6` in its gap (32 × 32 torus, 256 moments). From
+   any model on any region: `Spectrum`.
 8. ✅ Time evolution: split-operator on tori (`caroli-dynamics`); graphene current, pair
-   creation, wave-packet width and density validated (exact).
+   creation, wave-packet width and density validated (exact). Any model under a uniform field:
+   `Torus` (k space) and `Driven` (real space, any geometry).
 9. Interface: declarative system and simulation files with a CLI; Python bindings to consider.
 10. ✅ Acceleration:
     - CPU: rayon over energies (`TwoTerminal::transmissions`), k sums, random vectors, FFT rows,

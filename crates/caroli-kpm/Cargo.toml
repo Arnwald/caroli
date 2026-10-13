@@ -13,7 +13,9 @@ caroli-gpu.workspace = true
 caroli-model.workspace = true
 caroli-torus.workspace = true
 caroli-disorder.workspace = true
+caroli-lattice.workspace = true
 rayon.workspace = true
 
+
 [dev-dependencies]
-caroli-lattice.workspace = true
+faer.workspace = true

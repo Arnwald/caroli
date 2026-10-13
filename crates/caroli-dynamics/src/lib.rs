@@ -10,6 +10,11 @@
 //! rescaled `H̃ = (H − centre)/half_width`, exact to the requested tolerance for any `dt`.
 
 pub mod accelerated;
+pub mod driven;
+pub mod torus;
+
+pub use driven::{Driven, VectorPotential, constant_force};
+pub use torus::{Evolution, Record, Torus};
 
 use caroli_model::{CMat, c64};
 use caroli_torus::Fft2;

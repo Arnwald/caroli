@@ -10,8 +10,29 @@
 //! where the vertices `(w_t, V_t)` decompose the second cumulant `⟨V⊗V⟩ − ⟨V⟩⊗⟨V⟩` of the
 //! disorder. [`Scba::update`] is the map `Σ₂ ↦ Σ_t w_t V_t ⟨G⟩ V_t`; [`Scba::solve`] iterates it.
 //! [`anderson`] and [`magnetic`] build the vertices of the two thesis disorders.
+//!
+//! From a [`Model`]: [`Scba::from_model`] samples `H(k)` on a uniform grid, a [`Disorder`]
+//! describes the impurities, and [`Scba::self_energy`], [`Scba::sweep`] and [`Scba::dos`] give
+//! the self-energy and the averaged density of states.
+//!
+//! ```
+//! use caroli_born::{Disorder, Scba};
+//! use caroli_model::presets::{BhzParams, bhz};
+//!
+//! // BHZ with Anderson disorder W = 1 on a 64 × 64 k grid, at E = 0.05 + 0.001 i.
+//! let model = bhz(BhzParams::default());
+//! let scba = Scba::from_model(&model, &[64, 64], Disorder::anderson(1.0, 4));
+//! let sol = scba.self_energy(0.05, 1e-3);
+//! assert!(sol.residual < 1e-10);
+//! // The renormalised mass M̄ = M + Re(Σ_E − Σ_H)/2 moves further to the topological side
+//! // (M̄/B > M/B), as in the topological Anderson insulator.
+//! let shift = 0.5 * (sol.sigma[(0, 0)].re - sol.sigma[(1, 1)].re);
+//! assert!(shift / BhzParams::default().b > 0.0);
+//! ```
 
-use caroli_model::{CMat, c64};
+use caroli_disorder::Moments;
+use caroli_lattice::Region;
+use caroli_model::{CMat, Model, c64};
 use faer::linalg::solvers::DenseSolveCore;
 use rayon::prelude::*;
 
@@ -275,6 +296,121 @@ fn gauss_jordan_inverse(n: usize, a: &mut [c64], inv: &mut [c64]) {
                 }
             }
         }
+    }
+}
+
+/// Disorder seen by the SCBA: the mean field `⟨V⟩` and the vertices `(w_t, V_t)` of the second
+/// cumulant (see the crate documentation).
+#[derive(Clone, Debug)]
+pub struct Disorder {
+    pub mean_field: CMat,
+    pub vertices: Vec<(f64, CMat)>,
+}
+
+impl Disorder {
+    /// Anderson disorder: on-site energies uniform in `[−w/2, w/2]` on every site, the same on
+    /// all `orbitals` of a site.
+    pub fn anderson(w: f64, orbitals: usize) -> Self {
+        let (mean_field, vertices) = anderson(w, orbitals);
+        Self { mean_field, vertices }
+    }
+
+    /// Classical magnetic impurities on a fraction `conc` of the sites, of exchange `j`, with unit
+    /// moments drawn from `moments` (as [`caroli_disorder::MagneticImpurities`]) and coupled
+    /// through the spin matrices `s = (S_x, S_y, S_z)` of the model (e.g.
+    /// [`caroli_model::presets::bhz_spin`]).
+    pub fn magnetic(conc: f64, j: f64, moments: Moments, s: &[CMat; 3]) -> Self {
+        // Every distribution of `Moments` draws n_z uniformly in [a, 1] and a uniform azimuth.
+        let a = match moments {
+            Moments::Isotropic => -1.0,
+            Moments::Cone { theta0 } => theta0.cos(),
+            Moments::Polarized { mz } => 2.0 * mz - 1.0,
+        };
+        let (mz, nz2) = ((1.0 + a) / 2.0, (1.0 + a + a * a) / 3.0);
+        let (mean_field, vertices) = magnetic(conc, j, mz, nz2, s);
+        Self { mean_field, vertices }
+    }
+
+    /// Two independent disorders together: the mean fields add up, and so do the cumulants.
+    pub fn and(mut self, other: Disorder) -> Self {
+        self.mean_field += &other.mean_field;
+        self.vertices.extend(other.vertices);
+        self
+    }
+}
+
+impl Scba {
+    /// The SCBA of `model` with `disorder`, `H(k)` sampled on a uniform grid of the Brillouin
+    /// zone with `grid[a]` points along reciprocal direction `a` (one size per lattice
+    /// direction; the 2D grid is [`k_grid`]). The unit cell holds every sublattice, so the
+    /// matrices of `disorder` act on all the orbitals of a cell.
+    pub fn from_model(model: &Model, grid: &[usize], disorder: Disorder) -> Self {
+        let dim = model.lattice().dim();
+        assert_eq!(grid.len(), dim, "one grid size per lattice direction");
+        let cell = Region::cuboid(model.lattice(), [1, 1, 1]);
+        assert_eq!(
+            disorder.mean_field.nrows(),
+            cell.orbitals(),
+            "disorder matrices of size {} for a cell of {} orbitals",
+            disorder.mean_field.nrows(),
+            cell.orbitals()
+        );
+        let periods: Vec<[i64; 3]> = (0..dim).map(|a| std::array::from_fn(|c| (a == c) as i64)).collect();
+        let points: Vec<Vec<f64>> = match dim {
+            1 => k_grid(grid[0], 1).into_iter().map(|k| vec![k[0]]).collect(),
+            2 => k_grid(grid[0], grid[1]).into_iter().map(|k| k.to_vec()).collect(),
+            _ => {
+                let plane = k_grid(grid[0], grid[1]);
+                k_grid(grid[2], 1)
+                    .into_iter()
+                    .flat_map(|kz| plane.iter().map(move |k| vec![k[0], k[1], kz[0]]))
+                    .collect()
+            }
+        };
+        let hk = points.par_iter().map(|k| model.bloch_hamiltonian(&cell, &periods, k)).collect();
+        Self { hk, mean_field: disorder.mean_field, vertices: disorder.vertices }
+    }
+
+    /// Second-order self-energy `Σ₂` at `energy + iη`, from zero, by Anderson acceleration to a
+    /// largest change of 1e-11 (at most 500 k sums).
+    pub fn self_energy(&self, energy: f64, eta: f64) -> Solution {
+        let n = self.mean_field.nrows();
+        self.solve_anderson(c64::new(energy, eta), &CMat::zeros(n, n), 8, 1e-11, 500)
+    }
+
+    /// [`Self::self_energy`] at each energy, each solution starting from the previous one.
+    pub fn sweep(&self, energies: &[f64], eta: f64) -> Vec<Solution> {
+        let n = self.mean_field.nrows();
+        let mut guess = CMat::zeros(n, n);
+        energies
+            .iter()
+            .map(|&e| {
+                let mut sol = self.solve_anderson(c64::new(e, eta), &guess, 8, 1e-11, 500);
+                if sol.residual.is_nan() || sol.residual > 1e-11 {
+                    // The previous point can lead astray across a band edge: start again from zero.
+                    let fresh = self.self_energy(e, eta);
+                    if fresh.residual < sol.residual || sol.residual.is_nan() {
+                        sol = fresh;
+                    }
+                }
+                if sol.residual.is_finite() {
+                    guess = sol.sigma.clone();
+                }
+                sol
+            })
+            .collect()
+    }
+
+    /// The whole self-energy `Σ_MF + Σ₂`.
+    pub fn total_self_energy(&self, sigma: &CMat) -> CMat {
+        &self.mean_field + sigma
+    }
+
+    /// Averaged density of states per unit cell, `−Im Tr ⟨G⟩(E + iη) / π`, with the self-energy
+    /// `Σ₂ = sigma` (zero for the clean model).
+    pub fn dos(&self, energy: f64, eta: f64, sigma: &CMat) -> f64 {
+        let g = self.local_green(c64::new(energy, eta), sigma);
+        -(0..g.nrows()).map(|i| g[(i, i)].im).sum::<f64>() / std::f64::consts::PI
     }
 }
 
