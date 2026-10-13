@@ -18,8 +18,8 @@
 \newcommand{\I}{\mathrm{i}}
 \newcommand{\Tr}{\operatorname{Tr}}
 \newcommand{\todo}[1]{\textcolor{red}{[#1]}}
-% Figures from figures/ (written by the plotting scripts); a frame marks a missing one.
-\newcommand{\fig}[1]{\IfFileExists{figures/#1.pdf}{\includegraphics[width=\textwidth]{#1}}%
+% Figures from figures/ (PNG, written by the plotting scripts); a frame marks a missing one.
+\newcommand{\fig}[1]{\IfFileExists{figures/#1.png}{\includegraphics[width=\textwidth]{#1.png}}%
   {\fbox{\parbox[c][4cm][c]{0.9\textwidth}{\centering missing figure \texttt{\detokenize{#1}}}}}}
 
 \title{The sign of the mass self-energy in the Born analysis of\\
@@ -880,9 +880,10 @@ of that block bound the region where it carries one channel.
 \centering
 \fig{born_spin_maps}
 \caption{\label{f:spinmaps}Spin-resolved transmissions $\langle T_\up\rangle$ (left) and $\langle T_\dn\rangle$
-(right), $W=128$, 3 configurations, with the corrected band edges of each block. Black: the
-block carries one channel; white: none. Top: opposite-$g$, $n_I=0.4$. Bottom: same-$g$,
-$n_I=0.2$.}
+(right), $W=128$, 3 configurations, with the corrected band edges of each block, in the
+colours of Fig.~\ref{f:phase}. Light blue: the block carries one channel
+($|\langle T_\sigma\rangle-1|<0.05$); black: none. Top: opposite-$g$, $n_I=0.4$. Bottom:
+same-$g$, $n_I=0.2$.}
 \end{figure}
 
 \paragraph{Two independent Chern insulators.} With $M_z=1$, $s_z$ is conserved and each block is a

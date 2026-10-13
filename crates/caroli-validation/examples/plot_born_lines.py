@@ -1,12 +1,12 @@
 """Born phase diagrams of the g2g1 paper (Fig. 4): published lines (thesis code `self_born`)
-against the corrected SCBA, drawn as in the paper.
+against the corrected SCBA, drawn as in the paper, in the colours of the thesis (`born_style`).
 
 Reads the CSV files written by
     cargo run --release -p caroli-validation --example born_lines
 and writes into the same directory:
-    born_fig4.png/pdf           the paper figure, published (left) and corrected (right);
-    born_fig4_numerics.png/pdf  the same lines over the exact numerical conductance maps;
-    born_all_panels.png         the eight runs 00-07, published and corrected.
+    born_fig4.png           the paper figure, published (left) and corrected (right);
+    born_fig4_numerics.png  the same lines over the exact numerical conductance maps;
+    born_all_panels.png     the eight runs 00-07, published and corrected.
 
     python3 crates/caroli-validation/examples/plot_born_lines.py [csv directory]
 """
@@ -15,30 +15,19 @@ import csv
 import os
 import sys
 
-import matplotlib
-
-matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 import numpy as np
-from matplotlib.lines import Line2D
 from matplotlib.patches import Polygon
+
+from born_style import LINES, MU_LINES, PLATEAU_1, born_fields, draw_lines, g_colorbar, g_map, line_handles, save
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 DIR = sys.argv[1] if len(sys.argv) > 1 else os.path.join(HERE, "..", "..", "..", "target", "born_lines")
 
-# (contour field, colour, line style, width, label) as in the paper.
-LINES = [
-    ("ep_up", "blue", "-", 1.2, r"E$\uparrow$ band edge"),
-    ("hp_up", "red", "-", 1.2, r"H$\uparrow$ band edge"),
-    ("ep_dn", "green", "--", 2.0, r"E$\downarrow$ band edge"),
-    ("hp_dn", "cyan", "--", 2.0, r"H$\downarrow$ band edge"),
-    ("m_up", "black", ":", 2.0, r"$m_\uparrow = 0$"),
-    ("m_dn", "gold", ":", 2.0, r"$m_\downarrow = 0$"),
-    ("mu_up", "black", "-.", 2.0, r"$\mu_\uparrow$"),
-    ("mu_dn", "gold", "-.", 2.0, r"$\mu_\downarrow$"),
-]
+# The lines of the paper's figure: band edges, inversions and renormalised chemical potentials.
+KEYS = tuple(LINES) + tuple(MU_LINES)
 
-# Paper Fig. 4: run, title, schematic G = 1 region (blue quadrilateral of the paper), numerical map.
+# Paper Fig. 4: run, title, schematic G = 1 region (quadrilateral of the paper), numerical map.
 FIG4 = [
     (
         2,
@@ -73,45 +62,32 @@ def read_csv(name):
 
 
 def panel(run):
-    """Grids (E index, J index) of the published and corrected renormalised parameters."""
+    """Grids (E index, J index) of the published and corrected Born fields."""
     d = read_csv(f"panel_{run:02d}.csv")
     n = int(round(np.sqrt(len(d["J_I"]))))
     grid = lambda k: d[k].reshape(n, n)
     j, e = grid("J_I"), grid("E_F")
-    out = {}
-    for version, suffix in (("published", "_thesis"), ("corrected", "")):
-        mu, muu = grid("M_up" + suffix), grid("mu_up" + suffix)
-        md, mud = grid("M_dn" + suffix), grid("mu_dn" + suffix)
-        out[version] = {
-            "ep_up": mu - muu - e,
-            "hp_up": mu + muu + e,
-            "ep_dn": md - mud - e,
-            "hp_dn": md + mud + e,
-            "m_up": mu,
-            "m_dn": md,
-            "mu_up": muu + e,
-            "mu_dn": mud + e,
-        }
+    out = {
+        version: born_fields(grid("M_up" + s), grid("mu_up" + s), grid("M_dn" + s), grid("mu_dn" + s), e)
+        for version, s in (("published", "_thesis"), ("corrected", ""))
+    }
     return j, e, out
 
 
 def numerical(name):
+    """The published conductance map on its grid (E index, J index)."""
     d = read_csv(name)
     js, es = np.unique(d["J_I"]), np.unique(d["E_F"])
     g = d["G_numerical"].reshape(len(es), len(js))
-    return js, es, g
+    jj, ee = np.meshgrid(js, es)
+    return jj, ee, g
 
 
 def draw(ax, j, e, fields, title, polygon=None, background=None):
-    if background is not None:
-        js, es, g = background
-        mesh = ax.pcolormesh(js, es, g, cmap="Blues", vmin=0.0, vmax=2.6, shading="nearest", alpha=0.75)
-    else:
-        mesh = None
+    mesh = g_map(ax, *background) if background is not None else None
     if polygon is not None:
-        ax.add_patch(Polygon(polygon, closed=True, color="#b9bdf2", alpha=0.85, lw=0))
-    for key, colour, style, width, _ in LINES:
-        ax.contour(j, e, fields[key], [0.0], colors=colour, linestyles=style, linewidths=width)
+        ax.add_patch(Polygon(polygon, closed=True, color=PLATEAU_1, lw=0))
+    draw_lines(ax, j, e, fields, KEYS)
     ax.set_xlim(0.0, 1.5)
     ax.set_ylim(-0.16, 0.16)
     ax.set_title(title, fontsize=11)
@@ -119,8 +95,7 @@ def draw(ax, j, e, fields, title, polygon=None, background=None):
 
 
 def legend(fig, extra=()):
-    handles = [Line2D([], [], color=c, ls=s, lw=w, label=l) for _, c, s, w, l in LINES] + list(extra)
-    fig.legend(handles=handles, loc="lower center", ncol=5, fontsize=9, frameon=False)
+    fig.legend(handles=line_handles(KEYS) + list(extra), loc="lower center", ncol=5, fontsize=9, frameon=False)
 
 
 def fig4(background):
@@ -147,16 +122,12 @@ def fig4(background):
         ax.set_ylabel(r"energy $E_F$ $(\varepsilon_0)$")
     extra = []
     if not background:
-        extra.append(Polygon([(0, 0)], color="#b9bdf2", label="G = 1 (schematic, paper)"))
+        extra.append(Polygon([(0, 0)], color=PLATEAU_1, label="G = 1 (schematic, paper)"))
     legend(fig, extra)
     fig.subplots_adjust(bottom=0.14, top=0.95, hspace=0.18, wspace=0.08)
     if mesh is not None:
-        bar = fig.colorbar(mesh, ax=axes, shrink=0.6, pad=0.02)
-        bar.set_label(r"exact $\langle G \rangle$ ($e^2/h$), thesis conductance maps")
-    name = "born_fig4_numerics" if background else "born_fig4"
-    for ext in ("png", "pdf"):
-        fig.savefig(os.path.join(DIR, f"{name}.{ext}"), dpi=150, bbox_inches="tight")
-    plt.close(fig)
+        g_colorbar(fig, mesh, r"exact $\langle G \rangle$ ($e^2/h$), thesis conductance maps", ax=axes, shrink=0.6, pad=0.02)
+    save(fig, DIR, "born_fig4_numerics" if background else "born_fig4")
 
 
 def all_panels():
@@ -172,12 +143,10 @@ def all_panels():
         ax.set_ylabel(r"$E_F$")
     legend(fig)
     fig.subplots_adjust(bottom=0.04, top=0.99, hspace=0.25, wspace=0.08)
-    fig.savefig(os.path.join(DIR, "born_all_panels.png"), dpi=110, bbox_inches="tight")
-    plt.close(fig)
+    save(fig, DIR, "born_all_panels", dpi=110)
 
 
 if __name__ == "__main__":
     fig4(background=False)
     fig4(background=True)
     all_panels()
-    print("figures written to", os.path.abspath(DIR))

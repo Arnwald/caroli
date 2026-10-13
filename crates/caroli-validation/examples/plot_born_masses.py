@@ -15,11 +15,10 @@ import os
 import sys
 from collections import defaultdict
 
-import matplotlib
-
-matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 import numpy as np
+
+from born_style import save
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 DIR = sys.argv[1] if len(sys.argv) > 1 else os.path.join(HERE, "..", "..", "..", "target", "born_lines")
@@ -71,9 +70,7 @@ def main():
     if NOTE:
         fig.suptitle(NOTE, fontsize=9, style="italic", y=0.995)
     fig.subplots_adjust(bottom=0.27, top=0.86 if NOTE else 0.92, wspace=0.18)
-    for ext in ("png", "pdf"):
-        fig.savefig(os.path.join(DIR, f"born_masses{TAG}.{ext}"), dpi=150, bbox_inches="tight")
-    print("written", os.path.abspath(os.path.join(DIR, f"born_masses{TAG}.png")))
+    save(fig, DIR, f"born_masses{TAG}")
 
 
 if __name__ == "__main__":
