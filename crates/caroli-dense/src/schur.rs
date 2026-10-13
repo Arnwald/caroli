@@ -99,8 +99,13 @@ pub(crate) fn schur(a: faer::MatRef<'_, c64>) -> Result<(Mat<c64>, Mat<c64>), cr
         }
     }
 
-    // Implicit single-shift QR on the active block [lo, hi].
+    // Implicit single-shift QR on the active block [lo, hi]. A subdiagonal entry is negligible
+    // next to its two diagonal neighbours. When an eigenvalue takes more than ten iterations, it
+    // is also negligible next to the norm of the matrix (a normwise backward error of one ulp):
+    // this deflates clusters of tiny eigenvalues, such as the zero eigenvalues of a low-rank
+    // matrix, whose diagonal entries shrink with the subdiagonal ones.
     let ulp = f64::EPSILON;
+    let frobenius = h.norm_l2();
     let mut hi = n - 1;
     let max_iter = 30 * n.max(10);
     let mut total = 0;
@@ -115,7 +120,7 @@ pub(crate) fn schur(a: faer::MatRef<'_, c64>) -> Result<(Mat<c64>, Mat<c64>), cr
                 if scale == 0.0 {
                     scale = h.norm_max();
                 }
-                if sub <= ulp * scale {
+                if sub <= ulp * scale || (its >= 10 && sub <= ulp * frobenius) {
                     h[(lo, lo - 1)] = ZERO;
                     break;
                 }

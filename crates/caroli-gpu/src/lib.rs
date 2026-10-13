@@ -52,6 +52,7 @@ pub enum GpuError {
 
 /// `μ_n = kernel_n · mean_r ⟨r| T_n |r⟩` from the block sums `s1[n] = Σ_r ⟨T_n|T_n⟩` and
 /// `s2[n] = Σ_r ⟨T_n|T_{n+1}⟩` (`μ_2n = 2 s1[n] − μ_0`, `μ_{2n+1} = 2 s2[n] − μ_1`).
+#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
 pub(crate) fn doubled_moments(s1: &[c64], s2: &[c64], vectors: usize, kernel: &[f64]) -> Vec<c64> {
     let (mu0, mu1) = (s1[0], s2[0]);
     (0..kernel.len())

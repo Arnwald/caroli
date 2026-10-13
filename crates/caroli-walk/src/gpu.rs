@@ -109,6 +109,7 @@ impl Tables {
 }
 
 /// Steps per calibration: 2 % of the run, at least one, at most 200.
+#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
 fn calibration_steps(steps: usize) -> usize {
     (steps / 50).clamp(1, 200)
 }

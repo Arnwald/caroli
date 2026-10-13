@@ -6,10 +6,13 @@ Read `README.md` for the scope.
 
 ## Status
 
-- Early development: `crates/` holds caroli-lattice, caroli-model (BHZ preset), caroli-green
-  (lead modes, RGF, Caroli transmission), the `caroli` facade and caroli-validation (tests
-  against the thesis golden outputs). `ARCHITECTURE.md` has the design choices and the roadmap;
-  keep it up to date. `cargo test --workspace` must stay green, and so must `cargo clippy`.
+- Early development: `crates/` holds the library crates (lattice, model, dense kernels, Green's
+  functions, disorder, Keldysh, Born, torus, KPM, dynamics, GPU, quantum walks), the `caroli`
+  facade, caroli-validation (tests against the thesis golden outputs) and caroli-bench (the
+  benchmarks); the table of `ARCHITECTURE.md` lists them. `ARCHITECTURE.md` has the design
+  choices and the roadmap; keep it up to date. `cargo test --workspace` must stay green (on Linux,
+  `cargo test --workspace --profile ci`: the dense kernels need optimised code without
+  Accelerate), and so must `cargo clippy`. CI runs both on Linux and macOS.
 - The author's PhD thesis codes (Fortran 90 + MPI, Python 2), deduplicated and documented, are
   NOT in this public repository. They live in a private repository on the author's machine,
   `~/Projects/caroli-thesis/thesis` (start with its `README.md`; each program has its own README:

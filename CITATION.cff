@@ -1,0 +1,23 @@
+cff-version: 1.2.0
+message: "If you use caroli in your research, please cite it as below."
+title: "caroli: a Rust toolbox for electronic transport in materials"
+abstract: >-
+  caroli builds tight-binding systems (lattices, geometry, disorder, magnetic fields) and computes
+  their electronic properties: two- and multi-terminal transport with Green's functions (nested
+  dissection, recursive Green's functions, lead modes), non-equilibrium steady states (Keldysh),
+  the self-consistent Born approximation, the kernel polynomial method and time evolution, on all
+  the CPU cores and, for some kernels, on the GPU.
+authors:
+  - family-names: Demion
+    given-names: Arnaud
+type: software
+license: MIT
+version: 0.1.0
+repository-code: "https://github.com/Arnwald/caroli"
+keywords:
+  - quantum transport
+  - tight-binding
+  - Green's functions
+  - topological insulators
+  - graphene
+  - Rust

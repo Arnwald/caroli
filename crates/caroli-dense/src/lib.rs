@@ -125,6 +125,7 @@ pub fn schur_of_real(a: MatRef<'_, c64>) -> Result<(Mat<c64>, Mat<c64>), DenseEr
 /// Turns a real quasi-triangular Schur form into a complex triangular one (as MATLAB's
 /// `rsf2csf`): each 2 × 2 block of a complex pair is triangularised by a complex rotation applied
 /// to its two rows, its two columns and the Schur vectors.
+#[cfg_attr(not(all(target_os = "macos", feature = "accelerate")), allow(dead_code))]
 fn split_pairs(t: &mut Mat<c64>, q: &mut Mat<c64>) {
     let n = t.nrows();
     let zero = c64::new(0.0, 0.0);
@@ -504,7 +505,7 @@ mod tests {
     fn schur_of_real_matrices() {
         for n in [1usize, 2, 7, 60, 257] {
             let a = Mat::<c64>::from_fn(n, n, |i, j| c64::new(test_matrix(n, n, 5)[(i, j)].re, 0.0));
-            let (q, t) = schur_of_real(a.as_ref()).unwrap();
+            let (q, t) = schur_of_real(a.as_ref()).unwrap_or_else(|e| panic!("n {n}: {e:?}"));
             assert!((&q * &t * q.adjoint() - &a).norm_max() < 1e-12 * n as f64, "n {n}: q t q† = a");
             assert!(
                 (q.adjoint() * &q - Mat::<c64>::identity(n, n)).norm_max() < 1e-12 * n as f64,

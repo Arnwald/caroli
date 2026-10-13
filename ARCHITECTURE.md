@@ -100,7 +100,10 @@ The dependencies only go downward: lattice ← model ← green ← caroli, and d
     modes they are nearly dependent (inverse condition 1e-15 in a 100-wide ribbon).
     - The decomposition is Accelerate's on macOS. Elsewhere, faer's Hessenberg reduction is
       followed by our own single-shift QR, because faer's QZ is slow near n = 80 and its
-      standard Schur is private.
+      standard Schur is private. Its deflation test is LAPACK's (a subdiagonal entry negligible
+      next to its diagonal neighbours); when an eigenvalue takes more than ten iterations it
+      also accepts one negligible next to the norm of the matrix, which deflates the clusters of
+      zero eigenvalues of low-rank matrices.
     - The reordering moves eigenvalues by adjacent swaps (as LAPACK ztrexc), in windows of 64:
       the rotations of a window reach the rest of the matrix as one product (Kressner's block
       algorithm). Moving half the spectrum of a 512 matrix to the front takes 17 ms, against
@@ -203,7 +206,7 @@ The dependencies only go downward: lattice ← model ← green ← caroli, and d
 | SCBA: Anderson, magnetic matrix (same-g, opposite-g), magnetic reduced (same-g, opposite-g) | `ti-scba-*` | reproduced to 1e-15 with the thesis iteration schedules |
 | four-terminal cross with Anderson disorder (spin-up BHZ block) | `ti-cond4t-anderson` | thesis formula reproduced to 3e-5 (the thesis puts E + iη on one slice) with a general multi-terminal solver |
 | KPM densities of states (TI same-g, opposite-g; graphene AF) | `ti-dos-kpm-*`, `graphene-dos-kpm` | reproduced to 1e-15 (same random vectors and impurities) |
-| graphene under a field: current and pair creation (clean, AF, para) | `graphene-current-*` | reproduced to 1e-16 (replica keeps gfortran's −0 imaginary parts, which fix the gauge of the initial band state) |
+| graphene under a field: current and pair creation (clean, AF, para) | `graphene-current-*` | reproduced to 1e-16 (replica keeps gfortran's −0 imaginary parts, which fix the gauge of the initial band state; at two k points where `h(k)` is real, glibc's `sin`/`cos` give an exactly zero imaginary part and macOS's a positive one, and the replica takes the macOS sign, with which the goldens were recorded) |
 | graphene wave packet: width w(t), sublattice density maps | `graphene-width`, `graphene-density` | reproduced to 1e-16 (width) and 1e-19 (densities) |
 | 2013 ribbon bands, Fourier in y (λ = −0.1) | `ti-ribbon-bands-fourier-y` | equal to 2e-14; the 2013 Γ14 is anti-Hermitian and `heev` reads its upper triangle (edge states move by ≤ 1.5e-3) |
 | 2013 recursive "spin DOS" | `ti-dos-spin-lesser` | replayed to 7e-11; the program never forms G^< and its up/down sums are a split by position |
@@ -274,6 +277,8 @@ Golden cases with disorder use the same impurity configurations as the thesis.
         samples are that large: about 2× on those in f32, with the transport errors measured in
         item 12. Not implemented; a CUDA card with fast f64 is the better target for transport.
     - Not on the GPU: dense transport solves, and FFT-based torus operators.
+11. Examples: the two thesis studies (TI with magnetic impurities: G maps, local currents, Born
+    phase diagram; graphene under a field: current, pair creation, DOS).
 12. 🧪 Transport precision, chosen by the user (`caroli_green::{Precision, PrecisionOptions,
     checked}`): single precision for the nested-dissection solvers, kept as an experimental
     option for previews.
@@ -321,8 +326,6 @@ Golden cases with disorder use the same impurity configurations as the thesis.
       largest |ΔT| 1.0e-2 at W = 64 and 2.5e-2 at W = 128, 2.4e-4 on the plateaus at W = 64, and
       1e-4 with one refinement step. But the sweep costs O(L W³), against O(L W²) for nested
       dissection, so it is not offered.
-11. Examples: the two thesis studies (TI with magnetic impurities: G maps, local currents, Born
-    phase diagram; graphene under a field: current, pair creation, DOS).
 13. Speed: the fastest code of its kind, measured against the reference codes: Kwant, TBtrans and
     Quantica.jl so far (`benchmarks/results/report-2026-10-12-53d13c9.md`); KITE (KPM) later.
     - `benchmarks/` and `caroli-bench`: every code solves the same exported Hamiltonians, the

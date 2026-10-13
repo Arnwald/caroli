@@ -32,6 +32,7 @@ fn main() {
     let kernel = caroli_kpm::jackson(moments);
 
     let t = Instant::now();
+    #[cfg_attr(not(target_os = "macos"), allow(unused_variables))]
     let cpu = caroli_kpm::block_moments(|x, y| h.apply_block(x, y, vectors), &starts, &kernel);
     let cpu_time = t.elapsed();
     println!(

@@ -11,6 +11,7 @@ use crate::Chebyshev;
 use caroli_gpu::{Device, Options, Report};
 use caroli_model::{SparseMatrix, c64};
 
+#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
 fn norms(psi: &[c64], vectors: usize) -> Vec<f64> {
     let mut n = vec![0.0; vectors];
     for (i, z) in psi.iter().enumerate() {

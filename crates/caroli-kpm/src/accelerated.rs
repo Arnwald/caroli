@@ -11,12 +11,14 @@ use caroli_gpu::{Device, Options, Report};
 use caroli_model::{SparseMatrix, c64};
 
 /// The checked start vectors: one in fifty, evenly spaced, at least one.
+#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
 fn sample(vectors: usize) -> Vec<usize> {
     let count = vectors.div_ceil(50);
     (0..count).map(|k| k * vectors / count).collect()
 }
 
 /// `max_n |a_n − b_n| / |b_0|`.
+#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
 fn deviation(a: &[c64], b: &[c64]) -> f64 {
     a.iter().zip(b).map(|(x, y)| (x - y).norm()).fold(0.0, f64::max) / b[0].norm()
 }

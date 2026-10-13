@@ -249,7 +249,11 @@ mod tests {
         ] {
             let (sums, report) = scan(&walks, initial, steps, &options);
             assert!(report.fallback.is_none(), "{report:?}");
-            assert!(report.checked >= 1 && report.deviation < 1e-4, "{report:?}");
+            // Without a GPU (other platforms, virtual machines) the CPU runs every walk, and
+            // only the f32 ones need checking.
+            let reduced = options.single || report.gpu_walks > 0;
+            assert_eq!(report.checked >= 1, reduced, "{report:?}");
+            assert!(report.deviation < 1e-4, "{report:?}");
             for (a, b) in sums.iter().zip(&exact) {
                 assert!(deviation(a, b) < 1e-4, "{options:?}");
             }

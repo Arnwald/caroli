@@ -14,6 +14,9 @@
 //! per method to `benchmarks/results/walk-<machine>.jsonl`. It also runs the checked GPU mode
 //! (`caroli_walk::evolve` in f32, tolerance 10⁻³) for 50 × `steps` steps.
 
+// The GPU runs are macOS only (Metal): elsewhere their imports and switches go unused.
+#![cfg_attr(not(target_os = "macos"), allow(unused))]
+
 use caroli_model::c64;
 use caroli_walk::observables::ks_distance;
 use caroli_walk::{Options, PLUS, Precision, ScanOptions, SpinWalk, UP, evolve, scan, to_double, to_single};

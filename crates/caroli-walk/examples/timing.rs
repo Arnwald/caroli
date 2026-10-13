@@ -6,6 +6,9 @@
 //! cargo run --release -p caroli-walk --example timing -- [n...] [--steps S] [--no-csr] [--no-gpu]
 //! ```
 
+// The GPU runs are macOS only (Metal): elsewhere their imports and switches go unused.
+#![cfg_attr(not(target_os = "macos"), allow(unused))]
+
 use caroli_model::c64;
 use caroli_walk::{PLUS, Precision, SpinWalk};
 use std::time::Instant;
