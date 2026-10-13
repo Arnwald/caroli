@@ -134,11 +134,17 @@ fn split_pairs(t: &mut Mat<c64>, q: &mut Mat<c64>) {
         if sub == zero {
             continue;
         }
-        // An eigenvalue of the block [[a, b], [c, d]], relative to d.
+        // An eigenvalue of the block [[a, b], [c, d]], relative to d. The block is first scaled
+        // by a power of two (exactly): the blocks of clusters of tiny eigenvalues (such as the
+        // zero eigenvalues of a low-rank matrix) would otherwise underflow in the squares, and the
+        // rotation would not be unitary.
         let (a, b, c, d) = (t[(m - 1, m - 1)], t[(m - 1, m)], sub, t[(m, m)]);
+        let big = [a, b, c, d].iter().fold(0.0f64, |x, z| x.max(z.re.abs()).max(z.im.abs()));
+        let scale = 2f64.powi(-(big.log2().floor() as i32).clamp(-1000, 1000));
+        let (a, b, c, d) = (a * scale, b * scale, c * scale, d * scale);
         let half = (a - d) * 0.5;
         let mu = half + (half * half + b * c).sqrt(); // eigenvalue − d
-        let r = (mu.norm_sqr() + c.norm_sqr()).sqrt();
+        let r = mu.norm().hypot(c.norm());
         if r == 0.0 {
             continue;
         }
@@ -511,12 +517,18 @@ mod tests {
         let _lock = BACKEND.lock().unwrap_or_else(|e| e.into_inner());
         for n in [1usize, 2, 7, 60, 257] {
             let a = Mat::<c64>::from_fn(n, n, |i, j| c64::new(test_matrix(n, n, 5)[(i, j)].re, 0.0));
+            let start = std::time::Instant::now();
             let (q, t) = schur_of_real(a.as_ref()).unwrap_or_else(|e| panic!("n {n}: {e:?}"));
-            assert!((&q * &t * q.adjoint() - &a).norm_max() < 1e-12 * n as f64, "n {n}: q t q† = a");
-            assert!(
-                (q.adjoint() * &q - Mat::<c64>::identity(n, n)).norm_max() < 1e-12 * n as f64,
-                "n {n}: unitary"
+            let (residual, unitarity) = (
+                (&q * &t * q.adjoint() - &a).norm_max(),
+                (q.adjoint() * &q - Mat::<c64>::identity(n, n)).norm_max(),
             );
+            let report = format!(
+                "n {n} ({:?}, {:.1?}): q t q† − a {residual:e}, q†q − 1 {unitarity:e}",
+                backend(),
+                start.elapsed()
+            );
+            assert!(residual < 1e-12 * n as f64 && unitarity < 1e-12 * n as f64, "{report}");
             assert!((0..n).all(|j| (j + 1..n).all(|i| t[(i, j)] == c64::new(0.0, 0.0))), "n {n}: triangular");
             let (_, tc) = schur(a.as_ref()).unwrap();
             // Each eigenvalue matches one of the complex decomposition.
