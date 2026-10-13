@@ -12,7 +12,8 @@ Read `README.md` for the scope.
   benchmarks); the table of `ARCHITECTURE.md` lists them. `ARCHITECTURE.md` has the design
   choices and the roadmap; keep it up to date. `cargo test --workspace` must stay green (on Linux,
   `cargo test --workspace --profile ci`: the dense kernels need optimised code without
-  Accelerate), and so must `cargo clippy`. CI runs both on Linux and macOS.
+  Accelerate), and so must `cargo clippy`. CI runs the tests with `--profile ci` on Linux and
+  macOS.
 - The author's PhD thesis codes (Fortran 90 + MPI, Python 2), deduplicated and documented, are
   NOT in this public repository. They live in a private repository on the author's machine,
   `~/Projects/caroli-thesis/thesis` (start with its `README.md`; each program has its own README:
