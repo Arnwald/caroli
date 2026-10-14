@@ -1,13 +1,14 @@
-# Spinful graphene with antiferromagnetic magnetic impurities (A moments along +z, B along −z):
-# densities of states and conductivity on a torus, Born approximation, and the current under a
-# strong electric field.
+# Spinful graphene with antiferromagnetic magnetic impurities (A moments along +z, B along −z),
+# as in Demion and Verga, PRB 90, 085412 (2014): densities of states on a torus, Born
+# approximation, and the current and pairs under a strong electric field from the spin-up valence
+# band (per unit area and one spin; the paper's are per cell and both spins: times √3).
 #   caroli run crates/caroli-cli/inputs/graphene-magnetic.toml
 title = "Graphene with magnetic impurities"
 
 [parameters]
-V = 0.5          # exchange
-n = 0.1          # impurity concentration per sublattice
-F = 0.01         # force of the electric field
+V = 0.2          # exchange J_I
+n = 0.4          # impurity concentration per sublattice
+F = 0.02         # force of the electric field
 
 [model]
 preset = "graphene"
@@ -53,4 +54,4 @@ force = [0.0, "F"]
 dt = 0.1
 steps = 500
 every = 10
-initial = { type = "fermi-sea", fermi = 0.0, vectors = 2 }
+initial = { type = "band", orbitals = [0, 2], vectors = 2 }   # A↑, B↑

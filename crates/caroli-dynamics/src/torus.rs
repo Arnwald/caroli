@@ -51,6 +51,9 @@ pub struct Torus {
     groups: Vec<Vec<usize>>,
     /// Site-dependent on-site terms of each cell (`x + n·y`), on all the orbitals of the cell.
     local: Vec<(usize, CMat)>,
+    /// Orbitals of the band states that [`Torus::filled`] fills and that the excited-carrier
+    /// count reads (all of them if `None`).
+    sector: Option<Vec<usize>>,
     potential: VectorPotential,
     fft: Fft2,
 }
@@ -76,8 +79,8 @@ pub struct Record {
     pub norm: Vec<f64>,
     /// Current density `⟨v⟩/Ω` (`v = i[H, r]`, `Ω` the area of the torus), x and y.
     pub current: Vec<[f64; 2]>,
-    /// Density of carriers in the instantaneous clean bands above the Fermi energy, per unit
-    /// area.
+    /// Density of carriers in the instantaneous clean bands above the Fermi energy (those of the
+    /// sector, if one is set), per unit area.
     pub excited: Vec<f64>,
     /// `sqrt(⟨Δr²⟩ − ⟨Δr⟩²)`, positions taken around the densest orbital at the start (nearest
     /// image).
@@ -175,6 +178,7 @@ impl Torus {
             hops,
             groups: groups.into_values().collect(),
             local,
+            sector: None,
             potential: std::sync::Arc::new(|_| [0.0; 3]),
             fft: Fft2::new(n),
         }
@@ -189,6 +193,31 @@ impl Torus {
     pub fn with_vector_potential(mut self, potential: VectorPotential) -> Self {
         self.potential = potential;
         self
+    }
+
+    /// Restricts [`Self::filled`] and the excited-carrier count to the band states on `orbitals`
+    /// (of the unit cell), a union of groups of orbitals that `M(k)` does not couple to the
+    /// others: one spin of a model whose hoppings conserve the spin, say. The evolution itself is
+    /// unchanged (the disorder may carry the states out of the sector), and so is
+    /// [`Self::fermi_sea`].
+    pub fn with_sector(mut self, orbitals: &[usize]) -> Self {
+        for g in &self.groups {
+            let inside = g.iter().filter(|c| orbitals.contains(c)).count();
+            assert!(inside == 0 || inside == g.len(), "the sector splits the coupled orbitals {g:?}");
+        }
+        self.sector = Some(orbitals.to_vec());
+        self
+    }
+
+    /// The groups of orbitals of the cell that `M(k)` does not couple to one another (the
+    /// blocks of a sector, see [`Self::with_sector`]).
+    pub fn groups(&self) -> &[Vec<usize>] {
+        &self.groups
+    }
+
+    /// Whether the group of orbitals `g` lies in the sector.
+    fn in_sector(&self, g: &[usize]) -> bool {
+        self.sector.as_ref().is_none_or(|s| g.iter().all(|c| s.contains(c)))
     }
 
     pub fn size(&self) -> usize {
@@ -329,6 +358,7 @@ impl Torus {
     /// The Fermi sea below `fermi` of the clean bands at `t = 0`, as `vectors` random-phase
     /// superpositions of the occupied band states (k space): for each of them `⟨ψ|O|ψ⟩`
     /// estimates `Tr[P O]`, `P` the projector on the occupied states, and `⟨ψ|ψ⟩` is their number.
+    /// Only the band states of the sector, if one is set ([`Self::with_sector`]).
     pub fn filled(&self, fermi: f64, vectors: usize, seed: u64) -> Vec<Vec<c64>> {
         let (nn, a0) = (self.n * self.n, (self.potential)(0.0));
         let bands: Vec<Vec<BandState>> = (0..nn)
@@ -346,7 +376,7 @@ impl Torus {
                     for (e, g, u) in bk {
                         let phase =
                             c64::from_polar(self.n as f64, 2.0 * std::f64::consts::PI * rng.uniform());
-                        if *e < fermi {
+                        if *e < fermi && self.in_sector(g) {
                             for (i, &c) in g.iter().enumerate() {
                                 psi[k + nn * c] += phase * u[i];
                             }
@@ -569,7 +599,7 @@ impl Torus {
                 let up: f64 = self
                     .bands(&self.kinetic(k, a))
                     .into_iter()
-                    .filter(|(e, _, _)| *e > ev.fermi)
+                    .filter(|(e, g, _)| *e > ev.fermi && self.in_sector(g))
                     .map(|(_, g, u)| g.iter().zip(&u).map(|(&c, x)| x.conj() * v[c]).sum::<c64>().norm_sqr())
                     .sum();
                 Triple(expectation(&vx, v), expectation(&vy, v), up)

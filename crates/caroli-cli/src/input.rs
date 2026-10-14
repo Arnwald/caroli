@@ -329,6 +329,10 @@ pub enum InitialInput {
     /// clean bands, or with disorder the ground state of the disordered Hamiltonian (a Chebyshev
     /// projection with `moments` terms, default 1024).
     FermiSea { fermi: Option<Num>, vectors: Option<usize>, seed: Option<u64>, moments: Option<usize> },
+    /// The clean bands below `fermi` (only those on `orbitals` of the cell if given, e.g. one
+    /// spin), as random-phase superpositions, also with disorder (which sets them in motion); the
+    /// excited carriers are counted in the same bands.
+    Band { fermi: Option<Num>, vectors: Option<usize>, seed: Option<u64>, orbitals: Option<Vec<usize>> },
     /// One orbital of one cell, projected on the band states in `window` if given.
     Localized { cell: Vec<usize>, orbital: Option<usize>, window: Option<[f64; 2]> },
 }

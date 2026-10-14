@@ -24,6 +24,7 @@ use caroli_disorder::rng::Xoshiro256;
 use caroli_gpu::{Options, Report};
 use caroli_lattice::{Cell, Region, Vec3};
 use caroli_model::{CMat, Model, SparseMatrix, c64};
+use rayon::prelude::*;
 
 /// The kernel polynomial method on the Hamiltonian of a [`Model`] on a [`Region`].
 ///
@@ -171,7 +172,7 @@ impl<'a> Spectrum<'a> {
                 let mut mu = vec![c64::new(0.0, 0.0); self.moments];
                 for first in (0..n).step_by(BLOCK) {
                     let block: Vec<Vec<c64>> = (first..(first + BLOCK).min(n)).map(|i| unit(n, i)).collect();
-                    for m in cross_moments(&self.scaled, &block, &block, &kernel) {
+                    for m in diagonal_moments(&self.scaled, &block, &kernel) {
                         mu.iter_mut().zip(m).for_each(|(a, b)| *a += b);
                     }
                 }
@@ -211,22 +212,38 @@ impl<'a> Spectrum<'a> {
     /// Local densities of states `Σ_a ⟨i, a| δ(E − H) |i, a⟩` of the sites `sites` (indices into
     /// the region), summed over their orbitals: one curve per site.
     pub fn ldos(&self, sites: &[usize], energies: &[f64]) -> Vec<Vec<f64>> {
+        self.orbital_ldos(sites, energies)
+            .into_iter()
+            .map(|orbitals| {
+                orbitals
+                    .into_iter()
+                    .reduce(|a, b| a.iter().zip(&b).map(|(x, y)| x + y).collect())
+                    .unwrap_or_default()
+            })
+            .collect()
+    }
+
+    /// Local densities of states `⟨i, a| δ(E − H) |i, a⟩` of every orbital `a` of the sites
+    /// `sites`: one curve per site and orbital. The basis vectors go through the Chebyshev
+    /// recursion in blocks, so that the memory stays that of a few blocks of vectors.
+    pub fn orbital_ldos(&self, sites: &[usize], energies: &[f64]) -> Vec<Vec<Vec<f64>>> {
         let n = self.h.n;
-        let mut owner = Vec::new();
-        let mut starts = Vec::new();
-        for (k, &i) in sites.iter().enumerate() {
-            for a in 0..self.region.site_orbitals(i) {
-                starts.push(unit(n, self.region.offset(i) + a));
-                owner.push(k);
+        let orbitals: Vec<(usize, usize)> = sites
+            .iter()
+            .enumerate()
+            .flat_map(|(k, &i)| (0..self.region.site_orbitals(i)).map(move |a| (k, a)))
+            .collect();
+        let kernel = jackson(self.moments);
+        let mut out: Vec<Vec<Vec<f64>>> =
+            sites.iter().map(|&i| vec![Vec::new(); self.region.site_orbitals(i)]).collect();
+        for chunk in orbitals.chunks(BLOCK) {
+            let starts: Vec<Vec<c64>> =
+                chunk.iter().map(|&(k, a)| unit(n, self.region.offset(sites[k]) + a)).collect();
+            for (m, &(k, a)) in diagonal_moments(&self.scaled, &starts, &kernel).iter().zip(chunk) {
+                out[k][a] = self.density(m, energies);
             }
         }
-        let kernel = jackson(self.moments);
-        let per_vector = cross_moments(&self.scaled, &starts, &starts, &kernel);
-        let mut mu = vec![vec![c64::new(0.0, 0.0); self.moments]; sites.len()];
-        for (m, &k) in per_vector.iter().zip(&owner) {
-            mu[k].iter_mut().zip(m).for_each(|(a, b)| *a += b);
-        }
-        mu.iter().map(|m| self.density(m, energies)).collect()
+        out
     }
 
     /// Kubo–Bastin conductivity `σ_ab` in units of `e²/h` at the chemical potentials `mus` and the
@@ -309,8 +326,88 @@ fn unit(n: usize, i: usize) -> Vec<c64> {
     v
 }
 
-/// Vectors per block of [`cross_moments`] (bounds the memory to a few blocks of this size).
+/// Vectors per block of [`cross_moments`] and [`diagonal_moments`] (bounds the memory to a few
+/// blocks of this size).
 const BLOCK: usize = 32;
+
+/// Entries per parallel chunk of the vector work (fixed, so that the sums do not depend on the
+/// number of threads).
+const CHUNK: usize = 1 << 14;
+
+/// `⟨a_v|b_v⟩` for every vector `v` of two interleaved blocks of `m` vectors.
+fn pair_dots(a: &[c64], b: &[c64], m: usize) -> Vec<c64> {
+    let len = (CHUNK / m).max(1) * m;
+    let parts: Vec<Vec<c64>> = a
+        .par_chunks(len)
+        .zip(b.par_chunks(len))
+        .map(|(x, y)| {
+            let mut acc = vec![c64::new(0.0, 0.0); m];
+            for (xr, yr) in x.chunks_exact(m).zip(y.chunks_exact(m)) {
+                acc.iter_mut().zip(xr.iter().zip(yr)).for_each(|(s, (p, q))| *s += p.conj() * q);
+            }
+            acc
+        })
+        .collect();
+    (0..m).map(|v| parts.iter().map(|p| p[v]).sum()).collect()
+}
+
+/// Moments `kernel_n ⟨v| T_n(h) |v⟩` of each vector, in blocks, by the doubling relations of
+/// [`crate::block_moments`] (`μ_{2n} = 2⟨T_n|T_n⟩ − μ_0`, `μ_{2n+1} = 2⟨T_n|T_{n+1}⟩ − μ_1`):
+/// `⌈M/2⌉` products with `h` for `M` moments, the vector work in parallel.
+fn diagonal_moments(h: &SparseMatrix, starts: &[Vec<c64>], kernel: &[f64]) -> Vec<Vec<c64>> {
+    let count = kernel.len();
+    let mut out = Vec::with_capacity(starts.len());
+    for block in starts.chunks(BLOCK) {
+        let m = block.len();
+        let len = (CHUNK / m).max(1) * m;
+        let mut prev = interleave(block);
+        let mut cur = vec![c64::new(0.0, 0.0); prev.len()];
+        let mut next = vec![c64::new(0.0, 0.0); prev.len()];
+        h.apply_block(&prev, &mut cur, m);
+        // s1[n][v] = ⟨T_n v|T_n v⟩, s2[n][v] = ⟨T_n v|T_{n+1} v⟩.
+        let (mut s1, mut s2) = (vec![pair_dots(&prev, &prev, m)], vec![pair_dots(&prev, &cur, m)]);
+        for _ in 1..count.div_ceil(2) {
+            h.apply_block(&cur, &mut next, m);
+            let parts: Vec<(Vec<c64>, Vec<c64>)> = next
+                .par_chunks_mut(len)
+                .zip(prev.par_chunks(len))
+                .zip(cur.par_chunks(len))
+                .map(|((nx, pv), cu)| {
+                    let (mut a, mut b) = (vec![c64::new(0.0, 0.0); m], vec![c64::new(0.0, 0.0); m]);
+                    for ((xr, pr), cr) in
+                        nx.chunks_exact_mut(m).zip(pv.chunks_exact(m)).zip(cu.chunks_exact(m))
+                    {
+                        for v in 0..m {
+                            xr[v] = 2.0 * xr[v] - pr[v];
+                            a[v] += cr[v].conj() * cr[v];
+                            b[v] += cr[v].conj() * xr[v];
+                        }
+                    }
+                    (a, b)
+                })
+                .collect();
+            s1.push((0..m).map(|v| parts.iter().map(|p| p.0[v]).sum()).collect());
+            s2.push((0..m).map(|v| parts.iter().map(|p| p.1[v]).sum()).collect());
+            std::mem::swap(&mut prev, &mut cur);
+            std::mem::swap(&mut cur, &mut next);
+        }
+        out.extend((0..m).map(|v| {
+            let (mu0, mu1) = (s1[0][v], s2[0][v]);
+            (0..count)
+                .map(|k| {
+                    let raw = match k {
+                        0 => mu0,
+                        1 => mu1,
+                        _ if k % 2 == 0 => 2.0 * s1[k / 2][v] - mu0,
+                        _ => 2.0 * s2[k / 2][v] - mu1,
+                    };
+                    raw * kernel[k]
+                })
+                .collect::<Vec<c64>>()
+        }));
+    }
+    out
+}
 
 /// Moments `kernel_n ⟨left_v| T_n(h) |right_v⟩` of each pair of vectors, the Chebyshev vectors of
 /// the right ones computed in blocks with [`SparseMatrix::apply_block`].

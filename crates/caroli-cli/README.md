@@ -138,7 +138,13 @@ tables start with the scanned parameters and the configuration.
 | `scba` | self-consistent Born approximation of the disorder | `energies`, `k_grid` (64 per direction), `eta` (1e-3) | `energy`, `dos` (per cell), `sigma_re_k sigma_im_k` (diagonal of the self-energy), `residual` |
 | `evolution` | time evolution on an n × n torus under a uniform force | `force` (`k → k + F t`), `dt`, `steps`, `every`, `fermi`, `initial` | `t`, `norm`, current density `jx jy`, `excited` (carriers above `fermi` in the instantaneous clean bands, per unit area), `width` |
 
-`initial` of `evolution`: `{ type = "fermi-sea", fermi, vectors, seed, moments }` (random-phase
-superpositions of the occupied states; with disorder, the ground state of the disordered
-Hamiltonian by a Chebyshev projection), or `{ type = "localized", cell = [x, y], orbital,
-window = [lo, hi] }` (one orbital, projected on the clean band states in the window).
+`initial` of `evolution`:
+
+- `{ type = "fermi-sea", fermi, vectors, seed, moments }`: random-phase superpositions of the
+  occupied states; with disorder, the ground state of the disordered Hamiltonian by a Chebyshev
+  projection.
+- `{ type = "band", fermi, vectors, seed, orbitals }`: the clean bands below `fermi`, also with
+  disorder (which sets them in motion), only those on `orbitals` of the cell if given (one spin,
+  e.g. `[0, 2]` for spinful graphene); `excited` then counts the carriers in the same bands.
+- `{ type = "localized", cell = [x, y], orbital, window = [lo, hi] }`: one orbital, projected on
+  the clean band states in the window.

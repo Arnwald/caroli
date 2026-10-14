@@ -244,6 +244,34 @@ fn evolution_of_a_wave_packet() {
     }
 }
 
+/// One spin of the clean bands of spinful graphene under a force: half the current and pairs of
+/// the whole Fermi sea; a set of orbitals that splits coupled ones is an error.
+#[test]
+fn evolution_of_one_spin() {
+    let base = r#"
+        [model]
+        preset = "graphene"
+        spin = true
+        [system]
+        size = [26, 26]
+        [[run]]
+        type = "evolution"
+        force = [0.0, 0.1]
+        dt = 0.02
+        steps = 200
+        every = 50
+    "#;
+    let both = run(&format!("{base}initial = {{ type = \"fermi-sea\" }}\n"));
+    let up = run(&format!("{base}initial = {{ type = \"band\", orbitals = [0, 2] }}\n"));
+    for name in ["jy", "excited"] {
+        for (a, b) in col(&both[0], name).iter().zip(col(&up[0], name)) {
+            assert!((a - 2.0 * b).abs() < 1e-12 * a.abs().max(1.0), "{name}: {a} vs 2 × {b}");
+        }
+    }
+    let e = error(&format!("{base}initial = {{ type = \"band\", orbitals = [0, 1] }}\n"));
+    assert!(e.contains("orbitals"), "{e}");
+}
+
 /// The local run: currents, densities and an operator (the spin current of the helical edges).
 #[test]
 fn local_currents() {

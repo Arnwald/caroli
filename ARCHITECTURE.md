@@ -195,10 +195,11 @@ The dependencies only go downward: lattice ← model ← green ← caroli, and d
   low-level kernels stay public):
   - `caroli_kpm::Spectrum`: the sparse Hamiltonian of a region, open or periodic, rescaled by its
     Gershgorin bounds (or given ones); density of states `Tr δ(E − H)`, its projection on an
-    on-site operator (spin, orbital), local densities of states, and the Kubo–Bastin
-    conductivity of a periodic sample (area from the periods). Random-phase traces, or exact ones
-    for small systems. Tests: the exact trace gives the moments of the eigenvalues, projections
-    and local densities add up to the total, `σ_xy = ±1` for the Qi–Wu–Zhang model.
+    on-site operator (spin, orbital), local densities of states (per site or per orbital, the
+    unit vectors in blocks of 32 through the recursion), and the Kubo–Bastin conductivity of a
+    periodic sample (area from the periods). Random-phase traces, or exact ones for small
+    systems. Tests: the exact trace gives the moments of the eigenvalues, projections and local
+    densities add up to the total, `σ_xy = ±1` for the Qi–Wu–Zhang model.
   - `caroli_born::Scba::from_model` samples `H(k)` on a uniform grid; `Disorder` gives the mean
     field and cumulant vertices of Anderson disorder and of magnetic impurities for any
     distribution of `Moments` (`⟨n_z⟩`, `⟨n_z²⟩` of the draws), and sums independent disorders.
@@ -229,6 +230,11 @@ The dependencies only go downward: lattice ← model ← green ← caroli, and d
     (in the graphene study of the thesis, a jump of the pair count at `t = 0`). Test: without
     field the disordered Fermi sea keeps its excited carriers, to a tenth of the jump of the
     clean one.
+  - `Torus::with_sector`: the filled bands and the excited-carrier count restricted to orbitals
+    that the clean hoppings do not couple to the others (one spin). The graphene study starts
+    from the spin-up valence band and counts the spin-up conduction band, so that spin flips by
+    the impurities take carriers out of the count. Test: one spin of clean graphene carries half
+    the current and pairs.
 - **Interface: the `caroli` command** (`caroli-cli`, input reference in its README). A TOML file
   holds `[parameters]` (named numbers or expressions of each other), `[model]` (a preset, a
   continuum k·p Hamiltonian or a lattice of one's own with on-site and hopping matrices as
@@ -342,7 +348,7 @@ Golden cases with disorder use the same impurity configurations as the thesis.
         samples are that large: about 2× on those in f32, with the transport errors measured in
         item 12. Not implemented; a CUDA card with fast f64 is the better target for transport.
     - Not on the GPU: dense transport solves, and FFT-based torus operators.
-11. Examples: the two thesis studies, self-contained (`crates/caroli/examples`), with their plot
+11. ✅ Examples: the two thesis studies, self-contained (`crates/caroli/examples`), with their plot
     scripts.
     - ✅ `ti_magnetic`: the 2D topological insulator with magnetic impurities (Raymond, Verga and
       Demion): spin-resolved conductance maps ⟨G⟩(J_I, E_F), local currents, spin densities and
@@ -350,11 +356,38 @@ Golden cases with disorder use the same impurity configurations as the thesis.
       lines are drawn over the maps. The Born points reproduce the corrected values of the Born
       addendum (opposite-g, J_I = 0.35, E_F = 0.02: M̄↑ = −0.0165; same-g, J_I = 1.3,
       E_F = −0.12: M̄↓ = −0.314). Default grids in minutes, `--paper` for the published ones.
-    - 🧪 `graphene_field`: graphene with magnetic impurities under a field (Demion and Verga,
-      PRB 90, 085412 (2014)): current and pair creation, wave-packet spreading, densities of
-      states, Kubo conductivity, with the parameters of the thesis runs (V_imp = 0.5, 10 % of
-      each sublattice, fields up to 0.02). Sizes, times and the figures are still to match those
-      of the paper.
+    - ✅ `graphene_field`: graphene with magnetic impurities under a field (Demion and Verga,
+      PRB 90, 085412 (2014)), the figures 3, 4, 6, 7 and 8 of the paper with its model and
+      parameters (n_I = 0.4 per sublattice, E = 0.002–0.02, J_I up to 1.6). Default sizes in
+      about half an hour, `--paper` for a 256 × 256 torus and every value of the figures.
+      - Fig. 3, clean: at E = 0.02, t = 100, j = 0.041 and N = 0.0274 per cell (paper 0.040 and
+        0.0275); slopes against t√E of 0.16 and 0.095 (paper: about 0.16 and 0.1). They are the
+        slopes of Eq. (18), 0.189 and 0.109, times the area of the cell, √3/2: the paper's
+        currents and pairs are per cell, Eq. (18) per unit area (the paper puts the difference
+        down to the lattice). Likewise the initial plateau of j/E is 1/4 per unit area.
+      - Fig. 4: the densities of states, with 512 moments (the resolution of the paper's).
+      - Fig. 6: the exponent β(J_I) of the wave-packet width within 0.03 of the paper's
+        (paramagnetic: 0.70, 0.54, 0.50 at J_I = 0.4, 0.8, 1.2; magnetic: 0.79, 0.55, 0.45,
+        0.41 at 0.4, 0.8, 1.2, 1.4), the curves crossing near J_I ≈ 0.8–1.
+      - Fig. 7: the paper starts from the spin-up valence band and counts the spin-up
+        conduction band (Eqs. 15–16), so that spin flips by paramagnetic impurities take
+        carriers out of N; counting both spins gives 0.033 instead of 0.018 at J_I = 0.2,
+        E = 0.02, t = 100 (`Torus::with_sector`). Paramagnetic, J_I = 0.2, E = 0.02, t = 100:
+        j = 0.033 and N = 0.018 (paper 0.030 and 0.018). Magnetic: j = 0.014 (0.014), the jump
+        of N at t = 0⁺ to 0.012–0.013 whatever E (0.011–0.013), N/E saturating at 7.5 for
+        J_I = 1 (7.7). The statistical error of the current is about v_F/(n√R) per cell for R
+        random-phase vectors on an n × n torus (0.003 with the defaults, n = 128, R = 4): the
+        paper's 8192 configurations of a 256 × 256 torus are worth about 2000 vectors. That of
+        N is far smaller (the projector on the conduction band is its own square), as the paper
+        notes.
+      - Fig. 8: the logarithmic distributions of the local density of states widen with J_I;
+        at J_I ≥ 1 they peak lower than the paper's (about −2 instead of −0.7: ε = 0.2 lies at
+        the gap edge, where the distribution depends on the resolution). The total local
+        density of states is the same at ±ε on every site (the Hamiltonian anticommutes with
+        the sublattice sign times time reversal), so there are no charge puddles; with moments
+        along ±z, ρ↑(i, ε) = ρ↓(i, −ε). The electron–hole map of one spin is then the spin map:
+        the example draws both, the same patches of about ten lattice constants (the paper's
+        Fig. 8c; its Fig. 8b, which differs, cannot be the total density of states).
 12. 🧪 Transport precision, chosen by the user (`caroli_green::{Precision, PrecisionOptions,
     checked}`): single precision for the nested-dissection solvers, kept as an experimental
     option for previews.

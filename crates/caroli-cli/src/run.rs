@@ -640,7 +640,24 @@ fn evolution(input: &Input, r: &EvolutionRun, base: &BTreeMap<String, f64>) -> R
         if !device.has_uniform_hoppings() {
             return Err("the evolution needs hoppings without field or site-dependent terms".into());
         }
-        let torus = Torus::new(&device, n).with_force(force);
+        let mut torus = Torus::new(&device, n).with_force(force);
+        if let InitialInput::Band { orbitals: Some(o), .. } = &r.initial {
+            let comps = torus.components();
+            if o.iter().any(|&a| a >= comps) {
+                return Err(format!("`orbitals` of the band: a cell has {comps} orbitals").into());
+            }
+            if let Some(g) = torus
+                .groups()
+                .iter()
+                .find(|g| g.iter().any(|a| o.contains(a)) && !g.iter().all(|a| o.contains(a)))
+            {
+                return Err(format!(
+                    "`orbitals` of the band must include all of {g:?}, coupled by the hoppings"
+                )
+                .into());
+            }
+            torus = torus.with_sector(o);
+        }
         let starts = match &r.initial {
             InitialInput::FermiSea { fermi, vectors, seed, moments } => {
                 let (mu, count, seed) =
@@ -650,6 +667,9 @@ fn evolution(input: &Input, r: &EvolutionRun, base: &BTreeMap<String, f64>) -> R
                 } else {
                     torus.fermi_sea(mu, count, seed, moments.unwrap_or(1024))
                 }
+            }
+            InitialInput::Band { fermi, vectors, seed, .. } => {
+                torus.filled(p.opt(fermi, 0.0)?, vectors.unwrap_or(1), seed.unwrap_or(1) + c as u64)
             }
             InitialInput::Localized { cell, orbital, window } => {
                 if cell.len() != 2 || cell[0] >= n || cell[1] >= n {

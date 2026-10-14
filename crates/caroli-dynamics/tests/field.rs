@@ -147,3 +147,36 @@ fn disordered_fermi_sea_is_stationary() {
     let occupied = ground.norm[0] / (4 * n * n) as f64;
     assert!((occupied - 0.5).abs() < 0.02, "{occupied}");
 }
+
+/// One spin of clean spinful graphene: half the carriers, current and pairs of both spins.
+#[test]
+fn spin_sector() {
+    let n = 26;
+    let t = combine(&[(-1.0, &s0())]);
+    let model = Model::new(Lattice::honeycomb(1.0, 2))
+        .hopping(0, 1, [0, 0, 0], &t)
+        .hopping(0, 1, [0, -1, 0], &t)
+        .hopping(0, 1, [1, -1, 0], &t);
+    let torus = Torus::new(&model, n).with_force([0.0, 0.1, 0.0]);
+    let ev = Evolution { dt: 0.02, steps: 200, every: 50, fermi: 0.0, densities: false };
+    let both = torus.evolve(&torus.filled(0.0, 1, 1), &ev);
+    // Orbitals A↑, A↓, B↑, B↓: spin up is {0, 2}.
+    let up = Torus::new(&model, n).with_force([0.0, 0.1, 0.0]).with_sector(&[0, 2]);
+    let one = up.evolve(&up.filled(0.0, 1, 1), &ev);
+    assert!((one.norm[0] - (n * n) as f64).abs() < 1e-9, "one occupied spin-up state per k");
+    for k in 1..both.times.len() {
+        assert!((2.0 * one.excited[k] - both.excited[k]).abs() < 1e-12 * both.excited[k].abs().max(1.0));
+        assert!(
+            (2.0 * one.current[k][1] - both.current[k][1]).abs() < 1e-12 * both.current[k][1].abs().max(1.0)
+        );
+        assert!(one.excited[k] > 0.0);
+    }
+}
+
+#[test]
+#[should_panic(expected = "splits")]
+fn sector_must_not_split_coupled_orbitals() {
+    let t = combine(&[(-1.0, &s0())]);
+    let model = Model::new(Lattice::honeycomb(1.0, 2)).hopping(0, 1, [0, 0, 0], &t);
+    let _ = Torus::new(&model, 6).with_sector(&[0, 1]);
+}
