@@ -110,9 +110,11 @@ Self-contained programs in `crates/caroli/examples`, with the scripts that plot 
 ```bash
 cargo run --release -p caroli --example ti_magnetic -- all out/ti
 python3 crates/caroli/examples/plot_ti_magnetic.py out/ti
-cargo run --release -p caroli --example graphene_field -- all out/graphene
-python3 crates/caroli/examples/plot_graphene_field.py out/graphene
+cargo run --release -p caroli --example graphene_field -- all out/graphene   # computes and plots
 ```
+
+The whole graphene campaign with the paper's statistics, on one machine:
+[docs/graphene-campaign.md](docs/graphene-campaign.md).
 
 ## Conventions
 

@@ -359,7 +359,10 @@ Golden cases with disorder use the same impurity configurations as the thesis.
     - ✅ `graphene_field`: graphene with magnetic impurities under a field (Demion and Verga,
       PRB 90, 085412 (2014)), the figures 3, 4, 6, 7 and 8 of the paper with its model and
       parameters (n_I = 0.4 per sublattice, E = 0.002–0.02, J_I up to 1.6). Default sizes in
-      about half an hour, `--paper` for a 256 × 256 torus and every value of the figures.
+      twenty minutes on four cores; `--paper` for every value of the figures and the
+      statistics of the paper (28 h on four cores). `all` resumes an interrupted campaign (each
+      job of the long figures is kept), keeps a Mac awake and draws the figures; `estimate`
+      times this machine and prints the duration of each figure ([docs/graphene-campaign.md](docs/graphene-campaign.md)).
       - Fig. 3, clean: at E = 0.02, t = 100, j = 0.041 and N = 0.0274 per cell (paper 0.040 and
         0.0275); slopes against t√E of 0.16 and 0.095 (paper: about 0.16 and 0.1). They are the
         slopes of Eq. (18), 0.189 and 0.109, times the area of the cell, √3/2: the paper's
@@ -376,18 +379,32 @@ Golden cases with disorder use the same impurity configurations as the thesis.
         j = 0.033 and N = 0.018 (paper 0.030 and 0.018). Magnetic: j = 0.014 (0.014), the jump
         of N at t = 0⁺ to 0.012–0.013 whatever E (0.011–0.013), N/E saturating at 7.5 for
         J_I = 1 (7.7). The statistical error of the current is about v_F/(n√R) per cell for R
-        random-phase vectors on an n × n torus (0.003 with the defaults, n = 128, R = 4): the
-        paper's 8192 configurations of a 256 × 256 torus are worth about 2000 vectors. That of
-        N is far smaller (the projector on the conduction band is its own square), as the paper
-        notes.
+        random-phase vectors on an n × n torus (0.003 with the defaults, n = 128, R = 4). That
+        of N is far smaller (the projector on the conduction band is its own square), as the
+        paper notes.
+      - Statistics (`noise`): the thesis averages over 8192 configurations, each with one
+        localized hole; one random-phase vector on a 128 × 128 torus is worth 12 to 140 of
+        them for the current (about 40 typically; in proportion to the area of the torus) and 7
+        to 3000 for N. `--paper` (256 × 256, 64 vectors) is worth 3000 to 36000. The thesis
+        protocol for Fig. 7 alone takes 830 h on four cores (`estimate`). The thesis grid
+        (N × N points, steps 4π/N and 4π/(√3 N) in k) holds two decoupled copies of a sheet of
+        N²/2 cells, the parity classes of the grid: the hole fills one, and half of the work
+        went to the empty one.
       - Fig. 8: the logarithmic distributions of the local density of states widen with J_I;
         at J_I ≥ 1 they peak lower than the paper's (about −2 instead of −0.7: ε = 0.2 lies at
-        the gap edge, where the distribution depends on the resolution). The total local
-        density of states is the same at ±ε on every site (the Hamiltonian anticommutes with
-        the sublattice sign times time reversal), so there are no charge puddles; with moments
-        along ±z, ρ↑(i, ε) = ρ↓(i, −ε). The electron–hole map of one spin is then the spin map:
-        the example draws both, the same patches of about ten lattice constants (the paper's
+        the gap edge, where the distribution depends on the resolution). The Hamiltonian
+        anticommutes with SΘ, the sublattice sign times time reversal, whatever the moments, so
+        ρ↑(i, ε) = ρ↓(i, −ε) on every site and the total local density of states is the same at
+        ±ε: there are no charge puddles. The electron–hole map of one spin is the spin map: the
+        example draws both, the same patches of about ten lattice constants (the paper's
         Fig. 8c; its Fig. 8b, which differs, cannot be the total density of states).
+      - SΘ also maps the field E onto −E: with the moments along ±z, the spin-down valence
+        band carries j↓(E) = −j↑(−E), configuration by configuration. The part of the current
+        odd in E is the same for both spins, so neither can stop contributing to the
+        conductivity (the paper's reading of the σ₀/2 of Fig. 7e); they can differ by a part
+        even in E, a spin current. The magnetic exchange never couples the spin blocks nor the
+        sublattices: the charge–spin correlation of the patches is this symmetry, present in
+        every configuration. Tests: `caroli/tests/graphene_symmetries.rs` (both to 1e-12).
 12. 🧪 Transport precision, chosen by the user (`caroli_green::{Precision, PrecisionOptions,
     checked}`): single precision for the nested-dissection solvers, kept as an experimental
     option for previews.
